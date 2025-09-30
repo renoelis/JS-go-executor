@@ -1,0 +1,57 @@
+# Flow-CodeBlock Go版本 - 生产环境 Docker Compose配置
+version: '3.8'
+
+services:
+  flow-codeblock-go:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flow-codeblock-go:latest
+    container_name: flow-codeblock-go-prod
+    ports:
+      - "3002:3002"
+    env_file:
+      - env.production
+    environment:
+      # 可以在这里覆盖env文件中的配置
+      - NODE_ENV=production
+      
+    restart: unless-stopped
+    
+    # 🚀 生产环境资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 2G                       # 生产环境更多内存
+          cpus: '8.0'                      # 8核CPU
+        reservations:
+          memory: 1G                       # 保留1GB内存
+          cpus: '4.0'                      # 保留4核CPU
+    
+    # 安全配置
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=200m
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    
+    # 标签
+    labels:
+      - "com.flow-codeblock.service=go-executor"
+      - "com.flow-codeblock.environment=production"
+      
