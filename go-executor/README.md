@@ -52,7 +52,7 @@ go mod tidy
 go run .
 
 # 3. 测试接口
-curl -X POST http://localhost:3002/execute \
+curl -X POST http://localhost:3002/flow/codeblock \
   -H "Content-Type: application/json" \
   -d '{
     "input": {"name": "World", "count": 5},
@@ -75,7 +75,7 @@ curl http://localhost:3002/health
 
 ## 📡 API接口
 
-### POST /execute - 执行JavaScript代码
+### POST /flow/codeblock- 执行JavaScript代码
 
 **请求示例:**
 ```json
