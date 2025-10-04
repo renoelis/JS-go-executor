@@ -2,13 +2,15 @@ package enhance_modules
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
 
+	"flow-codeblock-go/utils"
+
 	"github.com/dop251/goja"
 	"github.com/dop251/goja_nodejs/require"
+	"go.uber.org/zap"
 )
 
 // DateFnsEnhancer date-fns 模块增强器（使用 webpack 打包的 UMD 版本）
@@ -50,7 +52,7 @@ func NewDateFnsEnhancer() *DateFnsEnhancer {
 		dateFnsPath = "go-executor/external-libs/date-fns.min.js"
 	}
 
-	fmt.Printf("📦 DateFnsEnhancer 初始化，date-fns 路径: %s\n", dateFnsPath)
+	utils.Debug("DateFnsEnhancer initialized", zap.String("date_fns_path", dateFnsPath))
 
 	return &DateFnsEnhancer{
 		dateFnsPath: dateFnsPath,
@@ -59,7 +61,7 @@ func NewDateFnsEnhancer() *DateFnsEnhancer {
 
 // NewDateFnsEnhancerWithEmbedded 使用嵌入的 date-fns 代码创建增强器
 func NewDateFnsEnhancerWithEmbedded(embeddedCode string) *DateFnsEnhancer {
-	fmt.Printf("📦 DateFnsEnhancer 初始化，使用嵌入式 date-fns (webpack UMD)，大小: %d 字节\n", len(embeddedCode))
+	utils.Debug("DateFnsEnhancer 初始化（嵌入式 date-fns）", zap.Int("size_bytes", len(embeddedCode)))
 
 	return &DateFnsEnhancer{
 		embeddedCode: embeddedCode,
@@ -85,7 +87,7 @@ func (dfe *DateFnsEnhancer) RegisterDateFnsModule(registry *require.Registry) {
 		}
 	})
 
-	log.Printf("✅ date-fns 模块已注册到 require 系统 (webpack UMD)")
+	utils.Debug("date-fns module registered to require system (webpack UMD)")
 }
 
 // loadDateFns 加载 date-fns 库 (带缓存优化)
@@ -147,7 +149,7 @@ func (dfe *DateFnsEnhancer) getCompiledProgram() (*goja.Program, error) {
 		}
 
 		dfe.compiledProgram = program
-		log.Printf("✅ date-fns 代码编译成功，大小: %d 字节", len(code))
+		utils.Debug("date-fns 代码编译成功", zap.Int("size_bytes", len(code)))
 	})
 
 	if dfe.compileErr != nil {
@@ -155,6 +157,12 @@ func (dfe *DateFnsEnhancer) getCompiledProgram() (*goja.Program, error) {
 	}
 
 	return dfe.compiledProgram, nil
+}
+
+// PrecompileDateFns 预编译 date-fns（用于启动时预热）
+func (dfe *DateFnsEnhancer) PrecompileDateFns() error {
+	_, err := dfe.getCompiledProgram()
+	return err
 }
 
 // getDateFnsCode 获取date-fns代码 (带缓存)
@@ -187,4 +195,31 @@ func (dfe *DateFnsEnhancer) getDateFnsCode() (string, error) {
 	dfe.cacheMutex.Unlock()
 
 	return code, nil
+}
+
+// ============================================================================
+// 🔥 实现 ModuleEnhancer 接口（模块注册器模式）
+// ============================================================================
+
+// Name 返回模块名称
+func (de *DateFnsEnhancer) Name() string {
+	return "date-fns"
+}
+
+// Close 关闭 DateFnsEnhancer 并释放资源
+// DateFns 模块不持有需要释放的资源，返回 nil
+func (de *DateFnsEnhancer) Close() error {
+	return nil
+}
+
+// Register 注册模块到 require 系统
+func (de *DateFnsEnhancer) Register(registry *require.Registry) error {
+	de.RegisterDateFnsModule(registry)
+	return nil
+}
+
+// Setup 在 Runtime 上设置模块环境
+func (de *DateFnsEnhancer) Setup(runtime *goja.Runtime) error {
+	// Date-fns 不需要额外的 Runtime 设置
+	return nil
 }

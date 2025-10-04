@@ -107,6 +107,7 @@ func (c *ExecutorController) Execute(ctx *gin.Context) {
 // Health 健康检查（详细信息）
 func (c *ExecutorController) Health(ctx *gin.Context) {
 	stats := c.executor.GetStats()
+	warmupStats := c.executor.GetWarmupStats()
 
 	ctx.JSON(200, gin.H{
 		"status":    "healthy",
@@ -126,6 +127,7 @@ func (c *ExecutorController) Health(ctx *gin.Context) {
 			"sys":        config.FormatBytes(stats.MemStats.Sys),
 			"numGC":      stats.MemStats.NumGC,
 		},
+		"warmup": warmupStats,
 	})
 }
 
@@ -155,6 +157,11 @@ func (c *ExecutorController) Stats(ctx *gin.Context) {
 				"syncExecutions":    stats.SyncExecutions,
 				"asyncExecutions":   stats.AsyncExecutions,
 			},
+		},
+		"cache": gin.H{
+			"codeCompilation":   c.executor.GetCacheStats(),
+			"codeValidation":    c.executor.GetValidationCacheStats(),
+			"runtimePoolHealth": c.executor.GetRuntimePoolHealth(),
 		},
 		"limits": gin.H{
 			"executionTimeout": fmt.Sprintf("%.0fs", c.executor.GetExecutionTimeout().Seconds()),

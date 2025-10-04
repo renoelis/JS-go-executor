@@ -2,11 +2,13 @@ package enhance_modules
 
 import (
 	"fmt"
-	"log"
 	"sync"
+
+	"flow-codeblock-go/utils"
 
 	"github.com/dop251/goja"
 	"github.com/dop251/goja_nodejs/require"
+	"go.uber.org/zap"
 )
 
 // PinyinEnhancer pinyin 模块增强器
@@ -19,7 +21,7 @@ type PinyinEnhancer struct {
 
 // NewPinyinEnhancer 创建新的 pinyin 增强器
 func NewPinyinEnhancer(embeddedCode string) *PinyinEnhancer {
-	fmt.Printf("📦 PinyinEnhancer 初始化，嵌入代码大小: %d 字节 (包含字典数据)\n", len(embeddedCode))
+	utils.Debug("PinyinEnhancer 初始化", zap.Int("size_bytes", len(embeddedCode)))
 	return &PinyinEnhancer{
 		embeddedCode: embeddedCode,
 	}
@@ -42,7 +44,7 @@ func (pe *PinyinEnhancer) RegisterPinyinModule(registry *require.Registry) {
 		}
 	})
 
-	log.Printf("✅ pinyin 模块已注册到 require 系统")
+	utils.Debug("pinyin 模块已注册到 require 系统")
 }
 
 // loadPinyin 加载 pinyin 库 (带缓存优化)
@@ -97,8 +99,41 @@ func (pe *PinyinEnhancer) getCompiledProgram() (*goja.Program, error) {
 		}
 
 		pe.compiledProgram = program
-		fmt.Printf("✅ pinyin 程序编译成功，代码大小: %d 字节\n", len(pe.embeddedCode))
+		utils.Debug("pinyin 程序编译成功", zap.Int("code_size_bytes", len(pe.embeddedCode)))
 	})
 
 	return pe.compiledProgram, pe.compileErr
+}
+
+// PrecompilePinyin 预编译 pinyin（用于启动时预热）
+func (pe *PinyinEnhancer) PrecompilePinyin() error {
+	_, err := pe.getCompiledProgram()
+	return err
+}
+
+// ============================================================================
+// 🔥 实现 ModuleEnhancer 接口（模块注册器模式）
+// ============================================================================
+
+// Name 返回模块名称
+func (pe *PinyinEnhancer) Name() string {
+	return "pinyin"
+}
+
+// Close 关闭 PinyinEnhancer 并释放资源
+// Pinyin 模块不持有需要释放的资源，返回 nil
+func (pe *PinyinEnhancer) Close() error {
+	return nil
+}
+
+// Register 注册模块到 require 系统
+func (pe *PinyinEnhancer) Register(registry *require.Registry) error {
+	pe.RegisterPinyinModule(registry)
+	return nil
+}
+
+// Setup 在 Runtime 上设置模块环境
+func (pe *PinyinEnhancer) Setup(runtime *goja.Runtime) error {
+	// pinyin 不需要额外的 Runtime 设置
+	return nil
 }

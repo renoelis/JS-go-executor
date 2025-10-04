@@ -1,11 +1,12 @@
 package enhance_modules
 
 import (
+	"flow-codeblock-go/utils"
 	"bytes"
 	"fmt"
 	"io"
-	"log"
 	"reflect"
+	"strconv"
 
 	"github.com/dop251/goja"
 	"github.com/dop251/goja_nodejs/eventloop"
@@ -553,7 +554,7 @@ func (nfm *NodeFormDataModule) extractBufferData(runtime *goja.Runtime, bufferOb
 								arrayLen := int(dataLen.ToInteger())
 								data := make([]byte, arrayLen)
 								for i := 0; i < arrayLen; i++ {
-									val := dataObj.Get(fmt.Sprintf("%d", i))
+									val := dataObj.Get(strconv.Itoa(i))
 									if !goja.IsUndefined(val) && !goja.IsNull(val) {
 										data[i] = byte(val.ToInteger())
 									}
@@ -570,7 +571,7 @@ func (nfm *NodeFormDataModule) extractBufferData(runtime *goja.Runtime, bufferOb
 	// 降级方案：逐字节读取（兼容性更好，但效率较低）
 	data := make([]byte, length)
 	for i := 0; i < length; i++ {
-		val := bufferObj.Get(fmt.Sprintf("%d", i))
+		val := bufferObj.Get(strconv.Itoa(i))
 		if goja.IsUndefined(val) || goja.IsNull(val) {
 			data[i] = 0
 		} else {
@@ -592,7 +593,7 @@ func RegisterFormDataModuleWithEventLoop(loop *eventloop.EventLoop, registry *re
 		// 导出构造函数
 		moduleObj.Set("exports", constructor)
 
-		log.Println("✅ Node.js form-data 模块已注册（支持 EventLoop）")
+		utils.Debug("Node.js form-data module registered (EventLoop supported)")
 	})
 }
 

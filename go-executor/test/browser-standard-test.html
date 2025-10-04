@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>浏览器标准 Web API 行为测试</title>
+</head>
+<body>
+    <h1>浏览器标准 Web API 行为测试</h1>
+    <div id="output"></div>
+
+    <script>
+        const output = document.getElementById('output');
+        
+        function log(msg) {
+            output.innerHTML += msg + '<br>';
+            console.log(msg);
+        }
+
+        log('=== FormData 测试 ===');
+        const fd = new FormData();
+        fd.append('key1', 'value1');
+        fd.append('key2', 'value2');
+
+        const entries = fd.entries();
+        log('FormData.entries() 类型: ' + typeof entries);
+        log('是否是数组: ' + Array.isArray(entries));
+        log('是否有 next 方法: ' + (typeof entries.next === 'function'));
+        log('entries.next(): ' + JSON.stringify(entries.next()));
+        log('entries.next(): ' + JSON.stringify(entries.next()));
+        log('entries.next(): ' + JSON.stringify(entries.next()));
+
+        log('\n=== URLSearchParams 测试 ===');
+        const params = new URLSearchParams('a=1&b=2');
+        const paramsEntries = params.entries();
+        log('URLSearchParams.entries() 类型: ' + typeof paramsEntries);
+        log('是否是数组: ' + Array.isArray(paramsEntries));
+        log('是否有 next 方法: ' + (typeof paramsEntries.next === 'function'));
+        log('paramsEntries.next(): ' + JSON.stringify(paramsEntries.next()));
+
+        log('\n=== Headers 测试 ===');
+        const headers = new Headers({ 'Content-Type': 'text/plain' });
+        const headersEntries = headers.entries();
+        log('Headers.entries() 类型: ' + typeof headersEntries);
+        log('是否是数组: ' + Array.isArray(headersEntries));
+        log('是否有 next 方法: ' + (typeof headersEntries.next === 'function'));
+        log('headersEntries.next(): ' + JSON.stringify(headersEntries.next()));
+
+        log('\n=== for...of 测试 ===');
+        log('FormData for...of:');
+        for (const [key, value] of fd) {
+            log('  ' + key + ' = ' + value);
+        }
+
+        log('\nURLSearchParams for...of:');
+        for (const [key, value] of params) {
+            log('  ' + key + ' = ' + value);
+        }
+
+        log('\n=== Array.from() 测试 ===');
+        const fd2 = new FormData();
+        fd2.append('x', '1');
+        fd2.append('y', '2');
+        const arr = Array.from(fd2.entries());
+        log('Array.from(fd.entries()): ' + JSON.stringify(arr));
+    </script>
+</body>
+</html>
+
+
+
+
+
+
+

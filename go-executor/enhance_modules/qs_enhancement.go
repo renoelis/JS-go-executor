@@ -2,11 +2,13 @@ package enhance_modules
 
 import (
 	"fmt"
-	"log"
 	"sync"
+
+	"flow-codeblock-go/utils"
 
 	"github.com/dop251/goja"
 	"github.com/dop251/goja_nodejs/require"
+	"go.uber.org/zap"
 )
 
 // QsEnhancer qs 模块增强器
@@ -19,7 +21,7 @@ type QsEnhancer struct {
 
 // NewQsEnhancer 创建新的 qs 增强器
 func NewQsEnhancer(embeddedCode string) *QsEnhancer {
-	fmt.Printf("📦 QsEnhancer 初始化，嵌入代码大小: %d 字节\n", len(embeddedCode))
+	utils.Debug("QsEnhancer 初始化", zap.Int("size_bytes", len(embeddedCode)))
 	return &QsEnhancer{
 		embeddedCode: embeddedCode,
 	}
@@ -42,7 +44,7 @@ func (qe *QsEnhancer) RegisterQsModule(registry *require.Registry) {
 		}
 	})
 
-	log.Printf("✅ qs 模块已注册到 require 系统")
+	utils.Debug("qs 模块已注册到 require 系统")
 }
 
 // loadQs 加载 qs 库 (带缓存优化)
@@ -97,8 +99,41 @@ func (qe *QsEnhancer) getCompiledProgram() (*goja.Program, error) {
 		}
 
 		qe.compiledProgram = program
-		fmt.Printf("✅ qs 程序编译成功，代码大小: %d 字节\n", len(qe.embeddedCode))
+		utils.Debug("qs 程序编译成功", zap.Int("code_size_bytes", len(qe.embeddedCode)))
 	})
 
 	return qe.compiledProgram, qe.compileErr
+}
+
+// PrecompileQs 预编译 qs（用于启动时预热）
+func (qe *QsEnhancer) PrecompileQs() error {
+	_, err := qe.getCompiledProgram()
+	return err
+}
+
+// ============================================================================
+// 🔥 实现 ModuleEnhancer 接口（模块注册器模式）
+// ============================================================================
+
+// Name 返回模块名称
+func (qe *QsEnhancer) Name() string {
+	return "qs"
+}
+
+// Close 关闭 QsEnhancer 并释放资源
+// Qs 模块不持有需要释放的资源，返回 nil
+func (qe *QsEnhancer) Close() error {
+	return nil
+}
+
+// Register 注册模块到 require 系统
+func (qe *QsEnhancer) Register(registry *require.Registry) error {
+	qe.RegisterQsModule(registry)
+	return nil
+}
+
+// Setup 在 Runtime 上设置模块环境
+func (qe *QsEnhancer) Setup(runtime *goja.Runtime) error {
+	// qs 不需要额外的 Runtime 设置
+	return nil
 }

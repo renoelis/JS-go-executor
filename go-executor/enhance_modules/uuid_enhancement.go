@@ -2,11 +2,13 @@ package enhance_modules
 
 import (
 	"fmt"
-	"log"
 	"sync"
+
+	"flow-codeblock-go/utils"
 
 	"github.com/dop251/goja"
 	"github.com/dop251/goja_nodejs/require"
+	"go.uber.org/zap"
 )
 
 // UuidEnhancer uuid 模块增强器
@@ -19,7 +21,7 @@ type UuidEnhancer struct {
 
 // NewUuidEnhancer 创建新的 uuid 增强器
 func NewUuidEnhancer(embeddedCode string) *UuidEnhancer {
-	fmt.Printf("📦 UuidEnhancer 初始化，嵌入代码大小: %d 字节\n", len(embeddedCode))
+	utils.Debug("UuidEnhancer 初始化", zap.Int("size_bytes", len(embeddedCode)))
 	return &UuidEnhancer{
 		embeddedCode: embeddedCode,
 	}
@@ -42,7 +44,7 @@ func (ue *UuidEnhancer) RegisterUuidModule(registry *require.Registry) {
 		}
 	})
 
-	log.Printf("✅ uuid 模块已注册到 require 系统")
+	utils.Debug("uuid 模块已注册到 require 系统")
 }
 
 // loadUuid 加载 uuid 库 (带缓存优化)
@@ -97,8 +99,41 @@ func (ue *UuidEnhancer) getCompiledProgram() (*goja.Program, error) {
 		}
 
 		ue.compiledProgram = program
-		fmt.Printf("✅ uuid 程序编译成功，代码大小: %d 字节\n", len(ue.embeddedCode))
+		utils.Debug("uuid 程序编译成功", zap.Int("code_size_bytes", len(ue.embeddedCode)))
 	})
 
 	return ue.compiledProgram, ue.compileErr
+}
+
+// PrecompileUuid 预编译 uuid（用于启动时预热）
+func (ue *UuidEnhancer) PrecompileUuid() error {
+	_, err := ue.getCompiledProgram()
+	return err
+}
+
+// ============================================================================
+// 🔥 实现 ModuleEnhancer 接口（模块注册器模式）
+// ============================================================================
+
+// Name 返回模块名称
+func (ue *UuidEnhancer) Name() string {
+	return "uuid"
+}
+
+// Close 关闭 UuidEnhancer 并释放资源
+// Uuid 模块不持有需要释放的资源，返回 nil
+func (ue *UuidEnhancer) Close() error {
+	return nil
+}
+
+// Register 注册模块到 require 系统
+func (ue *UuidEnhancer) Register(registry *require.Registry) error {
+	ue.RegisterUuidModule(registry)
+	return nil
+}
+
+// Setup 在 Runtime 上设置模块环境
+func (ue *UuidEnhancer) Setup(runtime *goja.Runtime) error {
+	// uuid 不需要额外的 Runtime 设置
+	return nil
 }

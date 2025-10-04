@@ -2,11 +2,13 @@ package enhance_modules
 
 import (
 	"fmt"
-	"log"
 	"sync"
+
+	"flow-codeblock-go/utils"
 
 	"github.com/dop251/goja"
 	"github.com/dop251/goja_nodejs/require"
+	"go.uber.org/zap"
 )
 
 // LodashEnhancer lodash 模块增强器
@@ -19,7 +21,7 @@ type LodashEnhancer struct {
 
 // NewLodashEnhancer 创建新的 lodash 增强器
 func NewLodashEnhancer(embeddedCode string) *LodashEnhancer {
-	fmt.Printf("📦 LodashEnhancer 初始化，嵌入代码大小: %d 字节\n", len(embeddedCode))
+	utils.Debug("LodashEnhancer 初始化", zap.Int("size_bytes", len(embeddedCode)))
 	return &LodashEnhancer{
 		embeddedCode: embeddedCode,
 	}
@@ -42,7 +44,7 @@ func (le *LodashEnhancer) RegisterLodashModule(registry *require.Registry) {
 		}
 	})
 
-	log.Printf("✅ lodash 模块已注册到 require 系统")
+	utils.Debug("lodash 模块已注册到 require 系统")
 }
 
 // loadLodash 加载 lodash 库 (带缓存优化)
@@ -97,8 +99,41 @@ func (le *LodashEnhancer) getCompiledProgram() (*goja.Program, error) {
 		}
 
 		le.compiledProgram = program
-		fmt.Printf("✅ lodash 程序编译成功，代码大小: %d 字节\n", len(le.embeddedCode))
+		utils.Debug("lodash 程序编译成功", zap.Int("code_size_bytes", len(le.embeddedCode)))
 	})
 
 	return le.compiledProgram, le.compileErr
+}
+
+// PrecompileLodash 预编译 lodash（用于启动时预热）
+func (le *LodashEnhancer) PrecompileLodash() error {
+	_, err := le.getCompiledProgram()
+	return err
+}
+
+// ============================================================================
+// 🔥 实现 ModuleEnhancer 接口（模块注册器模式）
+// ============================================================================
+
+// Name 返回模块名称
+func (le *LodashEnhancer) Name() string {
+	return "lodash"
+}
+
+// Close 关闭 LodashEnhancer 并释放资源
+// Lodash 模块不持有需要释放的资源，返回 nil
+func (le *LodashEnhancer) Close() error {
+	return nil
+}
+
+// Register 注册模块到 require 系统
+func (le *LodashEnhancer) Register(registry *require.Registry) error {
+	le.RegisterLodashModule(registry)
+	return nil
+}
+
+// Setup 在 Runtime 上设置模块环境
+func (le *LodashEnhancer) Setup(runtime *goja.Runtime) error {
+	// lodash 不需要额外的 Runtime 设置
+	return nil
 }

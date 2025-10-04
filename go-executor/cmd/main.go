@@ -14,11 +14,26 @@ import (
 	"flow-codeblock-go/controller"
 	"flow-codeblock-go/router"
 	"flow-codeblock-go/service"
+	"flow-codeblock-go/utils"
+
+	"go.uber.org/zap"
 )
 
 func main() {
 	// 加载配置
 	cfg := config.LoadConfig()
+
+	// 🔥 初始化日志系统（必须在最早期初始化）
+	if err := utils.InitLogger(cfg.Environment); err != nil {
+		log.Fatalf("❌ 初始化日志系统失败: %v", err)
+	}
+	defer utils.Sync()
+
+	utils.Info("Flow-CodeBlock Go 服务启动中",
+		zap.String("version", "2.0"),
+		zap.String("environment", cfg.Environment),
+		zap.String("go_version", runtime.Version()),
+	)
 
 	// 设置Go运行时参数
 	cfg.SetupGoRuntime()
@@ -42,50 +57,60 @@ func main() {
 	}
 
 	// 优雅关闭处理
+	done := make(chan struct{})
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		<-sigChan
 
-		log.Println("🛑 收到关闭信号，开始优雅关闭...")
+		utils.Warn("收到关闭信号，开始优雅关闭")
+		_ = utils.Sync()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		if err := server.Shutdown(ctx); err != nil {
-			log.Printf("❌ 服务器关闭失败: %v", err)
+			utils.Error("服务器关闭失败", zap.Error(err))
+			_ = utils.Sync()
 		}
 
 		executor.Shutdown()
-		log.Println("✅ 服务已完全关闭")
-		os.Exit(0)
+		_ = utils.Sync()
+
+		utils.Info("服务关闭完成")
+		_ = utils.Sync()
+
+		close(done)
 	}()
 
 	// 启动服务器
-	log.Printf(`
-╔═══════════════════════════════════════╗
-║     Flow-CodeBlock Go Service         ║
-╠═══════════════════════════════════════╣
-║ 🚀 服务已启动                         ║
-║ 📡 端口: %s                         ║
-║ 🌍 地址: http://0.0.0.0:%s          ║
-║ ⚡ Runtime池: %d                      ║
-║ 🔧 最大并发: %d                       ║
-║ ⏱️  HTTP超时: %.0fs                     ║
-║ 📊 Go版本: %s                         ║
-╚═══════════════════════════════════════╝
-`, cfg.Server.Port, cfg.Server.Port, cfg.Executor.PoolSize, cfg.Executor.MaxConcurrent, cfg.Server.ReadTimeout.Seconds(), runtime.Version())
+	utils.Info("HTTP 服务器配置",
+		zap.String("port", cfg.Server.Port),
+		zap.String("address", "http://0.0.0.0:"+cfg.Server.Port),
+		zap.Int("runtime_pool_size", cfg.Executor.PoolSize),
+		zap.Int("max_concurrent", cfg.Executor.MaxConcurrent),
+		zap.Duration("read_timeout", cfg.Server.ReadTimeout),
+		zap.Duration("write_timeout", cfg.Server.WriteTimeout),
+	)
 
-	log.Println("📋 可用端点:")
-	log.Println("   POST /flow/codeblock         - 执行代码 [兼容Node.js版本]")
-	log.Println("   GET  /flow/health            - 健康检查 [详细信息]")
-	log.Println("   GET  /flow/status            - 执行统计 [兼容Node.js版本]")
-	log.Println("   GET  /flow/limits            - 系统限制 [兼容Node.js版本]")
-	log.Println("   GET  /health                 - 简单健康检查")
-	log.Println("   GET  /                       - API信息")
-	log.Println("")
+	utils.Info("可用端点",
+		zap.Strings("endpoints", []string{
+			"POST /flow/codeblock - Execute code",
+			"GET  /flow/health - Detailed health check",
+			"GET  /flow/status - Execution statistics",
+			"GET  /flow/limits - System limits",
+			"GET  /health - Simple health check",
+			"GET  / - API information",
+		}),
+	)
+
+	utils.Info("服务启动成功",
+		zap.String("listen_address", ":"+cfg.Server.Port),
+	)
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("❌ 服务器启动失败: %v", err)
+		utils.Fatal("服务器启动失败", zap.Error(err))
 	}
+
+	<-done // 等待优雅关闭完成
 }

@@ -8,9 +8,12 @@ import (
 	"math"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/dop251/goja"
+	"flow-codeblock-go/utils"
+	"go.uber.org/zap"
 )
 
 // BodyTypeHandler 处理各种 Body 类型
@@ -192,7 +195,7 @@ func (h *BodyTypeHandler) typedArrayToBytes(obj *goja.Object) ([]byte, error) {
 
 	// 读取数据
 	for i := 0; i < length; i++ {
-		val := obj.Get(fmt.Sprintf("%d", i))
+		val := obj.Get(strconv.Itoa(i))
 		if goja.IsUndefined(val) || val == nil {
 			continue
 		}
@@ -662,7 +665,7 @@ func RegisterURLSearchParams(runtime *goja.Runtime) error {
 			}
 		} else {
 			// 记录错误日志，但不影响 URLSearchParams 的其他功能
-			fmt.Printf("⚠️  Warning: Failed to set Symbol.iterator for URLSearchParams: %v\n", err)
+			utils.Warn("设置 URLSearchParams 的 Symbol.iterator 失败", zap.Error(err))
 		}
 
 		return obj

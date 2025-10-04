@@ -1,9 +1,11 @@
 package enhance_modules
 
 import (
+	"flow-codeblock-go/utils"
 	"fmt"
-	"log"
 	"sync"
+
+	"go.uber.org/zap"
 
 	"github.com/dop251/goja"
 	"github.com/dop251/goja_nodejs/require"
@@ -19,7 +21,7 @@ type AxiosEnhancer struct {
 
 // NewAxiosEnhancer 创建新的 axios 增强器
 func NewAxiosEnhancer(embeddedCode string) *AxiosEnhancer {
-	log.Printf("📦 AxiosEnhancer 初始化，使用嵌入式 axios.js，大小: %d 字节", len(embeddedCode))
+	utils.Debug("AxiosEnhancer 初始化", zap.Int("size_bytes", len(embeddedCode)))
 
 	return &AxiosEnhancer{
 		embeddedCode: embeddedCode,
@@ -57,4 +59,43 @@ func (ae *AxiosEnhancer) RegisterAxiosModule(registry *require.Registry) {
 		// 导出 axios
 		module.Set("exports", axiosVal)
 	})
+}
+
+// PrecompileAxios 预编译 axios（用于启动时预热）
+func (ae *AxiosEnhancer) PrecompileAxios() error {
+	ae.compileOnce.Do(func() {
+		var err error
+		ae.compiledProgram, err = goja.Compile("axios.js", ae.embeddedCode, true)
+		if err != nil {
+			ae.compileErr = err
+		}
+	})
+	return ae.compileErr
+}
+
+// ============================================================================
+// 🔥 实现 ModuleEnhancer 接口（模块注册器模式）
+// ============================================================================
+
+// Name 返回模块名称
+func (ae *AxiosEnhancer) Name() string {
+	return "axios"
+}
+
+// Close 关闭 AxiosEnhancer 并释放资源
+// Axios 模块不持有需要释放的资源，返回 nil
+func (ae *AxiosEnhancer) Close() error {
+	return nil
+}
+
+// Register 注册模块到 require 系统
+func (ae *AxiosEnhancer) Register(registry *require.Registry) error {
+	ae.RegisterAxiosModule(registry)
+	return nil
+}
+
+// Setup 在 Runtime 上设置模块环境
+func (ae *AxiosEnhancer) Setup(runtime *goja.Runtime) error {
+	// Axios 不需要额外的 Runtime 设置
+	return nil
 }

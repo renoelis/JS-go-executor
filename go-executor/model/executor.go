@@ -33,3 +33,14 @@ type ExecutionResult struct {
 	Result      interface{}
 	ExecutionId string
 }
+
+// WarmupStats 模块预热统计信息
+type WarmupStats struct {
+	Status       string   `json:"status"`       // "completed", "not_started", "failed"
+	Modules      []string `json:"modules"`      // 预编译的模块列表
+	TotalModules int      `json:"totalModules"` // 总模块数
+	SuccessCount int      `json:"successCount"` // 成功数量
+	Elapsed      string   `json:"elapsed"`      // 耗时（格式化）
+	ElapsedMs    int64    `json:"elapsedMs"`    // 耗时（毫秒）
+	Timestamp    string   `json:"timestamp"`    // 预热完成时间
+}
