@@ -1,0 +1,191 @@
+# ====================================================================================
+# Docker 构建忽略文件
+# ====================================================================================
+# 说明：这些文件/目录不会被复制到 Docker 镜像中，可以：
+#   1. 减小镜像大小
+#   2. 加快构建速度
+#   3. 避免敏感信息泄露
+# ====================================================================================
+
+# ==================== Git 相关 ====================
+.git
+.gitignore
+.gitattributes
+
+# ==================== 编译产物（本地） ====================
+# 注意：Docker 内部会重新编译，本地编译产物不需要
+flow-codeblock-go
+flow-codeblock-go-race
+*.exe
+*.dll
+*.so
+*.dylib
+
+# ==================== 测试文件 ====================
+# 测试代码不需要打包到生产镜像
+test/
+*_test.go
+test_*.go
+test_*.sh
+*_test.sh
+benchmark/
+coverage.out
+*.test
+
+# ==================== 日志文件 ====================
+*.log
+*_output.log
+*_results.txt
+service.log
+
+# ==================== 临时文件 ====================
+/tmp/
+*.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ==================== IDE 配置 ====================
+.vscode/
+.idea/
+*.iml
+.editorconfig
+
+# ==================== 环境配置（敏感信息） ====================
+# 这些文件包含密码等敏感信息，绝不打包到镜像
+.env
+.env.local
+.env.*.local
+.env.prod
+env.prod
+.env.dev
+env.dev
+*.env
+
+# ==================== 密码和Token（敏感信息） ====================
+.admin_token
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# ==================== Docker 相关 ====================
+# Docker 构建时不需要这些文件
+docker-compose.yml
+docker-compose.*.yml
+Dockerfile
+.dockerignore
+
+# ==================== 文档和说明 ====================
+# 文档不需要打包到运行时镜像
+*.md
+docs/
+分析评估/
+*.pdf
+*.docx
+
+# ==================== 脚本文件 ====================
+# 部署和管理脚本不需要打包到镜像
+deploy_production.sh
+dev_start.sh
+start.sh
+show_admin_token.sh
+*.sh
+scripts/check_security.sh
+scripts/setup_dev.sh
+
+# 注意：保留 scripts/init.sql（数据库初始化需要）
+!scripts/init.sql
+
+# ==================== 备份文件 ====================
+*.backup
+*.backup.*
+*.bak
+*.old
+
+# ==================== 数据文件 ====================
+*.db
+*.sqlite
+*.sql
+# 注意：保留 init.sql
+!scripts/init.sql
+
+# ==================== Node.js 相关（如果有） ====================
+node_modules/
+npm-debug.log
+yarn-error.log
+package-lock.json
+yarn.lock
+
+# ==================== 其他开发工具 ====================
+.air.toml
+.golangci.yml
+Makefile
+
+# ==================== 大文件和媒体 ====================
+*.mp4
+*.avi
+*.mov
+*.zip
+*.tar
+*.tar.gz
+*.rar
+
+# ==================== CI/CD 配置 ====================
+.github/
+.gitlab-ci.yml
+.travis.yml
+Jenkinsfile
+
+# ==================== 性能分析文件 ====================
+*.prof
+*.pprof
+cpu.out
+mem.out
+
+# ==================== 覆盖率报告 ====================
+coverage.html
+coverage.txt
+*.coverage
+
+# ==================== 依赖管理 ====================
+vendor/
+# 注意：go.mod 和 go.sum 需要保留（Docker 内部 go mod download 使用）
+
+# ==================== 特定测试文件 ====================
+test_error_wrapping.go
+quick_stress_test.sh
+stress_test.sh
+final_verification_test.sh
+verify_*.sh
+
+# ==================== 报告文档 ====================
+*报告.md
+*_REPORT.md
+*_TEST_REPORT.md
+*_SUCCESS.md
+*_IMPLEMENTATION.md
+*_ANALYSIS.md
+*_EVALUATION.md
+*_GUIDE.md
+*_SUMMARY.md
+
+# ==================== 配置模板 ====================
+*.template
+env.*.template
+
+# ==================== 其他 ====================
+TODO.md
+CHANGELOG.md
+LICENSE
+.editorconfig
+
+分析评估/
+test/
+.admin_token
+
+.claude/
+*.md
+*.sh

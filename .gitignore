@@ -1,0 +1,62 @@
+# 编译产物
+flow-codeblock-go
+flow-codeblock-go-race
+*.exe
+*.dll
+*.so
+*.dylib
+
+# 测试和日志文件
+*.log
+*_output.log
+*_results.txt
+*.test
+*.out
+
+# 临时文件
+/tmp/
+*.tmp
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# 环境配置
+.env
+.env.local
+.env.*.local
+
+# 🔒 管理员 Token（敏感信息，绝不提交）
+.admin_token
+.env.prod
+env.prod
+env.dev
+*.backup.*
+
+# 依赖
+vendor/
+
+# macOS
+.DS_Store
+
+# 数据文件
+*.db
+*.sqlite
+
+
+TODO.md
+CHANGELOG.md
+LICENSE
+.editorconfig
+
+分析评估/
+test/
+.admin_token
+
+.claude/
+*.md
+*.sh

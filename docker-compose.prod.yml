@@ -1,0 +1,300 @@
+# Flow-CodeBlock Go版本 - 生产环境 Docker Compose配置
+# 基于 Go + goja 的高性能 JavaScript 代码执行服务
+version: '3.8'
+
+services:
+  # ====================================================================================
+  # Go 代码执行服务
+  # ====================================================================================
+  flow-codeblock-go:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+    image: flow-codeblock-go:latest
+    container_name: flow-codeblock-go-prod
+    ports:
+      - "3002:3002"
+    
+    environment:
+      # ==================== 基础配置 ====================
+      - ENVIRONMENT=production
+      - PORT=3002
+      - GIN_MODE=release
+      
+      # ==================== 数据库配置 ====================
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USER=flow_user
+      - DB_PASSWORD=flow_password_2024
+      - DB_NAME=flow_codeblock_go
+      - DB_MAX_OPEN_CONNS=100
+      - DB_MAX_IDLE_CONNS=20
+      - DB_CONN_MAX_LIFETIME_MIN=60
+      - DB_CONN_MAX_IDLE_TIME_MIN=10
+      
+      # ==================== Redis配置 ====================
+      - REDIS_ENABLED=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=flow_redis_2024
+      - REDIS_DB=0
+      - REDIS_POOL_SIZE=100              # Redis连接池大小
+      - REDIS_MIN_IDLE_CONNS=10          # 最小空闲连接数
+      - REDIS_DIAL_TIMEOUT_SEC=5         # 连接超时(秒)
+      - REDIS_READ_TIMEOUT_SEC=3         # 读取超时(秒)
+      - REDIS_WRITE_TIMEOUT_SEC=3        # 写入超时(秒)
+      - REDIS_MAX_RETRIES=3              # 最大重试次数
+      
+      # ==================== 🔐 认证配置 ====================
+      # ⚠️ 生产环境必须修改！使用强随机密码！
+      # 生成方法: openssl rand -base64 32
+      - ADMIN_TOKEN=PLEASE_CHANGE_THIS_IN_PRODUCTION_USE_STRONG_RANDOM_TOKEN
+      
+      # ==================== Token缓存配置 ====================
+      - TOKEN_CACHE_HOT_SIZE=300         # 🔧 热缓存大小 500→300 (内存优化)
+      - TOKEN_CACHE_HOT_TTL_MINUTES=3    # 🔧 热缓存TTL 5→3分钟 (内存优化)
+      - TOKEN_CACHE_REDIS_TTL_MINUTES=30 # 🔧 Redis TTL 60→30分钟 (内存优化)
+      
+      # ==================== 🔥 缓存写入池配置 ====================
+      # 说明：统一管理所有异步缓存写入，防止 goroutine 暴涨
+      - CACHE_WRITE_POOL_WORKERS=15      # Worker数量 (推荐: 10-20)
+      - CACHE_WRITE_POOL_QUEUE_SIZE=1500 # 队列大小 (推荐: 1000-2000)
+      - CACHE_WRITE_POOL_SUBMIT_TIMEOUT_MS=50 # 提交超时(毫秒)
+      
+      # ==================== Token限流配置 ====================
+      - RATE_LIMIT_HOT_SIZE=300          # 🔧 限流热数据 500→300 (内存优化)
+      - RATE_LIMIT_REDIS_TTL_MINUTES=60  # Redis TTL(分钟)
+      - RATE_LIMIT_BATCH_SIZE=100        # 批量写入大小
+      
+      # ==================== 🚦 IP限流配置 ====================
+      # 认证前IP限流（严格）- 防止暴力破解Token
+      - IP_RATE_LIMIT_PRE_AUTH=50        # 每秒请求数 (推荐: 50)
+      - IP_RATE_LIMIT_PRE_AUTH_BURST=100 # 突发请求数 (推荐: 100)
+      
+      # 认证后IP限流（宽松）- 防止极端滥用
+      - IP_RATE_LIMIT_POST_AUTH=200      # 每秒请求数 (推荐: 200)
+      - IP_RATE_LIMIT_POST_AUTH_BURST=400 # 突发请求数 (推荐: 400)
+      
+      # 全局IP限流（公开端点）
+      - IP_RATE_LIMIT_GLOBAL=50          # 每秒请求数 (推荐: 50)
+      - IP_RATE_LIMIT_GLOBAL_BURST=100   # 突发请求数 (推荐: 100)
+      
+      # ==================== 🚀 JavaScript执行器配置 ====================
+      # 📋 推荐配置:
+      #   🖥️  2H4G服务器: POOL=50, MAX_CONCURRENT=400, TIMEOUT=120000
+      #   🖥️  4H8G服务器: POOL=100, MAX_CONCURRENT=800, TIMEOUT=180000
+      #   🖥️  8H16G服务器: POOL=200, MAX_CONCURRENT=1600, TIMEOUT=300000
+      - RUNTIME_POOL_SIZE=100            # Runtime池大小 (默认: 100)
+      - MIN_RUNTIME_POOL_SIZE=50         # 最小池大小 (默认: 50)
+      - MAX_RUNTIME_POOL_SIZE=200        # 最大池大小 (默认: 200)
+      - RUNTIME_IDLE_TIMEOUT_MIN=5       # Runtime空闲超时(分钟)
+      - MAX_CONCURRENT_EXECUTIONS=800    # 🔧 最大并发数 (4H8G服务器推荐)
+      - CODE_CACHE_SIZE=100              # 代码缓存大小
+      - ALLOW_CONSOLE=false              # 🔧 生产环境禁用console
+      
+      # 执行限制
+      - MAX_CODE_LENGTH=65535            # 代码长度限制(字节) - 64KB
+      - MAX_INPUT_SIZE=2097152           # Input大小限制(字节) - 2MB
+      - MAX_RESULT_SIZE=5242880          # 结果大小限制(字节) - 5MB
+      - EXECUTION_TIMEOUT_MS=180000      # 🔧 执行超时(毫秒) - 3分钟
+      
+      # ==================== 🔥 熔断器配置 ====================
+      # 说明：防止重度过载，保护系统稳定性
+      - CIRCUIT_BREAKER_ENABLED=true     # 是否启用熔断器
+      - CIRCUIT_BREAKER_MIN_REQUESTS=100 # 最小请求数(触发熔断的最小样本)
+      - CIRCUIT_BREAKER_FAILURE_RATIO=0.9 # 失败率阈值 (0.9 = 90%)
+      - CIRCUIT_BREAKER_TIMEOUT_SEC=10   # Open状态持续时间(秒)
+      - CIRCUIT_BREAKER_MAX_REQUESTS=100 # Half-Open状态最大探测请求数
+      
+      # ==================== Fetch API配置 ====================
+      - FETCH_TIMEOUT_MS=180000          # Fetch超时(毫秒) - 3分钟
+      - MAX_FORMDATA_SIZE_MB=100         # FormData最大大小(MB)
+      - FORMDATA_STREAMING_THRESHOLD_MB=1 # 流式上传阈值(MB)
+      - ENABLE_CHUNKED_UPLOAD=1          # 启用分块上传
+      - MAX_BLOB_FILE_SIZE_MB=100        # Blob文件最大大小(MB)
+      - FORMDATA_BUFFER_SIZE=2097152     # FormData缓冲区大小(字节)
+      - MAX_FILE_SIZE_MB=50              # 文件最大大小(MB)
+      
+      # ==================== Go运行时配置 ====================
+      - GOMAXPROCS=0                     # 0=使用所有CPU核心
+      - GOGC=100                         # GC目标百分比
+    
+    restart: unless-stopped
+    
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    
+    # ==================== 🔧 资源限制 ====================
+    # 根据服务器规格调整
+    deploy:
+      resources:
+        limits:
+          memory: 3G          # 🔧 3GB内存 (适合4H8G服务器)
+          cpus: '2.0'         # 🔧 2核CPU
+        reservations:
+          memory: 1G          # 🔧 保留1GB内存
+          cpus: '1.0'         # 🔧 保留1核CPU
+    
+    # ==================== 安全配置 ====================
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=200m
+    
+    # ==================== 健康检查 ====================
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # ==================== 网络配置 ====================
+    networks:
+      - proxy_net
+    
+    # ==================== 日志配置 ====================
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+    
+    # ==================== 卷挂载 ====================
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    
+    # ==================== 标签 ====================
+    labels:
+      - "com.flow-codeblock.service=go-executor"
+      - "com.flow-codeblock.version=2.1"
+      - "com.flow-codeblock.description=Go版JavaScript代码执行服务"
+      - "com.flow-codeblock.environment=production"
+
+  # ====================================================================================
+  # MySQL数据库服务
+  # ====================================================================================
+  mysql:
+    image: mysql:8.0
+    container_name: flow-codeblock-mysql-prod
+    environment:
+      - MYSQL_ROOT_PASSWORD=root_password_2024
+      - MYSQL_DATABASE=flow_codeblock_go
+      - MYSQL_USER=flow_user
+      - MYSQL_PASSWORD=flow_password_2024
+      - MYSQL_CHARSET=utf8mb4
+      - MYSQL_COLLATION=utf8mb4_unicode_ci
+    restart: unless-stopped
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "flow_user", "-pflow_password_2024"]
+      timeout: 20s
+      retries: 10
+      interval: 10s
+      start_period: 40s
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 2G          # 🔧 2GB内存，支持更多连接
+          cpus: '1.5'         # 🔧 1.5核CPU
+        reservations:
+          memory: 1G          # 🔧 保留1GB内存
+          cpus: '0.5'         # 保留0.5核CPU
+    
+    # 网络配置
+    networks:
+      - proxy_net
+    
+    # 数据持久化
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - /etc/localtime:/etc/localtime:ro
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "15m"
+        max-file: "5"
+    
+    # 标签
+    labels:
+      - "com.flow-codeblock.service=database"
+      - "com.flow-codeblock.version=8.0"
+      - "com.flow-codeblock.description=MySQL数据库服务"
+
+  # ====================================================================================
+  # Redis缓存服务
+  # ====================================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: flow-codeblock-redis-prod
+    command: redis-server --requirepass flow_redis_2024 --maxmemory 1gb --maxmemory-policy allkeys-lru --appendonly yes
+    restart: unless-stopped
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "flow_redis_2024", "ping"]
+      timeout: 3s
+      retries: 3
+      interval: 30s
+      start_period: 10s
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 1G          # 1GB内存
+          cpus: '1.0'         # 1核CPU
+        reservations:
+          memory: 512M        # 保留512MB内存
+          cpus: '0.5'         # 保留0.5核CPU
+    
+    # 网络配置
+    networks:
+      - proxy_net
+    
+    # 数据持久化
+    volumes:
+      - redis_data:/data
+      - /etc/localtime:/etc/localtime:ro
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    
+    # 标签
+    labels:
+      - "com.flow-codeblock.service=cache"
+      - "com.flow-codeblock.version=7.0"
+      - "com.flow-codeblock.description=Redis缓存服务(生产)"
+
+# ====================================================================================
+# 网络配置
+# ====================================================================================
+networks:
+  proxy_net:
+    external: true
+    name: api-proxy_proxy_net
+
+# ====================================================================================
+# 数据卷
+# ====================================================================================
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local

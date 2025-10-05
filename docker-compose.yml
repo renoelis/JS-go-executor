@@ -1,0 +1,289 @@
+# Flow-CodeBlock Go版本 - 本地测试环境 Docker Compose配置
+# 用于本地开发和测试
+version: '3.8'
+
+services:
+  # ====================================================================================
+  # Go 代码执行服务 (本地测试环境)
+  # ====================================================================================
+  flow-codeblock-go:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flow-codeblock-go:dev
+    container_name: flow-codeblock-go-dev
+    ports:
+      - "3002:3002"
+    
+    environment:
+      # ==================== 基础配置 ====================
+      - ENVIRONMENT=development
+      - PORT=3002
+      - GIN_MODE=debug                   # 开发环境使用debug模式
+      
+      # ==================== 数据库配置 ====================
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USER=flow_user
+      - DB_PASSWORD=flow_password_dev    # 开发环境密码
+      - DB_NAME=flow_codeblock_go
+      - DB_MAX_OPEN_CONNS=50             # 🔧 开发环境减少连接数
+      - DB_MAX_IDLE_CONNS=10
+      - DB_CONN_MAX_LIFETIME_MIN=30
+      - DB_CONN_MAX_IDLE_TIME_MIN=5
+      
+      # ==================== Redis配置 ====================
+      - REDIS_ENABLED=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=flow_redis_dev    # 开发环境密码
+      - REDIS_DB=0
+      - REDIS_POOL_SIZE=50               # 🔧 开发环境减少连接数
+      - REDIS_MIN_IDLE_CONNS=5
+      - REDIS_DIAL_TIMEOUT_SEC=5
+      - REDIS_READ_TIMEOUT_SEC=3
+      - REDIS_WRITE_TIMEOUT_SEC=3
+      - REDIS_MAX_RETRIES=3
+      
+      # ==================== 🔐 认证配置 ====================
+      # 开发环境使用简单Token（16字符，不包含弱密码关键词）
+      - ADMIN_TOKEN=${ADMIN_TOKEN:-devABCDEFGHJKLMN}
+      
+      # ==================== Token缓存配置 ====================
+      - TOKEN_CACHE_HOT_SIZE=200         # 🔧 开发环境减少缓存
+      - TOKEN_CACHE_HOT_TTL_MINUTES=3
+      - TOKEN_CACHE_REDIS_TTL_MINUTES=30
+      
+      # ==================== 🔥 缓存写入池配置 ====================
+      - CACHE_WRITE_POOL_WORKERS=5       # 🔧 开发环境减少worker
+      - CACHE_WRITE_POOL_QUEUE_SIZE=500  # 🔧 开发环境减少队列
+      - CACHE_WRITE_POOL_SUBMIT_TIMEOUT_MS=50
+      
+      # ==================== Token限流配置 ====================
+      - RATE_LIMIT_HOT_SIZE=200          # 🔧 开发环境减少缓存
+      - RATE_LIMIT_REDIS_TTL_MINUTES=30
+      - RATE_LIMIT_BATCH_SIZE=50
+      
+      # ==================== 🚦 IP限流配置 ====================
+      # 开发环境使用较宽松的限流
+      - IP_RATE_LIMIT_PRE_AUTH=100       # 开发环境更宽松
+      - IP_RATE_LIMIT_PRE_AUTH_BURST=200
+      - IP_RATE_LIMIT_POST_AUTH=500      # 开发环境更宽松
+      - IP_RATE_LIMIT_POST_AUTH_BURST=1000
+      - IP_RATE_LIMIT_GLOBAL=100
+      - IP_RATE_LIMIT_GLOBAL_BURST=200
+      
+      # ==================== 🚀 JavaScript执行器配置 ====================
+      # 开发环境配置（适合本地测试）
+      - RUNTIME_POOL_SIZE=20             # 🔧 开发环境减少池大小
+      - MIN_RUNTIME_POOL_SIZE=10
+      - MAX_RUNTIME_POOL_SIZE=50
+      - RUNTIME_IDLE_TIMEOUT_MIN=5
+      - MAX_CONCURRENT_EXECUTIONS=200    # 🔧 开发环境减少并发
+      - CODE_CACHE_SIZE=50
+      - ALLOW_CONSOLE=true               # 🔧 开发环境允许console
+      
+      # 执行限制
+      - MAX_CODE_LENGTH=65535            # 64KB
+      - MAX_INPUT_SIZE=2097152           # 2MB
+      - MAX_RESULT_SIZE=5242880          # 5MB
+      - EXECUTION_TIMEOUT_MS=30000       # 🔧 开发环境30秒超时
+      
+      # ==================== 🔥 熔断器配置 ====================
+      - CIRCUIT_BREAKER_ENABLED=true
+      - CIRCUIT_BREAKER_MIN_REQUESTS=50  # 🔧 开发环境降低阈值
+      - CIRCUIT_BREAKER_FAILURE_RATIO=0.9
+      - CIRCUIT_BREAKER_TIMEOUT_SEC=10
+      - CIRCUIT_BREAKER_MAX_REQUESTS=50
+      
+      # ==================== Fetch API配置 ====================
+      - FETCH_TIMEOUT_MS=30000           # 30秒
+      - MAX_FORMDATA_SIZE_MB=50          # 🔧 开发环境减少限制
+      - FORMDATA_STREAMING_THRESHOLD_MB=1
+      - ENABLE_CHUNKED_UPLOAD=1
+      - MAX_BLOB_FILE_SIZE_MB=50
+      - FORMDATA_BUFFER_SIZE=1048576     # 1MB
+      - MAX_FILE_SIZE_MB=25
+      
+      # ==================== Go运行时配置 ====================
+      - GOMAXPROCS=0                     # 使用所有CPU
+      - GOGC=100
+    
+    restart: "no"  # 开发环境不自动重启，方便调试
+    
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    
+    # ==================== 🔧 资源限制 ====================
+    # 开发环境较宽松的限制
+    deploy:
+      resources:
+        limits:
+          memory: 2G          # 🔧 2GB足够开发测试
+          cpus: '4.0'         # 🔧 4核CPU
+        reservations:
+          memory: 512M
+          cpus: '1.0'
+    
+    # ==================== 安全配置 ====================
+    # 开发环境不启用严格的安全限制
+    security_opt:
+      - no-new-privileges:true
+    # read_only: false      # 开发环境允许写入
+    tmpfs:
+      - /tmp:size=200m      # 开发环境更大的临时空间
+    
+    # ==================== 健康检查 ====================
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3002/health"]
+      interval: 15s         # 开发环境更频繁检查
+      timeout: 5s
+      retries: 2
+      start_period: 5s
+    
+    # ==================== 网络配置 ====================
+    networks:
+      - flow-dev-network
+    
+    # ==================== 日志配置 ====================
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"     # 开发环境较小的日志文件
+        max-file: "2"
+    
+    # ==================== 卷挂载 ====================
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      # 💡 可选：挂载源码目录以支持热重载（需要配合air等工具）
+      # - ./:/app:ro
+    
+    # ==================== 标签 ====================
+    labels:
+      - "com.flow-codeblock.service=go-executor"
+      - "com.flow-codeblock.version=2.1"
+      - "com.flow-codeblock.environment=development"
+      - "com.flow-codeblock.description=本地测试环境"
+
+  # ====================================================================================
+  # MySQL数据库服务 (开发环境)
+  # ====================================================================================
+  mysql:
+    image: mysql:8.0
+    container_name: flow-mysql-dev
+    environment:
+      - MYSQL_ROOT_PASSWORD=root_dev_password
+      - MYSQL_DATABASE=flow_codeblock_go
+      - MYSQL_USER=flow_user
+      - MYSQL_PASSWORD=flow_password_dev
+      - MYSQL_CHARSET=utf8mb4
+      - MYSQL_COLLATION=utf8mb4_unicode_ci
+    restart: "no"
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "flow_user", "-pflow_password_dev"]
+      timeout: 10s
+      retries: 5
+      interval: 10s
+      start_period: 20s
+    
+    # 资源限制（开发环境）
+    deploy:
+      resources:
+        limits:
+          memory: 1G        # 🔧 开发环境1GB
+          cpus: '2.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    
+    # 网络配置
+    networks:
+      - flow-dev-network
+    
+    # 数据持久化
+    volumes:
+      - mysql_dev_data:/var/lib/mysql
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - /etc/localtime:/etc/localtime:ro
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+    
+    # 标签
+    labels:
+      - "com.flow-codeblock.service=database"
+      - "com.flow-codeblock.environment=development"
+
+  # ====================================================================================
+  # Redis缓存服务 (开发环境)
+  # ====================================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: flow-redis-dev
+    command: redis-server --requirepass flow_redis_dev --maxmemory 512mb --maxmemory-policy allkeys-lru
+    restart: "no"
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "flow_redis_dev", "ping"]
+      timeout: 3s
+      retries: 3
+      interval: 10s
+      start_period: 5s
+    
+    # 资源限制（开发环境）
+    deploy:
+      resources:
+        limits:
+          memory: 512M      # 🔧 开发环境512MB
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    
+    # 网络配置
+    networks:
+      - flow-dev-network
+    
+    # 数据持久化（可选，开发环境可以不持久化）
+    volumes:
+      # - redis_dev_data:/data    # 取消注释以启用数据持久化
+      - /etc/localtime:/etc/localtime:ro
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+    
+    # 标签
+    labels:
+      - "com.flow-codeblock.service=cache"
+      - "com.flow-codeblock.environment=development"
+
+# ====================================================================================
+# 网络配置
+# ====================================================================================
+networks:
+  flow-dev-network:
+    driver: bridge
+    name: flow-dev-network
+
+# ====================================================================================
+# 数据卷
+# ====================================================================================
+volumes:
+  mysql_dev_data:
+    driver: local
+  # redis_dev_data:
+  #   driver: local
