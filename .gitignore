@@ -60,3 +60,4 @@ test/
 .claude/
 *.md
 *.sh
+!README.md
