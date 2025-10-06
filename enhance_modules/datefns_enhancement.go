@@ -219,7 +219,10 @@ func (de *DateFnsEnhancer) Register(registry *require.Registry) error {
 }
 
 // Setup 在 Runtime 上设置模块环境
+// 注意：由于采用白名单策略保留了 Date.prototype.constructor，预加载不是必须的，
+//
+//	但可以提升性能并在启动时验证模块是否正常
 func (de *DateFnsEnhancer) Setup(runtime *goja.Runtime) error {
-	// Date-fns 不需要额外的 Runtime 设置
+	// 不预加载，按需加载
 	return nil
 }

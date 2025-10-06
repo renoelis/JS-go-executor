@@ -61,3 +61,7 @@ test/
 *.md
 *.sh
 !README.md
+!API接口完整文档.md
+
+base64-validator.html
+code-executor-tester.html

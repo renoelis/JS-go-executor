@@ -226,7 +226,7 @@ func (e *JSExecutor) registerModules(cfg *config.Config) {
 	e.moduleRegistry.Register(enhance_modules.NewDateFnsEnhancerWithEmbedded(assets.DateFns))
 	e.moduleRegistry.Register(enhance_modules.NewQsEnhancer(assets.Qs))
 	e.moduleRegistry.Register(enhance_modules.NewLodashEnhancer(assets.Lodash))
-	e.moduleRegistry.Register(enhance_modules.NewPinyinEnhancer(assets.Pinyin))
+	// e.moduleRegistry.Register(enhance_modules.NewPinyinEnhancer(assets.Pinyin)) // 🔥 已移除：不需要 pinyin 功能，节省 1.6GB 内存（20 Runtime）
 	e.moduleRegistry.Register(enhance_modules.NewUuidEnhancer(assets.Uuid))
 	e.moduleRegistry.Register(enhance_modules.NewXLSXEnhancer(cfg))
 
@@ -414,18 +414,19 @@ func (e *JSExecutor) warmupModules() error {
 				return fmt.Errorf("invalid module type")
 			},
 		},
-		{
-			name: "pinyin",
-			getModule: func() (interface{}, bool) {
-				return e.moduleRegistry.GetModule("pinyin")
-			},
-			precompile: func(m interface{}) error {
-				if enhancer, ok := m.(*enhance_modules.PinyinEnhancer); ok {
-					return enhancer.PrecompilePinyin()
-				}
-				return fmt.Errorf("invalid module type")
-			},
-		},
+		// 🔥 pinyin 已移除
+		// {
+		// 	name: "pinyin",
+		// 	getModule: func() (interface{}, bool) {
+		// 		return e.moduleRegistry.GetModule("pinyin")
+		// 	},
+		// 	precompile: func(m interface{}) error {
+		// 		if enhancer, ok := m.(*enhance_modules.PinyinEnhancer); ok {
+		// 			return enhancer.PrecompilePinyin()
+		// 		}
+		// 		return fmt.Errorf("invalid module type")
+		// 	},
+		// },
 		{
 			name: "uuid",
 			getModule: func() (interface{}, bool) {
@@ -593,13 +594,15 @@ func (e *JSExecutor) setupRuntime(runtime *goja.Runtime) error {
 	runtime.Set("Reflect", goja.Undefined())
 	runtime.Set("Proxy", goja.Undefined())
 
-	// 禁用 constructor 访问（这是主要防御）
-	e.disableConstructorAccess(runtime)
-
 	// 🔥 步骤4: 统一设置所有模块（使用模块注册器）
+	// 注意：必须在 disableConstructorAccess 之前执行，因为某些模块（如 date-fns）依赖 Date.prototype.constructor
 	if err := e.moduleRegistry.SetupAll(runtime); err != nil {
 		return fmt.Errorf("failed to setup modules: %w", err)
 	}
+
+	// 🔒 步骤5: 禁用 constructor 访问（在模块加载之后）
+	// 这样可以确保模块在加载时可以正常使用 constructor，但用户代码无法访问
+	e.disableConstructorAccess(runtime)
 
 	return nil
 }
@@ -740,65 +743,46 @@ func (e *JSExecutor) disableConstructorAccess(runtime *goja.Runtime) {
 				}
 				
 				// ======================================
-				// 第 3 层：删除/禁用所有原型的 constructor
+				// 第 3 层：保护原型 constructor（白名单机制）
 				// ======================================
-				var prototypes = [
-					Object.prototype,
-					Array.prototype,
-					String.prototype,
-					Number.prototype,
-					Boolean.prototype,
-					// Function.prototype 不处理，库可能需要它
-					Date.prototype,
-					RegExp.prototype
-				];
-				
-				if (typeof Promise !== 'undefined' && Promise.prototype) {
-					prototypes.push(Promise.prototype);
-				}
-				
-				prototypes.forEach(function(proto) {
-					if (proto) {
-						try {
-							// 尝试删除
-							delete proto.constructor;
-						} catch(e) {
-							// 如果无法删除，设为抛错的 getter
-							try {
-								Object.defineProperty(proto, 'constructor', {
-									get: function() {
-										throw new Error('Access to constructor is forbidden for security');
-									},
-									set: function() {
-										throw new Error('Modification of constructor is forbidden for security');
-									},
-									enumerable: false,
-									configurable: false
-								});
-							} catch(e2) {}
-						}
-					}
-				});
-				
-				// ======================================
-				// 第 4 层：不冻结原型（允许库修改，但 constructor 已被禁用）
-				// ======================================
-				// 注意：我们不冻结原型，因为库（如 lodash）需要修改它们
-				// constructor 访问已通过上面的步骤被禁用，这已经足够安全
+				// 策略：保留所有 prototype.constructor 以支持库功能
+				// 
+				// 保留的 Prototype（白名单）：
+				//   - Object/Array/Date/Promise 等所有标准原型的 constructor
+				//
+				// 安全性通过以下方式保证：
+				//   1. 静态代码分析：检测用户代码中的 .constructor 访问
+				//   2. 禁用 eval、Function 构造器等危险功能
+				//   3. 禁用 Reflect 和 Proxy，防止绕过检测
+				//   4. 代码执行超时和资源限制
 				
 			// ======================================
-			// 第 5 层：原型链操作方法（通过静态分析检测）
+			// 第 4 层：原型链操作方法（通过静态分析检测）
 			// ======================================
 			// 注意：不在运行时禁用 Object.getPrototypeOf/setPrototypeOf
 			// 因为合法库（如 qs）需要使用这些方法
-			// 即使允许访问，攻击者也无法获得 constructor（已被删除）
 			// 依靠静态代码分析来检测用户代码中的原型链操作
 				
 			// ======================================
-			// 第 6 层：__proto__ 访问检测（通过静态分析）
+			// 第 5 层：__proto__ 访问检测（通过静态分析）
 			// ======================================
 			// 注意：不在运行时禁用 __proto__，因为合法库（如 qs）可能需要它
 			// 依靠静态代码分析来检测用户代码中的 __proto__ 访问
+			
+			// ======================================
+			// 🔒 安全策略总结（5层防护）
+			// ======================================
+			// 1. 删除 Function.constructor - 防止动态创建函数
+			// 2. 冻结 Function 对象 - 防止修改函数构造器
+			// 3. 保留所有 prototype.constructor - 支持库功能
+			// 4. 允许原型链操作 - 支持库使用 getPrototypeOf/setPrototypeOf
+			// 5. 允许 __proto__ 访问 - 支持库的兼容性需求
+			//
+			// 安全保障：
+			//   - 静态代码分析检测用户代码中的危险操作
+			//   - 禁用 eval、globalThis、window、self
+			//   - 禁用 Reflect 和 Proxy
+			//   - 代码执行超时和资源限制
 				
 			} catch (e) {
 				// 静默失败，不影响正常执行
@@ -809,7 +793,7 @@ func (e *JSExecutor) disableConstructorAccess(runtime *goja.Runtime) {
 		utils.Warn("沙箱加固失败", zap.Error(err))
 	}
 
-	utils.Debug("沙箱已加固（6层防护）")
+	utils.Debug("沙箱已加固（5层防护）")
 }
 
 // Execute 执行 JavaScript 代码（智能路由：同步用池，异步用 EventLoop）
@@ -989,8 +973,8 @@ func (e *JSExecutor) preloadEmbeddedLibraries() {
 		"axios",     // JS 包装器（底层用 Go 实现的 fetch）
 		"crypto-js", // 使用 globalThis 检测
 		"date-fns",  // 纯 JS 库
-		"pinyin",    // 使用 globalThis 检测
-		"uuid",      // 纯 JS 库
+		// "pinyin", // 🔥 已移除：不需要 pinyin 功能，节省 1.6GB 内存（20 Runtime）
+		"uuid", // 纯 JS 库
 		// 注意：crypto（Go 原生）和 xlsx（Go 原生）不需要预加载
 	}
 

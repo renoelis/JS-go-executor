@@ -134,6 +134,6 @@ func (qe *QsEnhancer) Register(registry *require.Registry) error {
 
 // Setup 在 Runtime 上设置模块环境
 func (qe *QsEnhancer) Setup(runtime *goja.Runtime) error {
-	// qs 不需要额外的 Runtime 设置
+	// 不预加载，按需加载
 	return nil
 }

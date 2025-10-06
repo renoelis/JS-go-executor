@@ -97,13 +97,13 @@ func main() {
 	// 执行器服务
 	executor := service.NewJSExecutor(cfg)
 
-	// ==================== 初始化Controller ====================
-	executorController := controller.NewExecutorController(executor, cfg, tokenService)
-	tokenController := controller.NewTokenController(tokenService, rateLimiterService, cacheWritePool)
-
 	// ==================== 管理员Token ====================
 	// 🔒 从配置中获取已验证的管理员Token（验证逻辑在 config.LoadConfig 中）
 	adminToken := cfg.Auth.AdminToken
+
+	// ==================== 初始化Controller ====================
+	executorController := controller.NewExecutorController(executor, cfg, tokenService)
+	tokenController := controller.NewTokenController(tokenService, rateLimiterService, cacheWritePool, adminToken)
 
 	// ==================== 设置路由 ====================
 	ginRouter := router.SetupRouter(
@@ -115,6 +115,9 @@ func main() {
 		cfg,            // 🔥 传入配置（用于 IP 限流）
 		cacheWritePool, // 🔥 传入缓存写入池（用于监控）
 	)
+
+	// ==================== 加载HTML模板 ====================
+	ginRouter.LoadHTMLGlob("templates/*")
 
 	// 启动HTTP服务器
 	server := &http.Server{

@@ -86,11 +86,12 @@ services:
       #   🖥️  2H4G服务器: POOL=50, MAX_CONCURRENT=400, TIMEOUT=120000
       #   🖥️  4H8G服务器: POOL=100, MAX_CONCURRENT=800, TIMEOUT=180000
       #   🖥️  8H16G服务器: POOL=200, MAX_CONCURRENT=1600, TIMEOUT=300000
-      - RUNTIME_POOL_SIZE=100            # Runtime池大小 (默认: 100)
-      - MIN_RUNTIME_POOL_SIZE=50         # 最小池大小 (默认: 50)
-      - MAX_RUNTIME_POOL_SIZE=200        # 最大池大小 (默认: 200)
+      # 🔥 当前配置: 6GB内存，支持 200 Runtime
+      - RUNTIME_POOL_SIZE=200            # Runtime池大小 (200 个)
+      - MIN_RUNTIME_POOL_SIZE=100        # 最小池大小 (100 个)
+      - MAX_RUNTIME_POOL_SIZE=200        # 最大池大小 (200 个)
       - RUNTIME_IDLE_TIMEOUT_MIN=5       # Runtime空闲超时(分钟)
-      - MAX_CONCURRENT_EXECUTIONS=800    # 🔧 最大并发数 (4H8G服务器推荐)
+      - MAX_CONCURRENT_EXECUTIONS=1600   # 🔧 最大并发数 (200 Runtime 推荐)
       - CODE_CACHE_SIZE=100              # 代码缓存大小
       - ALLOW_CONSOLE=false              # 🔧 生产环境禁用console
       
@@ -119,7 +120,16 @@ services:
       
       # ==================== Go运行时配置 ====================
       - GOMAXPROCS=0                     # 0=使用所有CPU核心
-      - GOGC=100                         # GC目标百分比
+      - GOGC=75                          # 🔧 GC目标百分比 (100→75，更频繁GC，降低内存峰值)
+      
+      # ==================== 🔧 测试工具配置 ====================
+      # 测试工具页面配置 - 访问地址: http://your-domain:3002/flow/test-tool
+      # 可根据部署环境修改这些链接
+      - TEST_TOOL_API_URL=http://localhost:3002                                      # API服务地址
+      - TEST_TOOL_AI_URL=https://qingflow.com/pc-ultron/share/agent/289302286342078465  # 轻翼AI助手链接
+      - TEST_TOOL_HELP_URL=https://exiao.yuque.com/ixwxsb/cqfg2y/or5052bo2dtukro2  # 帮助文档链接
+      - TEST_TOOL_EXAMPLE_URL=https://exiao.yuque.com/rlf3k1/oanb79/tlty7ic7szfr2v7v?singleDoc#  # 代码块示例链接
+      - TEST_TOOL_APPLY_URL=https://qingflow.com/f/9cah24om6402                    # 申请开通服务链接
     
     restart: unless-stopped
     

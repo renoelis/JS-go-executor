@@ -35,6 +35,9 @@ WORKDIR /app
 # 从builder阶段复制二进制文件
 COPY --from=builder /app/flow-codeblock-go .
 
+# 复制 templates 目录（测试工具页面）
+COPY --from=builder /app/templates ./templates
+
 # 注意：所有外部库（crypto-js, lodash, uuid等）都已通过 go:embed 嵌入到二进制文件中
 # 不需要再复制 external-libs 目录
 

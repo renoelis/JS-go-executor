@@ -4,19 +4,9 @@
 
 ## 📖 快速导航
 
-- [🚀 核心特性](#-核心特性) | [📊 性能对比](#-性能对比) | [🏗️ 项目结构](#️-项目结构)
-- [🚀 快速开始](#-快速开始) | [📡 API接口](#-api接口) | [🔧 配置参数](#-配置参数)
-- [💡 代码示例](#-代码示例) | [📚 完整文档](#-文档) | [🔍 故障排查](#-故障排查)
-
-### 🔗 重要文档链接
-- **[模块增强文档](ENHANCED_MODULES.md)** ⭐ 所有可用模块的详细文档
-- **[认证和限流快速开始](认证和限流快速开始指南.md)** ⭐ 认证和限流功能使用指南
-- **[认证和限流实施方案](认证和限流实现方案评估.md)** - 详细的技术架构文档
-- **[测试报告](测试报告.md)** - 完整的功能测试报告
-- **[XLSX 模块使用指南](test/xlsx/README.md)** - Excel 文件处理完整教程
-- **[Console 控制功能](CONSOLE_CONTROL_FEATURE.md)** - Console 输出控制说明
-- **[优雅关闭实施报告](GRACEFUL_SHUTDOWN_FINAL_REPORT.md)** - Graceful Shutdown 实现详情
-- **[环境变量配置](env.example)** - 完整的环境变量配置说明
+- [🚀 核心特性](#-核心特性) | [📊 性能对比](#-性能对比) | [🎨 在线测试工具](#-在线测试工具)
+- [🏗️ 项目结构](#️-项目结构) | [🚀 快速开始](#-快速开始) | [📡 API接口](#-api接口)
+- [🔧 配置参数](#-配置参数) | [💡 代码示例](#-代码示例) | [📚 完整文档](#-文档) | [🔍 故障排查](#-故障排查)
 
 ## 🚀 核心特性
 
@@ -29,10 +19,12 @@
 - **智能并发限制**: 基于系统内存自动计算最优并发数
 
 ### 🛡️ 安全沙箱
-- **危险函数禁用**: eval等危险函数被完全禁用
+- **危险函数禁用**: eval、globalThis、window、self 等危险函数被完全禁用
 - **危险模块禁用**: fs、path、child_process等模块被拦截
 - **代码解析级检查**: 在执行前检测危险模式和不支持语法
-- **多层沙箱防护**: 6层防护机制（Function、constructor、Reflect、Proxy等）
+- **多层沙箱防护**: 5层防护机制（Function.constructor 删除、Function 冻结、Reflect/Proxy 禁用）
+- **白名单策略**: 保留必要的 prototype.constructor 以支持库功能（lodash, date-fns 等）
+- **静态代码分析**: 检测用户代码中的 constructor 访问，防止恶意利用
 - **资源限制**: 代码长度、执行时间、输入输出大小限制
 - **友好错误提示**: 中文错误消息和模块引入建议
 
@@ -54,11 +46,11 @@
 - **Axios**: 基于Fetch的axios兼容层(95%+ API兼容)，推荐用于文件操作
 
 #### 工具库
-- **Date-fns**: 完整的date-fns库支持，时间处理利器
-- **Lodash**: 工具函数库，数据处理必备
-- **QS**: 查询字符串解析和序列化
-- **Pinyin**: 中文拼音转换
-- **UUID**: UUID生成(v1/v4)
+- **Date-fns**: 完整的date-fns库支持，时间处理利器（预加载）
+- **Lodash**: 工具函数库，数据处理必备（按需加载）
+- **QS**: 查询字符串解析和序列化（预加载）
+- **UUID**: UUID生成(v1/v4)（按需加载）
+- ~~**Pinyin**: 中文拼音转换~~ (v2.2已移除，节省 1.6GB 内存)
 
 #### Excel处理
 - **XLSX**: ⭐ Go原生Excel操作(基于excelize v2.9.1)
@@ -101,6 +93,82 @@
 | 部署大小 | 500MB+ | 50MB | **10x** |
 | 启动时间 | 10-30s | 1-3s | **5-10x** |
 
+### 🎨 在线测试工具
+
+Flow-CodeBlock 提供了一个功能强大的**在线测试工具**，无需编写 API 请求代码即可快速测试和调试 JavaScript 代码执行。
+
+#### 访问地址
+```
+http://your-server:3002/flow/test-tool
+```
+
+#### 核心功能
+- ✅ **专业代码编辑器**: 集成 Ace Editor，支持语法高亮、代码补全、实时错误检查
+- ✅ **全屏编辑模式**: 一键切换大屏编辑，提供更舒适的代码编写体验（500px 高度 + 全屏模式）
+- ✅ **完整示例库**: 预置 8 种完整示例（简单计算、Axios 请求、Fetch API、Lodash、加密、日期处理、XLSX 处理等）
+- ✅ **Token 查询**: 通过 ws_id 和 email 快速查询和填充 Access Token（支持单/多 Token 智能展示）
+- ✅ **Base64 编解码**: 内置编解码工具，支持一键复制和验证
+- ✅ **实时执行结果**: 黑色终端风格的结果展示区，支持语法高亮和 JSON 格式化
+- ✅ **响应式设计**: 两栏布局，代码区和结果区并排显示，充分利用屏幕空间
+- ✅ **环境变量配置**: 支持通过环境变量自定义 API URL、外部链接等
+
+#### 配置说明
+
+通过环境变量自定义测试工具（详见 `TEST_TOOL_CONFIG.md`）：
+
+```bash
+# API 服务地址
+TEST_TOOL_API_URL=http://localhost:3002/flow/codeblock
+
+# 外部链接
+TEST_TOOL_AI_URL=https://qingflow.com/pc-ultron/share/agent/289302286342078465
+TEST_TOOL_HELP_URL=https://exiao.yuque.com/ixwxsb/cqfg2y/or5052bo2dtukro2
+TEST_TOOL_APPLY_URL=https://qingflow.com/f/9cah24om6402
+TEST_TOOL_EXAMPLE_URL=https://exiao.yuque.com/rlf3k1/oanb79/tlty7ic7szfr2v7v?singleDoc#
+```
+
+#### 预置代码示例
+
+| 示例类型 | 功能说明 | 使用场景 |
+|---------|---------|---------|
+| 简单计算 | 基础数据处理和计算 | 入门学习 |
+| Axios 请求 | HTTP GET 请求和数据处理 | API 调用 |
+| Fetch API | 现代 Fetch API 使用 | 标准 Web 请求 |
+| Lodash | 数据分组和排序 | 复杂数据处理 |
+| 数据加密 | SHA256/HMAC 加密 | 安全功能 |
+| 日期处理 | Date-fns 日期格式化 | 时间处理 |
+| XLSX 读取 | 从 URL 读取 Excel | 表格数据处理 |
+
+#### 使用流程
+
+1. **访问测试工具页面**
+2. **查询或输入 Access Token**（点击"查询 Token"按钮，输入 ws_id 和 email）
+3. **选择完整示例**（在 Input 参数区点击示例按钮，自动加载 Input 和代码）
+4. **编辑代码**（可使用全屏编辑器获得更好体验）
+5. **运行测试**（点击"运行代码"查看执行结果）
+6. **查看结果**（支持 JSON 格式化和错误信息高亮）
+
+#### 技术特点
+
+- **Ace Editor 本地部署**: 不依赖外部 CDN，国内访问稳定（加载时间 < 20ms）
+- **轻量级集成**: 编辑器资源总大小 ~960KB，对性能影响微乎其微
+- **智能 Token 管理**: 自动检测单/多 Token 场景，提供最佳用户体验
+- **环境变量驱动**: 所有配置均可通过环境变量修改，无需改代码
+
+### 💾 内存优化（v2.2+）
+
+| 配置 | 20 Runtime | 200 Runtime | Docker 限制 |
+|------|-----------|------------|------------|
+| 优化配置（推荐） | 88MB (4%) | 900MB-1.5GB | 2GB ✅ |
+| 完整预加载 | 570MB (28%) | 5.7GB | 8GB |
+| 包含 pinyin | 2GB (100%) ❌ | 21.7GB | 24GB ❌ |
+
+**优化策略**:
+- ✅ **共享编译缓存**: 所有模块使用 `sync.Once`，只编译一次
+- ✅ **精简预加载**: 只预加载常用小库（date-fns, qs, crypto-js）
+- ✅ **按需加载**: 大库和不常用库按需加载（lodash, uuid）
+- ✅ **移除 pinyin**: 节省 1.6GB (20 Runtime) 或 16GB (200 Runtime)
+
 ## 🏗️ 项目结构
 
 ```
@@ -112,8 +180,8 @@ go-executor/
 │   ├── database.go          # 🔥 MySQL数据库配置
 │   └── redis.go             # 🔥 Redis配置
 ├── controller/
-│   ├── executor_controller.go # HTTP控制器
-│   └── token_controller.go    # 🔥 Token管理控制器
+│   ├── executor_controller.go # HTTP控制器 + 测试工具页面
+│   └── token_controller.go    # 🔥 Token管理控制器 + 公开Token查询
 ├── middleware/              # 🔥 中间件
 │   ├── auth.go              # Token认证中间件
 │   ├── admin_auth.go        # 管理员认证中间件
@@ -159,10 +227,17 @@ go-executor/
 │   └── body_types.go             # HTTP请求体类型
 ├── scripts/
 │   └── init.sql             # 🔥 数据库初始化脚本
+├── templates/               # 🎨 HTML模板
+│   └── test-tool.html       # 在线测试工具页面
 ├── assets/
-│   ├── embedded.go          # 嵌入式资源
+│   ├── embedded.go          # 嵌入式资源（包含Ace Editor）
 │   ├── crypto-js.min.js     # CryptoJS库
 │   ├── axios.js             # Axios库
+│   ├── codemirror/          # 🎨 Ace Editor本地资源
+│   │   ├── ace.js           # Ace编辑器核心
+│   │   ├── mode-javascript.js # JavaScript语法模式
+│   │   ├── theme-monokai.js   # Monokai主题
+│   │   └── worker-javascript.js # JS语法检查Worker
 │   └── external-libs/       # 其他外部库
 ├── utils/
 │   ├── code_analyzer.go     # 代码分析器（智能路由）
@@ -234,8 +309,23 @@ docker-compose -f docker-compose.prod.yml up -d
 docker-compose -f docker-compose.prod.yml logs -f
 ```
 
+**生产环境配置建议**（200 Runtime）:
+```yaml
+# docker-compose.prod.yml
+memory: 2GB    # 优化后只需 2GB（移除 pinyin 前需要 24GB）
+cpus: '2.0'    # 2核 CPU
+
+# env.production
+RUNTIME_POOL_SIZE=200
+MAX_CONCURRENT_EXECUTIONS=1600
+GOGC=100
+```
+
 📚 **详细文档**:
 - [Docker 环境配置对比](DOCKER_ENVIRONMENTS.md) - 开发/生产/测试环境详细说明
+- [生产环境优化指南](PRODUCTION_200_RUNTIME_OPTIMIZATION.md) - 200 Runtime 优化方案
+- [内存分析报告](MEMORY_ANALYSIS.md) - 详细的内存占用分析
+- [Pinyin 移除报告](PINYIN_REMOVAL_SUCCESS.md) - 移除 pinyin 的收益分析
 - [生产环境部署指南](PRODUCTION_DEPLOYMENT.md) - 完整的生产部署流程
 - [旧版 Docker 文档](DOCKER.md) - 基础 Docker 使用说明
 
@@ -415,6 +505,47 @@ go run cmd/main.go
 
 获取服务基本信息和可用端点。
 
+### GET /flow/test-tool - 在线测试工具
+
+访问功能完善的在线测试工具页面，支持可视化代码编辑、执行和调试。
+
+**功能特性:**
+- 🎨 专业代码编辑器（Ace Editor，语法高亮、代码补全）
+- 📦 8种完整示例（一键加载Input和代码）
+- 🔍 Token查询功能（ws_id + email）
+- 🔐 Base64编解码工具
+- 📊 实时执行结果展示
+- 🖥️ 全屏编辑模式
+
+### GET /flow/query-token - 公开Token查询
+
+通过 `ws_id` 和 `email` 查询Token信息（无需管理员认证）。
+
+**请求参数:**
+```
+GET /flow/query-token?ws_id=my_workspace&email=user@example.com
+```
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": 1,
+      "ws_id": "my_workspace",
+      "email": "user@example.com",
+      "access_token": "flow_a1b2c3d4...",
+      "created_at": "2025-10-06 10:00:00",
+      "expires_at": "2025-11-05 10:00:00",
+      "is_active": true,
+      "rate_limit_per_minute": 60,
+      "rate_limit_burst": 10
+    }
+  ]
+}
+```
+
 ## 🔧 配置参数
 
 通过环境变量配置（参见 `env.example`）：
@@ -435,12 +566,17 @@ go run cmd/main.go
 
 ### Runtime池配置
 
-| 环境变量 | 默认值 | 说明 |
-|----------|--------|------|
-| `RUNTIME_POOL_SIZE` | 100 | 初始Runtime池大小 |
-| `MIN_RUNTIME_POOL_SIZE` | 50 | 最小池大小（动态收缩下限） |
-| `MAX_RUNTIME_POOL_SIZE` | 200 | 最大池大小（动态扩展上限） |
-| `RUNTIME_IDLE_TIMEOUT_MIN` | 5 | Runtime空闲超时（分钟） |
+| 环境变量 | 默认值 | 说明 | 推荐值 |
+|----------|--------|------|--------|
+| `RUNTIME_POOL_SIZE` | 100 | 初始Runtime池大小 | 20 (开发) / 200 (生产) |
+| `MIN_RUNTIME_POOL_SIZE` | 50 | 最小池大小（动态收缩下限） | 10 (开发) / 100 (生产) |
+| `MAX_RUNTIME_POOL_SIZE` | 200 | 最大池大小（动态扩展上限） | 50 (开发) / 200 (生产) |
+| `RUNTIME_IDLE_TIMEOUT_MIN` | 5 | Runtime空闲超时（分钟） | 5 |
+
+**内存计算**:
+- 每个 Runtime 约占用 13-15MB（不含大库）
+- 20 Runtime ≈ 260-300MB
+- 200 Runtime ≈ 2.6-3GB（推荐 Docker 限制 4-6GB）
 
 ### 并发和资源限制
 
@@ -482,6 +618,33 @@ go run cmd/main.go
 |----------|--------|------|
 | `GOMAXPROCS` | CPU核心数 | Go最大处理器数 |
 | `GOGC` | 100 | GC目标百分比 |
+
+### 熔断器配置 (Circuit Breaker)
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `CIRCUIT_BREAKER_ENABLED` | true | 是否启用熔断器 |
+| `CIRCUIT_BREAKER_MIN_REQUESTS` | 100 | 触发熔断的最小请求数 |
+| `CIRCUIT_BREAKER_FAILURE_RATIO` | 0.9 | 失败率阈值（0.0-1.0，90%） |
+| `CIRCUIT_BREAKER_TIMEOUT_SEC` | 10 | Open状态持续时间（秒） |
+| `CIRCUIT_BREAKER_MAX_REQUESTS` | 100 | Half-Open状态探测请求数 |
+
+**熔断器作用**：
+- 防止雪崩效应：当系统过载时自动熔断，避免级联故障
+- 快速失败：失败率超过阈值时快速拒绝请求，保护系统
+- 自动恢复：经过timeout后进入half-open状态，尝试恢复服务
+
+### 测试工具配置 (Test Tool)
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `TEST_TOOL_API_URL` | http://localhost:3002/flow/codeblock | API服务地址 |
+| `TEST_TOOL_AI_URL` | https://qingflow.com/... | 轻翼AI助手链接 |
+| `TEST_TOOL_HELP_URL` | https://exiao.yuque.com/... | 帮助文档链接 |
+| `TEST_TOOL_APPLY_URL` | https://qingflow.com/... | 申请服务链接 |
+| `TEST_TOOL_EXAMPLE_URL` | https://exiao.yuque.com/... | 示例文档链接 |
+
+**配置说明**：所有链接均可自定义，详见 `TEST_TOOL_CONFIG.md`
 
 ### 推荐配置场景
 
@@ -647,11 +810,26 @@ go run load_test.go
 - [x] 完整测试覆盖（25684+测试，100%通过）
 - [x] 支持1000+并发（实测通过）
 
-### 第四阶段 (长期规划)
+### 第四阶段 ✅ (已完成 - v2.2-2.3)
+- [x] 内存优化（移除pinyin，节省95.7%内存）
+- [x] 共享编译缓存优化
+- [x] 熔断器机制（防止雪崩效应）
+- [x] 在线测试工具（Web UI）
+  - [x] Ace Editor代码编辑器（本地部署）
+  - [x] 8种完整示例库
+  - [x] Token查询功能
+  - [x] Base64编解码工具
+  - [x] 全屏编辑模式
+  - [x] 环境变量配置支持
+- [x] 公开Token查询API
+- [x] 静态资源本地化（Ace Editor ~960KB）
+
+### 第五阶段 (长期规划)
 - [ ] 性能持续优化
 - [ ] 监控和日志系统完善
 - [ ] 分布式执行支持
 - [ ] WebAssembly模块支持
+- [ ] 测试工具功能增强（代码版本管理、历史记录等）
 
 ## 📚 文档
 
@@ -659,9 +837,20 @@ go run load_test.go
 - **[ENHANCED_MODULES.md](ENHANCED_MODULES.md)** - 完整的模块增强文档
 - **[认证和限流快速开始](认证和限流快速开始指南.md)** ⭐ 认证和限流功能使用指南
 - **[认证和限流实施方案](认证和限流实现方案评估.md)** - 详细的技术架构文档（37页）
-- **[CONSOLE_CONTROL_FEATURE.md](CONSOLE_CONTROL_FEATURE.md)** - Console控制功能文档
-- **[GRACEFUL_SHUTDOWN_FINAL_REPORT.md](GRACEFUL_SHUTDOWN_FINAL_REPORT.md)** - 优雅关闭实施报告
 - **[env.example](env.example)** - 环境变量配置示例
+
+### 测试工具文档 ⭐ (v2.3+)
+- **[TEST_TOOL_CONFIG.md](TEST_TOOL_CONFIG.md)** - 在线测试工具配置说明
+- **[TESTTOOL_DEPLOYMENT_SUMMARY.md](TESTTOOL_DEPLOYMENT_SUMMARY.md)** - 测试工具部署总结
+- **[ACE_EDITOR_LOCAL_DEPLOYMENT.md](ACE_EDITOR_LOCAL_DEPLOYMENT.md)** - Ace编辑器本地部署指南
+
+### 优化和架构文档 ⭐ (v2.2+)
+- **[PINYIN_REMOVAL_SUCCESS.md](PINYIN_REMOVAL_SUCCESS.md)** - Pinyin 移除报告（节省 95.7% 内存）
+- **[MEMORY_ANALYSIS.md](MEMORY_ANALYSIS.md)** - 内存占用详细分析
+- **[SHARED_COMPILATION_CACHE_EXPLAINED.md](SHARED_COMPILATION_CACHE_EXPLAINED.md)** - 共享编译缓存详解
+- **[PRODUCTION_200_RUNTIME_OPTIMIZATION.md](PRODUCTION_200_RUNTIME_OPTIMIZATION.md)** - 200 Runtime 生产优化方案
+- **[CONSTRUCTOR_WHITELIST_STRATEGY.md](CONSTRUCTOR_WHITELIST_STRATEGY.md)** - Constructor 白名单策略
+- **[ISSUE_RESOLUTION_SUMMARY.md](ISSUE_RESOLUTION_SUMMARY.md)** - 问题解决总结
 
 ### 模块文档
 - **[XLSX README](test/xlsx/README.md)** - ⭐ XLSX模块使用指南
@@ -671,8 +860,6 @@ go run load_test.go
 - **[测试报告](测试报告.md)** - 功能测试报告（20个测试，100%通过）
 - **[压力测试完整报告](压力测试完整报告.md)** - 压力测试详细分析
 - **[高并发测试报告](高并发测试报告.md)** - 500和1000并发测试报告
-- **[Bug修复和压力测试总结](Bug修复和压力测试总结.md)** - Bug修复总结
-- **[最终测试完成报告](最终测试完成报告.md)** - 完整测试总结（25684+测试）
 - **[测试用例](test/)** - 完整的功能测试示例
 - **[XLSX测试套件](test/xlsx/)** - XLSX模块测试(31个测试，100%通过)
 
@@ -769,6 +956,9 @@ X-RateLimit-Burst-Limit: 10
 |------|------|------|
 | GET | `/health` | 简单健康检查 |
 | GET | `/` | API信息 |
+| GET | `/flow/test-tool` | ⭐ 在线测试工具页面 |
+| GET | `/flow/query-token` | Token查询（需要ws_id+email参数） |
+| GET | `/flow/assets/*` | 静态资源（Ace Editor等） |
 
 #### 用户端点（需要Token认证）
 
@@ -976,18 +1166,27 @@ return await fetchUserData();
 
 ## 🔍 故障排查
 
-### Runtime池相关
+### Runtime池和内存相关
 
 **问题：服务启动后内存占用高**
 - 检查 `RUNTIME_POOL_SIZE` 和 `MAX_RUNTIME_POOL_SIZE` 配置
 - 减少初始池大小，依赖动态扩展
 - 调整 `RUNTIME_IDLE_TIMEOUT_MIN` 加快空闲Runtime释放
+- **检查预加载策略**: 移除不需要的大库（如 pinyin 可节省 1.6GB）
+
+**问题：内存使用率接近 100%，容器 OOM**
+- ⚠️ **关键**: 检查是否预加载了 pinyin 库（占用 73% 内存）
+- 移除不需要的模块注册（参考 `PINYIN_REMOVAL_SUCCESS.md`）
+- 增加 Docker 内存限制
+- 优化预加载策略：只预加载常用小库（date-fns, qs, crypto-js）
+- 大库改为按需加载（lodash, uuid）
 
 **问题：高并发时出现超时**
 - 增加 `MAX_CONCURRENT_EXECUTIONS` 
 - 增加 `MAX_RUNTIME_POOL_SIZE`
 - 检查代码是否有性能瓶颈
 - 查看 `/flow/status` 接口的并发统计
+- 检查内存使用率，确保 < 80%
 
 ### 代码执行相关
 
@@ -1071,8 +1270,45 @@ MIT License
 
 ---
 
+## 📝 版本更新记录
+
+### v2.3 (2025-10-06) - 在线测试工具
+- ✨ 新增在线测试工具（`/flow/test-tool`）
+- 🎨 集成 Ace Editor 代码编辑器（本地部署，~960KB）
+- 📦 预置 8 种完整示例（简单计算、Axios、Fetch、Lodash、加密、日期、XLSX等）
+- 🔍 新增公开 Token 查询 API（`/flow/query-token`）
+- 🖥️ 全屏编辑模式（500px 主编辑器 + 全屏模式）
+- ⚙️ 环境变量驱动配置（API URL、外部链接等）
+- 📊 智能 Token 展示（单/多 Token 自动适配）
+- 🔐 Base64 编解码工具集成
+
+### v2.2 (2025-10) - 内存优化
+- 🚀 移除 pinyin 模块，节省 95.7% 内存（200 Runtime: 21.7GB → 900MB）
+- 💾 共享编译缓存优化（`sync.Once` 确保只编译一次）
+- 🎯 优化预加载策略（只预加载常用小库）
+- 🔥 新增熔断器机制（防止雪崩效应）
+- 📈 Docker 内存需求大幅降低（2GB 可运行 200 Runtime）
+
+### v2.1 (2025-09) - 认证和限流
+- 🔐 Token 认证机制（基于数据库）
+- 🛡️ 三层限流架构（热/温/冷数据层）
+- 💾 混合缓存系统（内存 LRU + Redis）
+- 📊 完整管理接口（Token 管理、统计、监控）
+- 🔄 降级保护机制（Redis/MySQL 故障自动降级）
+- ✅ 1000+ 并发压测通过
+
+### v2.0 (2025-08) - 基础架构
+- ⚡ Go + goja 基础执行器
+- 📦 主流 npm 模块支持（Buffer、Crypto、Axios、Lodash 等）
+- 🎯 智能执行路由（同步/异步自动识别）
+- 🏊 动态 Runtime 池（自动扩缩容）
+- 🔒 多层安全沙箱（6 层防护）
+- 📊 LRU 代码缓存
+
+---
+
 **⚡ Go + goja = 高性能 + 简单部署 + 低资源消耗**
 
 **📦 支持主流npm模块 + 智能执行路由 + 动态资源管理**
 
-**🏗️ 模块化架构 + 统一管理 + 优雅关闭**
+**🏗️ 模块化架构 + 统一管理 + 优雅关闭 + 在线测试工具**

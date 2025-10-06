@@ -1,0 +1,2241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flow-CodeBlock 代码执行测试工具</title>
+    
+    <!-- Ace Editor 本地资源 -->
+    <script src="/flow/assets/ace.js"></script>
+    <script src="/flow/assets/mode-javascript.js"></script>
+    <script src="/flow/assets/theme-monokai.js"></script>
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            padding: 30px;
+        }
+
+        .section {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #e9ecef;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .section-title .icon {
+            font-size: 20px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            color: #495057;
+            margin-bottom: 8px;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: 'Courier New', monospace;
+            transition: all 0.3s;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        textarea.form-input {
+            resize: vertical;
+            min-height: 120px;
+            line-height: 1.5;
+        }
+
+        .code-editor {
+            min-height: 300px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .btn {
+            flex: 1;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #5a6268;
+            transform: translateY(-2px);
+        }
+
+        .btn-success {
+            background: #28a745;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #218838;
+            transform: translateY(-2px);
+        }
+
+        .btn-info {
+            background: #17a2b8;
+            color: white;
+        }
+
+        .btn-info:hover {
+            background: #138496;
+            transform: translateY(-2px);
+        }
+
+        .btn-warning {
+            background: #ffc107;
+            color: #212529;
+        }
+
+        .btn-warning:hover {
+            background: #e0a800;
+            transform: translateY(-2px);
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c82333;
+            transform: translateY(-2px);
+        }
+
+        .btn-primary {
+            background: #007bff;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #0056b3;
+            transform: translateY(-2px);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        .result-section {
+            grid-column: 1 / -1;
+        }
+
+        .result-box {
+            background: #ffffff;
+            color: #333;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.8;
+            min-height: 400px;
+            height: calc(100vh - 200px);
+            max-height: 600px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .result-box.success {
+            border-left: 4px solid #28a745;
+            background: #f8fff9;
+        }
+
+        .result-box.error {
+            border-left: 4px solid #dc3545;
+            background: #fff8f8;
+        }
+
+        /* Postman 风格的 JSON 语法高亮 */
+        .json-key {
+            color: #0b5394;
+            font-weight: 500;
+        }
+
+        .json-string {
+            color: #6a9955;
+        }
+
+        .json-number {
+            color: #b08968;
+        }
+
+        .json-boolean {
+            color: #0451a5;
+            font-weight: bold;
+        }
+
+        .json-null {
+            color: #808080;
+            font-weight: bold;
+        }
+
+        .json-bracket {
+            color: #383838;
+            font-weight: bold;
+        }
+
+        .json-punctuation {
+            color: #383838;
+        }
+
+        .alert {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .alert.show {
+            display: block;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .alert-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .alert-warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+
+        .info-box {
+            background: #f8f9fa;
+            border-left: 4px solid #28a745;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 15px;
+            line-height: 1.6;
+        }
+
+        .info-box strong {
+            display: block;
+            margin-bottom: 8px;
+            color: #1976D2;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #6c757d;
+            text-transform: uppercase;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .loading.show {
+            display: block;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge-success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .badge-error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .example-links {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+
+        .example-link {
+            padding: 6px 12px;
+            background: #e9ecef;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid #dee2e6;
+        }
+
+        .example-link:hover {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+
+        .config-section {
+            background: #fff9e6;
+            border: 1px solid #ffe066;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+
+        .config-label {
+            font-size: 13px;
+            font-weight: 600;
+            color: #856404;
+            margin-bottom: 8px;
+        }
+
+        /* 弹窗样式 */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .modal-overlay.show {
+            display: flex;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 16px;
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            animation: slideUp 0.3s ease;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(50px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .modal-header {
+            font-size: 22px;
+            font-weight: 700;
+            color: #333;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-bottom: 2px solid #e9ecef;
+            padding-bottom: 15px;
+        }
+
+        .modal-close {
+            margin-left: auto;
+            background: none;
+            border: none;
+            font-size: 28px;
+            color: #6c757d;
+            cursor: pointer;
+            transition: all 0.2s;
+            padding: 0;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-close:hover {
+            color: #dc3545;
+            transform: rotate(90deg);
+        }
+
+        .token-result {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 20px;
+        }
+
+        .token-item {
+            padding: 10px 0;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .token-item:last-child {
+            border-bottom: none;
+        }
+
+        .token-label {
+            font-size: 12px;
+            color: #6c757d;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+
+        .token-value {
+            font-size: 14px;
+            color: #333;
+            font-family: 'Courier New', monospace;
+            word-break: break-all;
+        }
+
+        .token-value.expired {
+            color: #dc3545;
+        }
+
+        .token-value.active {
+            color: #28a745;
+        }
+
+        /* 全屏代码编辑器样式 */
+        .fullscreen-editor-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.95);
+            z-index: 10000;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .fullscreen-editor-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+        }
+
+        .fullscreen-editor-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            color: white;
+        }
+
+        .fullscreen-editor-title {
+            font-size: 20px;
+            font-weight: bold;
+        }
+
+        .fullscreen-editor-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .fullscreen-editor-textarea {
+            flex: 1;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            border: 2px solid #333;
+            border-radius: 8px;
+            padding: 20px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', 'source-code-pro', monospace;
+            font-size: 16px;
+            line-height: 1.6;
+            resize: none;
+            outline: none;
+        }
+
+        .fullscreen-editor-textarea:focus {
+            border-color: #667eea;
+        }
+
+        .fullscreen-btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .fullscreen-btn-save {
+            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+            color: white;
+        }
+
+        .fullscreen-btn-save:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(40, 167, 69, 0.5);
+        }
+
+        .fullscreen-btn-close {
+            background: linear-gradient(135deg, #6c757d 0%, #495057 100%);
+            color: white;
+        }
+
+        .fullscreen-btn-close:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(108, 117, 125, 0.5);
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+            to {
+                opacity: 1;
+            }
+        }
+
+        /* Ace Editor 编辑器样式 */
+        #codeEditorContainer {
+            margin-top: 10px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            min-height: 500px;
+            height: 500px;
+            font-size: 15px;
+        }
+
+        #codeEditorContainer:focus-within {
+            outline: 2px solid #667eea;
+            outline-offset: 2px;
+        }
+
+        /* 全屏编辑器的 Ace Editor 样式 */
+        #fullscreenEditorContainer {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .ace_editor {
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', 'source-code-pro', monospace;
+            font-size: 15px !important;
+        }
+
+        .fullscreen-ace-editor {
+            font-size: 16px !important;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🚀 Flow-CodeBlock 代码执行测试工具</h1>
+            <p>支持 JavaScript ES6+、异步操作、HTTP 请求、加密等功能</p>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- 使用说明和认证配置 - 并排显示 -->
+            <div class="section">
+                <div class="section-title">
+                    <span class="icon">📌</span>
+                    使用说明
+                </div>
+                <div class="info-box">
+                    1. 输入 Access Token（必需）<br>
+                    2. 填写 Input 参数（JSON 格式）<br>
+                    3. 编写 JavaScript 代码<br>
+                    4. 点击"运行代码"执行测试<br>
+                    5. 查看执行结果或报错信息<br><br>
+                    <strong>📚 相关链接：</strong><br>
+                    • <a href="{{.AiAssistantUrl}}" target="_blank" style="color: #28a745; text-decoration: none;">轻翼AI：代码块AI助手</a><br>
+                    • <a href="{{.HelpDocUrl}}" target="_blank" style="color: #28a745; text-decoration: none;">Flow CodeBlock 帮助文档</a><br>
+                    • <a href="{{.ExampleDocUrl}}" target="_blank" style="color: #28a745; text-decoration: none;">代码块示例</a>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">
+                    <span class="icon">🔐</span>
+                    认证配置
+                </div>
+
+                <div class="config-section">
+                    <div class="config-label">API 服务地址</div>
+                    <input type="text" 
+                           id="apiUrl" 
+                           class="form-input" 
+                           value="{{.ApiUrl}}"
+                           placeholder="{{.ApiUrl}}">
+                </div>
+
+                <div class="config-section">
+                    <div class="config-label">Access Token <span style="color: red;">*</span></div>
+                    <input type="text" 
+                           id="accessToken" 
+                           class="form-input" 
+                           placeholder="请输入您的 Access Token">
+                </div>
+
+                <!-- 按钮组 -->
+                <div style="text-align: center; margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
+                    <a href="{{.ApplyServiceUrl}}" target="_blank" style="flex: 1; min-width: 200px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4); transition: all 0.3s ease; font-size: 16px; text-align: center;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(102, 126, 234, 0.6)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(102, 126, 234, 0.4)';">🎯 申请开通服务</a>
+                    <button onclick="showTokenQuery()" style="flex: 1; min-width: 200px; background: linear-gradient(135deg, #20b2aa 0%, #008b8b 100%); color: white; padding: 12px 24px; border: none; border-radius: 8px; font-weight: bold; box-shadow: 0 4px 15px rgba(32, 178, 170, 0.4); transition: all 0.3s ease; font-size: 16px; cursor: pointer;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(32, 178, 170, 0.6)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(32, 178, 170, 0.4)';">🔍 查询 Token</button>
+                </div>
+            </div>
+
+            <!-- Input 参数 -->
+            <div class="section result-section">
+                <div class="section-title">
+                    <span class="icon">📥</span>
+                    Input 参数
+                </div>
+
+                <div id="inputAlertBox" class="alert"></div>
+
+                <div class="form-group">
+                    <label class="form-label">输入数据（JSON 格式）</label>
+                    <small style="color: #6c757d; font-size: 12px; display: block; margin-bottom: 8px;">
+                        💡 <strong>完整示例：</strong>点击下方按钮同时加载 Input 数据和代码
+                    </small>
+                    <div class="example-links" style="margin-bottom: 15px;">
+                        <div class="example-link" onclick="loadCompleteExample('simple')" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; font-weight: bold;">✨ 简单计算</div>
+                        <div class="example-link" onclick="loadCompleteExample('async')" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; font-weight: bold;">✨ Axios 请求</div>
+                        <div class="example-link" onclick="loadCompleteExample('fetch')" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); color: white; font-weight: bold;">✨ Fetch 请求</div>
+                        <div class="example-link" onclick="loadCompleteExample('lodash')" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; font-weight: bold;">✨ Lodash 工具</div>
+                        <div class="example-link" onclick="loadCompleteExample('crypto')" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); color: white; font-weight: bold;">✨ 数据加密</div>
+                        <div class="example-link" onclick="loadCompleteExample('datefns')" style="background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%); color: white; font-weight: bold;">✨ 日期处理</div>
+                        <div class="example-link" onclick="loadCompleteExample('xlsx')" style="background: linear-gradient(135deg, #ff9a56 0%, #ffcd39 100%); color: white; font-weight: bold;">✨ Excel 处理</div>
+                    </div>
+                    <textarea id="inputData" 
+                              class="form-input"
+                              style="min-height: 200px; font-size: 15px;"
+                              placeholder='{"name": "张三", "age": 25}'>{
+  "name": "张三",
+  "age": 25,
+  "items": [1, 2, 3, 4, 5]
+}</textarea>
+                </div>
+
+                <div class="button-group">
+                    <button class="btn btn-danger" onclick="clearInput()">
+                        🗑️ 清空输入
+                    </button>
+                </div>
+            </div>
+
+            <!-- JavaScript 代码 -->
+            <div class="section">
+                <div class="section-title">
+                    <span class="icon">💻</span>
+                    JavaScript 代码
+                </div>
+
+                <div id="jsAlertBox" class="alert"></div>
+
+                <div class="form-group">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <div>
+                            <label class="form-label">请编写符合项目规则的代码</label>
+                            <small style="color: #6c757d; font-size: 12px; display: block;">
+                                💡 提示：在上方 Input 参数区域点击<strong>完整示例</strong>按钮，可同时加载 Input 和代码
+                            </small>
+                        </div>
+                        <button onclick="openFullscreenEditor()" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: bold; box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3); transition: all 0.3s ease;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 12px rgba(102, 126, 234, 0.5)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 2px 8px rgba(102, 126, 234, 0.3)';">
+                            🖥️ 全屏编辑
+                        </button>
+                    </div>
+                    <!-- CodeMirror 编辑器容器 -->
+                    <div id="codeEditorContainer"></div>
+                    <!-- 隐藏的 textarea 用于表单提交 -->
+                    <textarea id="jsCode" style="display: none;">// 计算年龄的两倍
+return {
+  result: input.age * 2,
+  name: input.name,
+  items: input.items
+};</textarea>
+                </div>
+
+                <div class="button-group">
+                    <button class="btn btn-danger" onclick="clearCode()">
+                        🗑️ 清空代码
+                    </button>
+                    <button class="btn btn-info" onclick="encodeToBase64()">
+                        🔒 编码为 Base64
+                    </button>
+                    <button class="btn btn-success" onclick="executeCode()" id="runBtn">
+                        ▶️ 运行代码
+                    </button>
+                </div>
+            </div>
+
+            <!-- 执行结果 -->
+            <div class="section">
+                <div class="section-title">
+                    <span class="icon">📊</span>
+                    执行结果
+                </div>
+
+                <div id="alertBox" class="alert"></div>
+
+                <div class="loading" id="loadingBox">
+                    <div class="spinner"></div>
+                    <div>正在执行代码...</div>
+                </div>
+
+                <div id="resultBox" class="result-box" style="display: none;"></div>
+
+                <div id="statsBox" style="display: none;">
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-value" id="statExecutionTime">-</div>
+                            <div class="stat-label">执行时间 (ms)</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="statStatus">-</div>
+                            <div class="stat-label">状态</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="statRequestId">-</div>
+                            <div class="stat-label">Request ID</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Base64 结果 -->
+            <div class="section result-section">
+                <div class="section-title">
+                    <span class="icon">🔐</span>
+                    Base64 编码结果
+                </div>
+
+                <div id="base64AlertBox" class="alert"></div>
+
+                <div class="form-group">
+                    <label class="form-label">Base64 编码内容</label>
+                    <textarea id="base64Output" 
+                              class="form-input"
+                              style="min-height: 200px; font-size: 15px;"
+                              readonly
+                              placeholder="点击'编码为 Base64'后，编码结果会显示在这里..."></textarea>
+                </div>
+
+                <div class="button-group">
+                    <button class="btn btn-info" onclick="copyBase64()">
+                        📋 复制 Base64
+                    </button>
+                    <button class="btn btn-success" onclick="decodeBase64()">
+                        🔓 解码验证
+                    </button>
+                    <button class="btn btn-danger" onclick="clearBase64()">
+                        🗑️ 清空
+                    </button>
+                </div>
+
+                <div class="form-group" style="margin-top: 20px;">
+                    <label class="form-label">解码验证结果</label>
+                    <textarea id="decodeResult" 
+                              class="form-input"
+                              style="min-height: 200px; font-size: 15px;"
+                              readonly
+                              placeholder="点击'解码验证'后，解码结果会显示在这里..."></textarea>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ==================== Base64 编码/解码 ====================
+        function encodeToBase64() {
+            const code = document.getElementById('jsCode').value;
+            
+            if (!code.trim()) {
+                showAlertInArea('jsAlertBox', '请先输入 JavaScript 代码', 'warning');
+                return;
+            }
+
+            try {
+                // 使用 TextEncoder 确保 UTF-8 编码
+                const encoder = new TextEncoder();
+                const utf8Bytes = encoder.encode(code);
+                
+                // 转换为 base64
+                let binary = '';
+                const len = utf8Bytes.byteLength;
+                for (let i = 0; i < len; i++) {
+                    binary += String.fromCharCode(utf8Bytes[i]);
+                }
+                const base64 = btoa(binary);
+                
+                document.getElementById('base64Output').value = base64;
+                showAlertInArea('base64AlertBox', `✅ 编码成功！原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`, 'success');
+            } catch (error) {
+                showAlertInArea('jsAlertBox', '编码失败: ' + error.message, 'error');
+            }
+        }
+
+        function decodeBase64() {
+            const base64String = document.getElementById('base64Output').value;
+            
+            if (!base64String.trim()) {
+                showAlertInArea('base64AlertBox', 'Base64 字符串为空', 'warning');
+                return;
+            }
+
+            try {
+                // 解码 base64
+                const binaryString = atob(base64String);
+                const len = binaryString.length;
+                const bytes = new Uint8Array(len);
+                for (let i = 0; i < len; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                
+                // 使用 TextDecoder 解码 UTF-8
+                const decoder = new TextDecoder('utf-8');
+                const decoded = decoder.decode(bytes);
+                
+                // 显示解码结果
+                document.getElementById('decodeResult').value = decoded;
+                
+                // 验证是否与原始代码匹配
+                const original = document.getElementById('jsCode').value;
+                if (original && original === decoded) {
+                    showAlertInArea('base64AlertBox', '✅ 解码验证通过！编码/解码完全一致', 'success');
+                } else if (original) {
+                    showAlertInArea('base64AlertBox', '⚠️ 警告：解码结果与原始代码不匹配！', 'warning');
+                } else {
+                    showAlertInArea('base64AlertBox', '✅ 解码成功！', 'success');
+                }
+            } catch (error) {
+                showAlertInArea('base64AlertBox', '解码失败: ' + error.message, 'error');
+                document.getElementById('decodeResult').value = '解码失败: ' + error.message;
+            }
+        }
+
+        function copyBase64() {
+            const base64Text = document.getElementById('base64Output').value;
+            
+            if (!base64Text.trim()) {
+                showAlertInArea('base64AlertBox', '⚠️ Base64 字符串为空，无法复制', 'warning');
+                return;
+            }
+            
+            // 使用现代的 Clipboard API
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(base64Text)
+                    .then(() => {
+                        showAlertInArea('base64AlertBox', '✅ Base64 已复制到剪贴板！', 'success');
+                    })
+                    .catch(err => {
+                        // 降级方案：使用传统方法
+                        fallbackCopyToClipboard(base64Text);
+                    });
+            } else {
+                // 降级方案：使用传统方法
+                fallbackCopyToClipboard(base64Text);
+            }
+        }
+        
+        // 降级复制方案（兼容旧浏览器）
+        function fallbackCopyToClipboard(text) {
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-999999px';
+            document.body.appendChild(textArea);
+            textArea.select();
+            
+            try {
+                document.execCommand('copy');
+                showAlertInArea('base64AlertBox', '✅ Base64 已复制到剪贴板！', 'success');
+            } catch (err) {
+                showAlertInArea('base64AlertBox', '❌ 复制失败，请手动复制', 'error');
+            }
+            
+            document.body.removeChild(textArea);
+        }
+
+        // ==================== 代码执行 ====================
+        async function executeCode() {
+            // 验证必填项
+            const accessToken = document.getElementById('accessToken').value.trim();
+            const jsCode = document.getElementById('jsCode').value.trim();
+            const inputData = document.getElementById('inputData').value.trim();
+            const apiUrl = document.getElementById('apiUrl').value.trim();
+
+            if (!accessToken) {
+                showAlert('❌ 请输入 Access Token', 'error');
+                return;
+            }
+
+            if (!jsCode) {
+                showAlert('❌ 请输入 JavaScript 代码', 'error');
+                return;
+            }
+
+            // 验证 Input JSON 格式
+            let inputObj;
+            try {
+                inputObj = inputData ? JSON.parse(inputData) : {};
+            } catch (error) {
+                showAlert('❌ Input 参数不是有效的 JSON 格式: ' + error.message, 'error');
+                return;
+            }
+
+            // 自动编码为 Base64
+            let base64Code;
+            try {
+                const encoder = new TextEncoder();
+                const utf8Bytes = encoder.encode(jsCode);
+                let binary = '';
+                const len = utf8Bytes.byteLength;
+                for (let i = 0; i < len; i++) {
+                    binary += String.fromCharCode(utf8Bytes[i]);
+                }
+                base64Code = btoa(binary);
+                document.getElementById('base64Output').value = base64Code;
+            } catch (error) {
+                showAlert('❌ Base64 编码失败: ' + error.message, 'error');
+                return;
+            }
+
+            // 显示加载状态
+            showLoading(true);
+            hideAlert();
+            document.getElementById('resultBox').style.display = 'none';
+            document.getElementById('statsBox').style.display = 'none';
+            document.getElementById('runBtn').disabled = true;
+
+            try {
+                const response = await fetch(`${apiUrl}/flow/codeblock`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'accessToken': accessToken
+                    },
+                    body: JSON.stringify({
+                        input: inputObj,
+                        codebase64: base64Code
+                    })
+                });
+
+                const result = await response.json();
+                
+                showLoading(false);
+                document.getElementById('runBtn').disabled = false;
+
+                // 显示结果
+                displayResult(result, response.ok);
+
+            } catch (error) {
+                showLoading(false);
+                document.getElementById('runBtn').disabled = false;
+                
+                let errorMessage = '网络请求失败';
+                if (error.message.includes('Failed to fetch')) {
+                    errorMessage = '无法连接到服务器，请检查：\n1. API 服务地址是否正确\n2. 服务是否已启动\n3. 是否存在跨域问题';
+                } else {
+                    errorMessage = error.message;
+                }
+                
+                showAlert('❌ 请求失败: ' + errorMessage, 'error');
+                displayResult({
+                    success: false,
+                    error: error.message,
+                    message: errorMessage,
+                    timestamp: new Date().toISOString()
+                }, false);
+            }
+        }
+
+        function displayResult(result, isSuccess) {
+            const resultBox = document.getElementById('resultBox');
+            const statsBox = document.getElementById('statsBox');
+            
+            resultBox.style.display = 'block';
+            resultBox.className = 'result-box ' + (isSuccess ? 'success' : 'error');
+            
+            // 使用 Postman 风格的 JSON 语法高亮
+            const jsonString = JSON.stringify(result, null, 2);
+            resultBox.innerHTML = syntaxHighlight(jsonString);
+
+            // 显示统计信息
+            if (result.executionTime !== undefined) {
+                statsBox.style.display = 'block';
+                document.getElementById('statExecutionTime').textContent = result.executionTime || '-';
+                document.getElementById('statStatus').innerHTML = result.success 
+                    ? '<span class="badge badge-success">成功</span>' 
+                    : '<span class="badge badge-error">失败</span>';
+                document.getElementById('statRequestId').textContent = result.request_id 
+                    ? result.request_id.substring(0, 8) + '...' 
+                    : '-';
+            }
+
+            // 显示提示信息
+            if (result.success) {
+                showAlert('✅ 代码执行成功！', 'success');
+            } else {
+                showAlert('❌ 代码执行失败: ' + (result.error || result.message || '未知错误'), 'error');
+            }
+        }
+
+        // JSON 语法高亮函数（Postman 风格）
+        function syntaxHighlight(json) {
+            if (!json) return '';
+            
+            // 对特殊字符进行 HTML 转义
+            json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            
+            return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
+                let cls = 'json-number';
+                
+                if (/^"/.test(match)) {
+                    if (/:$/.test(match)) {
+                        // JSON key
+                        cls = 'json-key';
+                    } else {
+                        // JSON string value
+                        cls = 'json-string';
+                    }
+                } else if (/true|false/.test(match)) {
+                    // Boolean
+                    cls = 'json-boolean';
+                } else if (/null/.test(match)) {
+                    // Null
+                    cls = 'json-null';
+                }
+                
+                return '<span class="' + cls + '">' + match + '</span>';
+            }).replace(/([{}[\],])/g, '<span class="json-bracket">$1</span>');
+        }
+
+        // ==================== 示例代码加载 ====================
+        function loadCodeExample(type) {
+            const examples = {
+                simple: `// 简单计算示例
+return {
+  result: input.age * 2,
+  name: input.name,
+  message: '计算完成'
+};`,
+                async: `// 异步 HTTP 请求示例（方式1：Promise 链式调用）
+const axios = require('axios');
+
+return axios.get('https://jsonplaceholder.typicode.com/posts/1')
+  .then(response => {
+    return {
+      success: true,
+      data: response.data,
+      message: '请求成功'
+    };
+  })
+  .catch(error => {
+    return {
+      success: false,
+      error: error.message
+    };
+  });`,
+                asyncAwait: `// 异步 HTTP 请求示例（方式2：async/await）
+const axios = require('axios');
+
+// 定义异步函数
+async function fetchData() {
+  try {
+    const response = await axios.get('https://jsonplaceholder.typicode.com/posts/1');
+    return {
+      success: true,
+      data: response.data,
+      message: '请求成功'
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+// 返回 Promise
+return fetchData();`,
+                lodash: `// Lodash 工具库示例
+const _ = require('lodash');
+
+const sum = _.sum(input.items);
+const max = _.max(input.items);
+const min = _.min(input.items);
+
+return {
+  sum: sum,
+  max: max,
+  min: min,
+  average: _.mean(input.items)
+};`,
+                crypto: `// 加密示例
+const CryptoJS = require('crypto-js');
+
+const encrypted = CryptoJS.AES.encrypt(input.name, 'secret-key').toString();
+const decrypted = CryptoJS.AES.decrypt(encrypted, 'secret-key').toString(CryptoJS.enc.Utf8);
+
+return {
+  original: input.name,
+  encrypted: encrypted,
+  decrypted: decrypted,
+  match: input.name === decrypted
+};`,
+                datefns: `// 日期处理示例（使用 date-fns 库）
+const { format, addDays, differenceInDays } = require('date-fns');
+
+const now = new Date();
+const future = addDays(now, 7);
+
+return {
+  current: format(now, 'yyyy-MM-dd HH:mm:ss'),
+  future: format(future, 'yyyy-MM-dd HH:mm:ss'),
+  daysUntil: differenceInDays(future, now)
+};`
+            };
+
+            document.getElementById('jsCode').value = examples[type] || examples.simple;
+            showAlertInArea('jsAlertBox', '✅ 示例代码已加载', 'success');
+        }
+
+        // 清空输入框
+        function clearInput() {
+            document.getElementById('inputData').value = '{}';
+            showAlertInArea('inputAlertBox', '✅ 输入已清空', 'success');
+        }
+
+        // 清空代码
+        function clearCode() {
+            document.getElementById('jsCode').value = '';
+            showAlertInArea('jsAlertBox', '✅ 代码已清空', 'success');
+        }
+
+        // 清空 Base64
+        function clearBase64() {
+            document.getElementById('base64Output').value = '';
+            document.getElementById('decodeResult').value = '';
+            showAlertInArea('base64AlertBox', '✅ Base64 和解码结果已清空', 'success');
+        }
+
+        function loadInputExample(type) {
+            const examples = {
+                simple: {
+                    name: "张三",
+                    age: 25
+                },
+                array: {
+                    items: [1, 2, 3, 4, 5],
+                    name: "数组测试"
+                },
+                nested: {
+                    user: {
+                        name: "李四",
+                        age: 30,
+                        address: {
+                            city: "北京",
+                            district: "朝阳区"
+                        }
+                    },
+                    items: [10, 20, 30]
+                }
+            };
+
+            document.getElementById('inputData').value = JSON.stringify(examples[type] || examples.simple, null, 2);
+            showAlertInArea('inputAlertBox', '✅ 示例 Input 已加载', 'success');
+        }
+
+        // 加载完整示例（Input + 代码）
+        function loadCompleteExample(type) {
+            const examples = {
+                simple: {
+                    input: {
+                        name: "张三",
+                        age: 25,
+                        items: [1, 2, 3, 4, 5]
+                    },
+                    code: `// 简单计算示例
+// 使用 input 对象访问输入数据
+return {
+  result: input.age * 2,
+  name: input.name,
+  itemCount: input.items.length,
+  itemSum: input.items.reduce((a, b) => a + b, 0),
+  message: '计算完成！'
+};`
+                },
+                async: {
+                    input: {
+                        postId: 1,
+                        userId: 1
+                    },
+                    code: `// Axios 异步请求示例（使用 async/await）
+const axios = require('axios');
+
+async function fetchData() {
+  try {
+    // 根据 input 参数请求数据
+    const response = await axios.get(\`https://jsonplaceholder.typicode.com/posts/\${input.postId}\`);
+    
+    return {
+      success: true,
+      method: 'axios',
+      post: response.data,
+      requestedBy: input.userId,
+      timestamp: new Date().toISOString()
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+// 执行异步函数并返回结果
+return fetchData();`
+                },
+                fetch: {
+                    input: {
+                        userId: 1,
+                        action: "getUserPosts"
+                    },
+                    code: `// Fetch API 异步请求示例（使用 async/await）
+async function fetchUserData() {
+  try {
+    // GET 请求示例
+    const response = await fetch(\`https://jsonplaceholder.typicode.com/users/\${input.userId}/posts\`);
+    
+    if (!response.ok) {
+      throw new Error(\`HTTP error! status: \${response.status}\`);
+    }
+    
+    const posts = await response.json();
+    
+    // POST 请求示例（创建新文章）
+    const newPost = {
+      title: 'Flow-CodeBlock 测试',
+      body: '这是通过 Fetch API 创建的文章',
+      userId: input.userId
+    };
+    
+    const postResponse = await fetch('https://jsonplaceholder.typicode.com/posts', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(newPost)
+    });
+    
+    const createdPost = await postResponse.json();
+    
+    return {
+      success: true,
+      method: 'fetch',
+      action: input.action,
+      userPosts: posts.slice(0, 3), // 只返回前3篇
+      totalPosts: posts.length,
+      createdPost: createdPost,
+      timestamp: new Date().toISOString()
+    };
+  } catch (error) {
+    return {
+      success: false,
+      method: 'fetch',
+      error: error.message
+    };
+  }
+}
+
+// 执行异步函数并返回结果
+return fetchUserData();`
+                },
+                lodash: {
+                    input: {
+                        users: [
+                            { name: "张三", age: 25, city: "北京" },
+                            { name: "李四", age: 30, city: "上海" },
+                            { name: "王五", age: 28, city: "北京" }
+                        ],
+                        targetCity: "北京"
+                    },
+                    code: `// Lodash 工具库示例
+const _ = require('lodash');
+
+// 筛选指定城市的用户
+const filteredUsers = _.filter(input.users, { city: input.targetCity });
+
+// 按年龄排序
+const sortedUsers = _.orderBy(filteredUsers, ['age'], ['asc']);
+
+// 提取名字
+const names = _.map(sortedUsers, 'name');
+
+// 计算平均年龄
+const avgAge = _.meanBy(filteredUsers, 'age');
+
+return {
+  targetCity: input.targetCity,
+  users: sortedUsers,
+  names: names,
+  averageAge: avgAge,
+  totalCount: filteredUsers.length
+};`
+                },
+                crypto: {
+                    input: {
+                        text: "Hello, Flow-CodeBlock!",
+                        secretKey: "my-secret-key-2024"
+                    },
+                    code: `// 数据加密示例（使用 crypto-js）
+const CryptoJS = require('crypto-js');
+
+// AES 加密
+const encrypted = CryptoJS.AES.encrypt(
+  input.text, 
+  input.secretKey
+).toString();
+
+// AES 解密
+const decrypted = CryptoJS.AES.decrypt(
+  encrypted, 
+  input.secretKey
+).toString(CryptoJS.enc.Utf8);
+
+// MD5 哈希
+const md5Hash = CryptoJS.MD5(input.text).toString();
+
+// SHA256 哈希
+const sha256Hash = CryptoJS.SHA256(input.text).toString();
+
+return {
+  original: input.text,
+  encrypted: encrypted,
+  decrypted: decrypted,
+  md5: md5Hash,
+  sha256: sha256Hash,
+  verified: input.text === decrypted
+};`
+                },
+                datefns: {
+                    input: {
+                        startDate: "2024-01-15",
+                        endDate: "2024-10-06",
+                        birthdate: "1990-05-20",
+                        meetingDate: "2024-12-25"
+                    },
+                    code: `// 日期处理示例（使用 date-fns）
+const dateFns = require('date-fns');
+
+// 解析日期
+const start = new Date(input.startDate);
+const end = new Date(input.endDate);
+const birth = new Date(input.birthdate);
+const meeting = new Date(input.meetingDate);
+const now = new Date();
+
+// 1. 计算日期差异
+const daysDiff = dateFns.differenceInDays(end, start);
+const monthsDiff = dateFns.differenceInMonths(end, start);
+const yearsDiff = dateFns.differenceInYears(end, start);
+const age = dateFns.differenceInYears(now, birth);
+const daysToMeeting = dateFns.differenceInDays(meeting, now);
+
+// 2. 格式化日期（使用标准格式）
+const formattedStart = dateFns.format(start, 'yyyy-MM-dd');
+const formattedEnd = dateFns.format(end, 'yyyy-MM-dd HH:mm:ss');
+const formattedBirth = dateFns.format(birth, 'yyyy/MM/dd');
+const formattedNow = dateFns.format(now, 'yyyy-MM-dd HH:mm:ss');
+
+// 3. 日期操作（加减）
+const nextWeek = dateFns.addWeeks(now, 1);
+const lastMonth = dateFns.subMonths(now, 1);
+const next30Days = dateFns.addDays(now, 30);
+const last7Days = dateFns.subDays(now, 7);
+
+// 4. 获取日期的起始和结束
+const startOfMonth = dateFns.startOfMonth(now);
+const endOfMonth = dateFns.endOfMonth(now);
+const startOfYear = dateFns.startOfYear(now);
+const endOfYear = dateFns.endOfYear(now);
+
+// 5. 日期比较
+const isAfter = dateFns.isAfter(end, start);
+const isBefore = dateFns.isBefore(start, end);
+const isWeekend = dateFns.isWeekend(now);
+const isFuture = dateFns.isFuture(meeting);
+const isPast = dateFns.isPast(start);
+
+// 6. 日期判断
+const isToday = dateFns.isToday(now);
+const isSameDay = dateFns.isSameDay(start, end);
+const isSameMonth = dateFns.isSameMonth(start, end);
+const isSameYear = dateFns.isSameYear(start, end);
+
+return {
+  inputDates: {
+    start: input.startDate,
+    end: input.endDate,
+    birthdate: input.birthdate,
+    meeting: input.meetingDate
+  },
+  calculations: {
+    daysBetween: daysDiff,
+    monthsBetween: monthsDiff,
+    yearsBetween: yearsDiff,
+    currentAge: age,
+    daysUntilMeeting: daysToMeeting
+  },
+  formatted: {
+    start: formattedStart,
+    end: formattedEnd,
+    birth: formattedBirth,
+    now: formattedNow
+  },
+  operations: {
+    nextWeek: dateFns.format(nextWeek, 'yyyy-MM-dd'),
+    lastMonth: dateFns.format(lastMonth, 'yyyy-MM-dd'),
+    next30Days: dateFns.format(next30Days, 'yyyy-MM-dd'),
+    last7Days: dateFns.format(last7Days, 'yyyy-MM-dd'),
+    startOfMonth: dateFns.format(startOfMonth, 'yyyy-MM-dd'),
+    endOfMonth: dateFns.format(endOfMonth, 'yyyy-MM-dd'),
+    startOfYear: dateFns.format(startOfYear, 'yyyy-MM-dd'),
+    endOfYear: dateFns.format(endOfYear, 'yyyy-MM-dd')
+  },
+  comparisons: {
+    endIsAfterStart: isAfter,
+    startIsBeforeEnd: isBefore,
+    todayIsWeekend: isWeekend,
+    meetingIsFuture: isFuture,
+    startIsPast: isPast
+  },
+  checks: {
+    isToday: isToday,
+    startAndEndSameDay: isSameDay,
+    startAndEndSameMonth: isSameMonth,
+    startAndEndSameYear: isSameYear
+  },
+  timestamp: now.toISOString()
+};`
+                },
+                xlsx: {
+                    input: {
+                        excelUrl: "https://file-examples.com/wp-content/storage/2017/02/file_example_XLSX_10.xlsx",
+                        sheetIndex: 0,
+                        maxRows: 10
+                    },
+                    code: `// 从 URL 读取 Excel 文件示例（使用 xlsx + fetch）
+const XLSX = require('xlsx');
+
+async function readExcelFromUrl() {
+  try {
+    // 1. 从 URL 下载 Excel 文件
+    const response = await fetch(input.excelUrl);
+    
+    if (!response.ok) {
+      throw new Error(\`下载失败: HTTP \${response.status}\`);
+    }
+    
+    // 2. 获取文件的 ArrayBuffer
+    const arrayBuffer = await response.arrayBuffer();
+    
+    // 3. 将 ArrayBuffer 转换为 Uint8Array
+    const data = new Uint8Array(arrayBuffer);
+    
+    // 4. 使用 XLSX 读取工作簿
+    const workbook = XLSX.read(data, { type: 'array' });
+    
+    // 5. 获取工作簿信息
+    const sheetNames = workbook.SheetNames;
+    const sheetName = sheetNames[input.sheetIndex] || sheetNames[0];
+    
+    // 6. 获取指定的工作表
+    const worksheet = workbook.Sheets[sheetName];
+    
+    // 7. 将工作表转换为 JSON
+    const jsonData = XLSX.utils.sheet_to_json(worksheet);
+    
+    // 8. 数据分析和统计
+    const totalRows = jsonData.length;
+    const columns = jsonData.length > 0 ? Object.keys(jsonData[0]) : [];
+    
+    // 9. 提取前 N 行数据
+    const previewData = jsonData.slice(0, input.maxRows || 10);
+    
+    // 10. 如果有数值列，进行统计
+    let statistics = {};
+    if (jsonData.length > 0) {
+      columns.forEach(col => {
+        const values = jsonData.map(row => row[col]).filter(v => typeof v === 'number');
+        if (values.length > 0) {
+          statistics[col] = {
+            count: values.length,
+            sum: values.reduce((a, b) => a + b, 0),
+            avg: values.reduce((a, b) => a + b, 0) / values.length,
+            max: Math.max(...values),
+            min: Math.min(...values)
+          };
+        }
+      });
+    }
+    
+    return {
+      success: true,
+      source: {
+        url: input.excelUrl,
+        downloadedAt: new Date().toISOString()
+      },
+      workbook: {
+        totalSheets: sheetNames.length,
+        sheetNames: sheetNames,
+        currentSheet: sheetName
+      },
+      data: {
+        totalRows: totalRows,
+        columns: columns,
+        columnCount: columns.length
+      },
+      preview: previewData,
+      statistics: statistics,
+      message: \`成功读取 Excel 文件，共 \${totalRows} 行数据\`
+    };
+    
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message,
+      url: input.excelUrl
+    };
+  }
+}
+
+// 执行异步函数并返回结果
+return readExcelFromUrl();`
+                }
+            };
+
+            const example = examples[type] || examples.simple;
+            
+            // 同时加载 Input 和代码
+            document.getElementById('inputData').value = JSON.stringify(example.input, null, 2);
+            document.getElementById('jsCode').value = example.code;
+            
+            // 更新 Ace 编辑器
+            if (mainEditor) {
+                mainEditor.setValue(example.code, -1);
+            }
+            
+            // 显示成功提示
+            showAlertInArea('inputAlertBox', '✅ 完整示例已加载！Input 数据和代码已同步填充', 'success');
+            
+            // 滚动到代码区域
+            setTimeout(() => {
+                const container = document.getElementById('codeEditorContainer');
+                if (container) {
+                    container.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            }, 300);
+        }
+
+        // ==================== UI 辅助函数 ====================
+        function showAlert(message, type) {
+            const alertBox = document.getElementById('alertBox');
+            alertBox.className = `alert alert-${type} show`;
+            alertBox.textContent = message;
+
+            setTimeout(() => {
+                alertBox.classList.remove('show');
+            }, 5000);
+        }
+
+        function showAlertInArea(alertBoxId, message, type) {
+            const alertBox = document.getElementById(alertBoxId);
+            alertBox.className = `alert alert-${type} show`;
+            alertBox.textContent = message;
+
+            setTimeout(() => {
+                alertBox.classList.remove('show');
+            }, 5000);
+        }
+
+        function hideAlert() {
+            const alertBox = document.getElementById('alertBox');
+            alertBox.classList.remove('show');
+        }
+
+        function showLoading(show) {
+            const loadingBox = document.getElementById('loadingBox');
+            loadingBox.className = show ? 'loading show' : 'loading';
+        }
+
+        // ==================== 页面加载时的初始化 ====================
+        window.addEventListener('DOMContentLoaded', () => {
+            // 页面加载完成，静默编码初始代码（不显示提示）
+            const code = document.getElementById('jsCode').value;
+            if (code.trim()) {
+                try {
+                    const encoder = new TextEncoder();
+                    const utf8Bytes = encoder.encode(code);
+                    let binary = '';
+                    const len = utf8Bytes.byteLength;
+                    for (let i = 0; i < len; i++) {
+                        binary += String.fromCharCode(utf8Bytes[i]);
+                    }
+                    const base64 = btoa(binary);
+                    document.getElementById('base64Output').value = base64;
+                } catch (error) {
+                    console.error('初始编码失败:', error);
+                }
+            }
+        });
+
+        // ==================== Token 查询功能 ====================
+        function showTokenQuery() {
+            document.getElementById('tokenModal').classList.add('show');
+            document.getElementById('tokenResult').style.display = 'none';
+            document.getElementById('queryWsId').value = '';
+            document.getElementById('queryEmail').value = '';
+        }
+
+        function hideTokenQuery() {
+            document.getElementById('tokenModal').classList.remove('show');
+        }
+
+        async function queryToken() {
+            const wsId = document.getElementById('queryWsId').value.trim();
+            const email = document.getElementById('queryEmail').value.trim();
+            const apiUrl = document.getElementById('apiUrl').value.trim();
+
+            // 验证必填项
+            if (!wsId) {
+                showAlertInModal('❌ 请输入 Workspace ID', 'error');
+                return;
+            }
+
+            if (!email) {
+                showAlertInModal('❌ 请输入 Email', 'error');
+                return;
+            }
+
+            // 显示加载状态
+            document.getElementById('queryBtn').disabled = true;
+            document.getElementById('queryBtn').textContent = '查询中...';
+            document.getElementById('tokenResult').style.display = 'none';
+
+            try {
+                const response = await fetch(`${apiUrl}/flow/query-token?ws_id=${encodeURIComponent(wsId)}&email=${encodeURIComponent(email)}`, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const result = await response.json();
+                
+                document.getElementById('queryBtn').disabled = false;
+                document.getElementById('queryBtn').textContent = '🔍 查询';
+
+                if (response.ok && result.success && result.data) {
+                    // 处理返回的数据
+                    const tokens = Array.isArray(result.data) ? result.data : (result.data.tokens || []);
+                    if (tokens.length > 0) {
+                        handleTokensResult(tokens);
+                        showAlertInModal(`✅ 查询成功！找到 ${tokens.length} 个 Token`, 'success');
+                    } else {
+                        showAlertInModal('❌ 未找到 Token 信息', 'error');
+                    }
+                } else {
+                    showAlertInModal('❌ ' + (result.message || result.error?.message || '未找到 Token 信息'), 'error');
+                }
+
+            } catch (error) {
+                document.getElementById('queryBtn').disabled = false;
+                document.getElementById('queryBtn').textContent = '🔍 查询';
+                showAlertInModal('❌ 查询失败: ' + error.message, 'error');
+            }
+        }
+
+        // 处理查询到的 Token 结果
+        function handleTokensResult(tokens) {
+            if (tokens.length === 1) {
+                // 只有一个 Token，显示详情和使用按钮
+                displayTokenInfo(tokens[0]);
+            } else {
+                // 多个 Token，显示选择器
+                displayTokenSelector(tokens);
+            }
+            
+            // 自动滚动到结果区域（在模态框内滚动）
+            setTimeout(() => {
+                const resultDiv = document.getElementById('tokenResult');
+                const modalContent = document.querySelector('.modal-content');
+                if (resultDiv && modalContent) {
+                    // 获取结果区域相对于模态框的位置
+                    const resultTop = resultDiv.offsetTop;
+                    // 平滑滚动到结果区域
+                    modalContent.scrollTo({
+                        top: resultTop - 20, // 减去一点空间，让结果区域不要紧贴顶部
+                        behavior: 'smooth'
+                    });
+                }
+            }, 150);
+        }
+
+        // 显示 Token 选择器
+        function displayTokenSelector(tokens) {
+            const resultDiv = document.getElementById('tokenResult');
+            
+            let html = `
+                <div class="form-group">
+                    <label class="form-label">选择 Token（共 ${tokens.length} 个）</label>
+                    <select id="tokenSelector" class="form-input" onchange="onTokenSelect()">
+                        <option value="">-- 请选择 Token --</option>
+            `;
+            
+            tokens.forEach((token, index) => {
+                const isActive = token.is_active !== undefined ? token.is_active : true;
+                const statusIcon = isActive ? '✅' : '❌';
+                const expiresAt = token.expires_at ? new Date(token.expires_at) : null;
+                const expireText = expiresAt ? expiresAt.toLocaleDateString('zh-CN') : '永久';
+                const tokenStr = token.access_token || token.token || '';
+                const tokenPreview = tokenStr.length > 20 ? tokenStr.substring(0, 20) + '...' : tokenStr;
+                html += `<option value="${index}">${statusIcon} ${tokenPreview} (${expireText})</option>`;
+            });
+            
+            html += `
+                    </select>
+                </div>
+                <div id="selectedTokenInfo" style="display: none;"></div>
+            `;
+            
+            resultDiv.innerHTML = html;
+            resultDiv.style.display = 'block';
+            
+            // 保存 tokens 数据供选择时使用
+            window.queriedTokens = tokens;
+        }
+
+        // Token 选择事件处理
+        function onTokenSelect() {
+            const selector = document.getElementById('tokenSelector');
+            const index = selector.value;
+            const infoDiv = document.getElementById('selectedTokenInfo');
+            
+            if (index === '' || !window.queriedTokens) {
+                infoDiv.style.display = 'none';
+                return;
+            }
+            
+            const token = window.queriedTokens[parseInt(index)];
+            displaySelectedTokenInfo(token, infoDiv);
+        }
+
+        // 显示选中的 Token 详情
+        function displaySelectedTokenInfo(tokenData, targetDiv) {
+            const now = new Date();
+            const expiresAt = tokenData.expires_at ? new Date(tokenData.expires_at) : null;
+            const isExpired = expiresAt && expiresAt < now;
+            const isActive = tokenData.is_active !== undefined ? tokenData.is_active : true;
+            const tokenStr = tokenData.access_token || tokenData.token || '';
+
+            targetDiv.innerHTML = `
+                <div style="margin-top: 15px; padding: 15px; background: white; border-radius: 8px; border: 1px solid #e9ecef;">
+                    <div class="token-item">
+                        <div class="token-label">Token 值</div>
+                        <div class="token-value">${tokenStr || '-'}</div>
+                    </div>
+                    <div class="token-item">
+                        <div class="token-label">状态</div>
+                        <div class="token-value ${isActive ? 'active' : 'expired'}">
+                            ${isActive ? '✅ 有效' : '❌ 已禁用'}
+                        </div>
+                    </div>
+                    <div class="token-item">
+                        <div class="token-label">失效时间</div>
+                        <div class="token-value ${isExpired ? 'expired' : ''}">
+                            ${expiresAt ? expiresAt.toLocaleString('zh-CN') : '永久有效'}
+                            ${isExpired ? ' (已过期)' : ''}
+                        </div>
+                    </div>
+                    <div class="token-item">
+                        <div class="token-label">每分钟请求限制</div>
+                        <div class="token-value">${tokenData.rate_limit_per_minute || '-'} 次/分钟</div>
+                    </div>
+                    <div class="token-item">
+                        <div class="token-label">突发请求限制</div>
+                        <div class="token-value">${tokenData.rate_limit_burst || '-'} 次</div>
+                    </div>
+                    <div class="token-item">
+                        <div class="token-label">创建时间</div>
+                        <div class="token-value">
+                            ${tokenData.created_at ? new Date(tokenData.created_at).toLocaleString('zh-CN') : '-'}
+                        </div>
+                    </div>
+                    <div style="margin-top: 15px; display: flex; justify-content: center;">
+                        <button class="btn btn-success" style="min-width: 200px;" onclick="fillTokenToInput('${tokenStr.replace(/'/g, "\\'")}')">
+                            ✅ 使用此 Token 填充
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            targetDiv.style.display = 'block';
+        }
+
+        // 填充 Token 到输入框
+        function fillTokenToInput(token) {
+            document.getElementById('accessToken').value = token;
+            hideTokenQuery();
+            showAlert('✅ Token 已填充到输入框', 'success');
+        }
+
+        // 显示单个 Token 详情（用于只有一个 Token 的情况）
+        function displayTokenInfo(tokenData) {
+            const resultDiv = document.getElementById('tokenResult');
+            const now = new Date();
+            const expiresAt = tokenData.expires_at ? new Date(tokenData.expires_at) : null;
+            const isExpired = expiresAt && expiresAt < now;
+            const isActive = tokenData.is_active !== undefined ? tokenData.is_active : true;
+            const tokenStr = tokenData.access_token || tokenData.token || '';
+
+            resultDiv.innerHTML = `
+                <div class="token-item">
+                    <div class="token-label">Token 值</div>
+                    <div class="token-value">${tokenStr || '-'}</div>
+                </div>
+                <div class="token-item">
+                    <div class="token-label">状态</div>
+                    <div class="token-value ${isActive ? 'active' : 'expired'}">
+                        ${isActive ? '✅ 有效' : '❌ 已禁用'}
+                    </div>
+                </div>
+                <div class="token-item">
+                    <div class="token-label">失效时间</div>
+                    <div class="token-value ${isExpired ? 'expired' : ''}">
+                        ${expiresAt ? expiresAt.toLocaleString('zh-CN') : '永久有效'}
+                        ${isExpired ? ' (已过期)' : ''}
+                    </div>
+                </div>
+                <div class="token-item">
+                    <div class="token-label">每分钟请求限制</div>
+                    <div class="token-value">${tokenData.rate_limit_per_minute || '-'} 次/分钟</div>
+                </div>
+                <div class="token-item">
+                    <div class="token-label">突发请求限制</div>
+                    <div class="token-value">${tokenData.rate_limit_burst || '-'} 次</div>
+                </div>
+                <div class="token-item">
+                    <div class="token-label">创建时间</div>
+                    <div class="token-value">
+                        ${tokenData.created_at ? new Date(tokenData.created_at).toLocaleString('zh-CN') : '-'}
+                    </div>
+                </div>
+                <div style="margin-top: 20px; display: flex; justify-content: center;">
+                    <button class="btn btn-success" style="min-width: 200px;" onclick="fillTokenToInput('${tokenStr.replace(/'/g, "\\'")}')">
+                        ✅ 使用此 Token 填充
+                    </button>
+                </div>
+            `;
+            
+            resultDiv.style.display = 'block';
+        }
+
+        function showAlertInModal(message, type) {
+            const alertBox = document.getElementById('modalAlert');
+            alertBox.className = `alert alert-${type} show`;
+            alertBox.textContent = message;
+
+            setTimeout(() => {
+                alertBox.classList.remove('show');
+            }, 5000);
+        }
+
+        // 点击遮罩层不关闭弹窗（仅通过右上角 × 按钮关闭）
+        document.addEventListener('click', function(e) {
+            if (e.target.classList.contains('modal-overlay')) {
+                // 不执行关闭操作，用户必须点击右上角 × 按钮才能关闭
+                return;
+            }
+        });
+    </script>
+
+    <!-- Token 查询弹窗 -->
+    <div id="tokenModal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <span>🔍 查询 Token 信息</span>
+                <button class="modal-close" onclick="hideTokenQuery()">×</button>
+            </div>
+
+            <div style="background: #e7f3ff; border-left: 4px solid #2196F3; padding: 12px; margin-bottom: 20px; border-radius: 4px; font-size: 13px; color: #333;">
+                💡 <strong>提示：</strong>点击右上角 <strong>×</strong> 按钮关闭弹窗
+            </div>
+
+            <div id="modalAlert" class="alert"></div>
+
+            <div class="form-group">
+                <label class="form-label">Workspace ID <span style="color: red;">*</span></label>
+                <input type="text" 
+                       id="queryWsId" 
+                       class="form-input"
+                       placeholder="请输入 Workspace ID">
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Email <span style="color: red;">*</span></label>
+                <input type="text" 
+                       id="queryEmail" 
+                       class="form-input"
+                       placeholder="请输入 Email 地址">
+            </div>
+
+            <div class="button-group">
+                <button class="btn btn-secondary" onclick="hideTokenQuery()">
+                    ❌ 取消
+                </button>
+                <button class="btn btn-success" id="queryBtn" onclick="queryToken()">
+                    🔍 查询
+                </button>
+            </div>
+
+            <div id="tokenResult" class="token-result" style="display: none;"></div>
+        </div>
+    </div>
+
+    <!-- 全屏代码编辑器 -->
+    <div id="fullscreenEditor" class="fullscreen-editor-overlay">
+        <div class="fullscreen-editor-container">
+            <div class="fullscreen-editor-header">
+                <div class="fullscreen-editor-title">🖥️ 全屏代码编辑器</div>
+                <div class="fullscreen-editor-actions">
+                    <button class="fullscreen-btn fullscreen-btn-save" onclick="saveFullscreenCode()">
+                        ✅ 保存并关闭
+                    </button>
+                    <button class="fullscreen-btn fullscreen-btn-close" onclick="closeFullscreenEditor()">
+                        ❌ 取消
+                    </button>
+                </div>
+            </div>
+            <!-- CodeMirror 全屏编辑器容器 -->
+            <div id="fullscreenEditorContainer" style="flex: 1; display: flex; flex-direction: column;"></div>
+        </div>
+    </div>
+
+    <script>
+        // Ace Editor 编辑器实例
+        let mainEditor = null;
+        let fullscreenEditor = null;
+
+        // 初始化 Ace Editor
+        function initAceEditor() {
+            if (typeof ace === 'undefined') {
+                console.error('❌ Ace Editor 未加载');
+                return;
+            }
+
+            // 配置 Ace 的 worker 路径
+            ace.config.set('workerPath', '/flow/assets');
+            ace.config.set('basePath', '/flow/assets');
+
+            // 初始化主编辑器
+            mainEditor = ace.edit('codeEditorContainer');
+            const startCode = document.getElementById('jsCode').value;
+            
+            // 设置编辑器选项
+            mainEditor.setTheme('ace/theme/textmate'); // 亮色主题
+            mainEditor.session.setMode('ace/mode/javascript');
+            mainEditor.setValue(startCode, -1); // -1 表示光标移到开始
+            mainEditor.setOptions({
+                fontSize: '15px',
+                showPrintMargin: false,
+                enableBasicAutocompletion: true,
+                enableLiveAutocompletion: true,
+                enableSnippets: true,
+                tabSize: 2,
+                useSoftTabs: true,
+                wrap: true
+            });
+
+            // 监听内容变化，同步到隐藏的 textarea
+            mainEditor.session.on('change', function() {
+                document.getElementById('jsCode').value = mainEditor.getValue();
+            });
+
+            console.log('✅ Ace Editor 初始化成功');
+        }
+
+        // 页面加载完成后初始化
+        window.addEventListener('DOMContentLoaded', initAceEditor);
+
+        // 全屏编辑器函数
+        function openFullscreenEditor() {
+            const editorOverlay = document.getElementById('fullscreenEditor');
+            const container = document.getElementById('fullscreenEditorContainer');
+            
+            if (typeof ace === 'undefined') {
+                alert('编辑器正在加载中，请稍候...');
+                return;
+            }
+            
+            // 获取当前代码
+            const currentCode = mainEditor ? mainEditor.getValue() : document.getElementById('jsCode').value;
+            
+            // 清空容器并创建新的编辑器容器
+            container.innerHTML = '<div id="fullscreenAceEditor" style="width: 100%; height: 100%;"></div>';
+            
+            // 创建全屏编辑器（使用深色主题）
+            fullscreenEditor = ace.edit('fullscreenAceEditor');
+            fullscreenEditor.setTheme('ace/theme/monokai'); // 深色主题
+            fullscreenEditor.session.setMode('ace/mode/javascript');
+            fullscreenEditor.setValue(currentCode, -1);
+            fullscreenEditor.setOptions({
+                fontSize: '16px',
+                showPrintMargin: false,
+                enableBasicAutocompletion: true,
+                enableLiveAutocompletion: true,
+                enableSnippets: true,
+                tabSize: 2,
+                useSoftTabs: true,
+                wrap: true
+            });
+            fullscreenEditor.commands.addCommand({
+                name: 'save',
+                bindKey: {win: 'Ctrl-S', mac: 'Command-S'},
+                exec: function(editor) {
+                    saveFullscreenCode();
+                }
+            });
+            
+            // 显示编辑器
+            editorOverlay.style.display = 'block';
+            
+            // 聚焦
+            setTimeout(() => {
+                fullscreenEditor.focus();
+            }, 100);
+        }
+
+        function saveFullscreenCode() {
+            if (!fullscreenEditor) return;
+            
+            // 获取全屏编辑器的代码
+            const code = fullscreenEditor.getValue();
+            
+            // 更新主编辑器
+            if (mainEditor) {
+                mainEditor.setValue(code, -1);
+            }
+            
+            // 更新隐藏的 textarea
+            document.getElementById('jsCode').value = code;
+            
+            // 关闭编辑器
+            closeFullscreenEditor();
+            
+            // 显示成功提示
+            showAlert('✅ 代码已保存', 'success');
+        }
+
+        function closeFullscreenEditor() {
+            const editorOverlay = document.getElementById('fullscreenEditor');
+            editorOverlay.style.display = 'none';
+            
+            // 销毁全屏编辑器实例
+            if (fullscreenEditor) {
+                fullscreenEditor.destroy();
+                fullscreenEditor = null;
+            }
+        }
+
+        // 支持 ESC 键关闭全屏编辑器
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                const editorOverlay = document.getElementById('fullscreenEditor');
+                if (editorOverlay.style.display === 'block') {
+                    closeFullscreenEditor();
+                }
+            }
+        });
+
+        // 清空代码函数
+        function clearCode() {
+            if (mainEditor) {
+                mainEditor.setValue('', -1);
+            }
+            document.getElementById('jsCode').value = '';
+            showAlertInArea('jsAlertBox', '✅ 代码已清空', 'success');
+        }
+    </script>
+</body>
+</html>

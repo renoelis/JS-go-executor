@@ -3,6 +3,7 @@ package router
 import (
 	"os"
 
+	"flow-codeblock-go/assets"
 	"flow-codeblock-go/config"
 	"flow-codeblock-go/controller"
 	"flow-codeblock-go/middleware"
@@ -48,6 +49,36 @@ func SetupRouter(
 	// Flow路由组
 	flowGroup := router.Group("/flow")
 	{
+		// 测试工具页面（无需认证）
+		flowGroup.GET("/test-tool",
+			middleware.GlobalIPRateLimiterMiddleware(cfg),
+			executorController.TestTool,
+		)
+
+		// 🔍 公开的Token查询接口（供测试工具使用，带全局IP限流）
+		flowGroup.GET("/query-token",
+			middleware.GlobalIPRateLimiterMiddleware(cfg),
+			tokenController.QueryTokenPublic,
+		)
+
+		// Ace Editor 静态资源路由
+		flowGroup.GET("/assets/ace.js", func(c *gin.Context) {
+			c.Header("Content-Type", "application/javascript; charset=utf-8")
+			c.String(200, assets.AceEditor)
+		})
+		flowGroup.GET("/assets/mode-javascript.js", func(c *gin.Context) {
+			c.Header("Content-Type", "application/javascript; charset=utf-8")
+			c.String(200, assets.AceModeJavaScript)
+		})
+		flowGroup.GET("/assets/theme-monokai.js", func(c *gin.Context) {
+			c.Header("Content-Type", "application/javascript; charset=utf-8")
+			c.String(200, assets.AceThemeMonokai)
+		})
+		flowGroup.GET("/assets/worker-javascript.js", func(c *gin.Context) {
+			c.Header("Content-Type", "application/javascript; charset=utf-8")
+			c.String(200, assets.AceWorkerJavaScript)
+		})
+
 		// 代码执行接口（智能 IP 限流 + Token 认证 + Token 限流）
 		// 🔥 限流策略：
 		//   1. 智能 IP 限流 - 根据认证状态动态切换

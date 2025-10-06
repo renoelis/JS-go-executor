@@ -24,3 +24,15 @@ var Pinyin string
 
 //go:embed external-libs/uuid.min.js
 var Uuid string
+
+//go:embed codemirror/ace.js
+var AceEditor string
+
+//go:embed codemirror/mode-javascript.js
+var AceModeJavaScript string
+
+//go:embed codemirror/theme-monokai.js
+var AceThemeMonokai string
+
+//go:embed codemirror/worker-javascript.js
+var AceWorkerJavaScript string

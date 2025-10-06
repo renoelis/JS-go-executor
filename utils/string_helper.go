@@ -1,5 +1,7 @@
 package utils
 
+import "os"
+
 const (
 	// DefaultTokenMaskLength Token脱敏默认显示长度
 	// 用于日志和API响应中的Token安全显示
@@ -31,4 +33,12 @@ func MaskTokenWithLength(token string, showLength int) string {
 		return token + "***"
 	}
 	return token[:showLength] + "***"
+}
+
+// GetEnvWithDefault 获取环境变量，如果不存在则返回默认值
+func GetEnvWithDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
 }

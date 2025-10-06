@@ -133,7 +133,8 @@ func (ue *UuidEnhancer) Register(registry *require.Registry) error {
 }
 
 // Setup 在 Runtime 上设置模块环境
+// 💡 uuid 库较小但不常用，不预加载以节省内存
 func (ue *UuidEnhancer) Setup(runtime *goja.Runtime) error {
-	// uuid 不需要额外的 Runtime 设置
+	// 不预加载，按需加载
 	return nil
 }

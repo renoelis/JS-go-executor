@@ -16,6 +16,7 @@ type TokenController struct {
 	tokenService       *service.TokenService
 	rateLimiterService *service.RateLimiterService
 	cacheWritePool     *service.CacheWritePool // 🔥 新增：缓存写入池
+	adminToken         string                  // 🔒 管理员令牌（用于内部API调用）
 }
 
 // NewTokenController 创建Token控制器
@@ -23,11 +24,13 @@ func NewTokenController(
 	tokenService *service.TokenService,
 	rateLimiterService *service.RateLimiterService,
 	cacheWritePool *service.CacheWritePool,
+	adminToken string,
 ) *TokenController {
 	return &TokenController{
 		tokenService:       tokenService,
 		rateLimiterService: rateLimiterService,
 		cacheWritePool:     cacheWritePool,
+		adminToken:         adminToken,
 	}
 }
 
@@ -192,4 +195,40 @@ func (tc *TokenController) ClearTokenRateLimit(c *gin.Context) {
 	}
 
 	utils.RespondSuccess(c, nil, "限流缓存已清除")
+}
+
+// QueryTokenPublic 公开的Token查询接口（供测试工具使用）
+// 🔒 安全说明：此接口不需要前端传递管理员令牌，由后端自动添加
+func (tc *TokenController) QueryTokenPublic(c *gin.Context) {
+	var req model.TokenQueryRequest
+	if err := c.ShouldBindQuery(&req); err != nil {
+		utils.RespondError(c, http.StatusBadRequest,
+			utils.ErrorTypeValidation,
+			"请求参数错误: "+err.Error(),
+			nil)
+		return
+	}
+
+	// 验证必填参数
+	if req.WsID == "" || req.Email == "" {
+		utils.RespondError(c, http.StatusBadRequest,
+			utils.ErrorTypeValidation,
+			"ws_id 和 email 为必填参数",
+			nil)
+		return
+	}
+
+	// 查询Token信息
+	tokens, err := tc.tokenService.GetTokenInfo(c.Request.Context(), &req)
+	if err != nil {
+		utils.Error("查询Token失败", zap.Error(err))
+		utils.RespondError(c, http.StatusInternalServerError,
+			utils.ErrorTypeInternal,
+			"查询Token失败: "+err.Error(),
+			nil)
+		return
+	}
+
+	// 返回结果（使用与原接口相同的格式）
+	utils.RespondSuccess(c, tokens, "")
 }

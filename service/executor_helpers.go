@@ -554,7 +554,7 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 			vm.Set("Reflect", goja.Undefined())
 			vm.Set("Proxy", goja.Undefined())
 
-			// 禁用 constructor 访问（主要防御）
+			// 🔒 禁用 constructor 访问（简化版，支持 EventLoop）
 			e.disableConstructorAccess(vm)
 
 			vm.Set("input", input)

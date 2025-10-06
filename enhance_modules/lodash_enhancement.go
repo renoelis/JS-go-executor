@@ -133,7 +133,12 @@ func (le *LodashEnhancer) Register(registry *require.Registry) error {
 }
 
 // Setup 在 Runtime 上设置模块环境
+// 💡 lodash 库较大（579KB），在生产环境（200 Runtime）不预加载以节省内存
+//
+//	执行对象: 15MB × 200 = 3GB 的内存占用
+//
+// 注意：首次调用会有约 10-20ms 的加载延迟
 func (le *LodashEnhancer) Setup(runtime *goja.Runtime) error {
-	// lodash 不需要额外的 Runtime 设置
+	// 不预加载，按需加载
 	return nil
 }

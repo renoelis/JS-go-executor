@@ -470,3 +470,21 @@ func init() {
 func GetStartTime() time.Time {
 	return startTime
 }
+
+// TestTool 测试工具页面
+func (c *ExecutorController) TestTool(ctx *gin.Context) {
+	// 从环境变量获取配置，提供默认值
+	apiUrl := utils.GetEnvWithDefault("TEST_TOOL_API_URL", "http://localhost:3002")
+	aiAssistantUrl := utils.GetEnvWithDefault("TEST_TOOL_AI_URL", "")
+	helpDocUrl := utils.GetEnvWithDefault("TEST_TOOL_HELP_URL", "")
+	exampleDocUrl := utils.GetEnvWithDefault("TEST_TOOL_EXAMPLE_URL", "")
+	applyServiceUrl := utils.GetEnvWithDefault("TEST_TOOL_APPLY_URL", "")
+
+	ctx.HTML(http.StatusOK, "test-tool.html", gin.H{
+		"ApiUrl":          apiUrl,
+		"AiAssistantUrl":  aiAssistantUrl,
+		"HelpDocUrl":      helpDocUrl,
+		"ExampleDocUrl":   exampleDocUrl,
+		"ApplyServiceUrl": applyServiceUrl,
+	})
+}
