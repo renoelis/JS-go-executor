@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	"sync"
 	"time"
 
 	"flow-codeblock-go/config"
@@ -174,40 +175,63 @@ func (c *ExecutorController) Health(ctx *gin.Context) {
 	healthy := true
 	issues := []string{} // 记录问题
 
-	// ==================== 检查数据库连接（关键依赖） ====================
-	dbStatus := "connected"
-	dbPing := "0ms"
-	dbHealthy := true
-	if c.tokenService != nil {
-		pingStart := time.Now()
-		if err := c.tokenService.PingDB(ctx.Request.Context()); err != nil {
-			dbStatus = "disconnected"
-			dbPing = "error"
-			dbHealthy = false
-			healthy = false // 数据库失败 = 服务不健康
-			issues = append(issues, "database_disconnected")
-			utils.Error("健康检查：数据库连接失败", zap.Error(err))
-		} else {
-			dbPing = fmt.Sprintf("%.2fms", float64(time.Since(pingStart).Microseconds())/1000.0)
-		}
-	}
+	// ==================== 🚀 并行检查数据库和Redis（性能优化） ====================
+	var (
+		dbStatus     = "connected"
+		dbPing       = "0ms"
+		dbHealthy    = true
+		redisStatus  = "connected"
+		redisPing    = "0ms"
+		redisHealthy = true
+		wg           sync.WaitGroup
+		mu           sync.Mutex // 保护共享变量（issues）
+	)
 
-	// ==================== 检查 Redis 连接（可选依赖） ====================
-	redisStatus := "connected"
-	redisPing := "0ms"
-	redisHealthy := true
 	if c.tokenService != nil {
-		pingStart := time.Now()
-		if err := c.tokenService.PingRedis(ctx.Request.Context()); err != nil {
-			redisStatus = "degraded" // Redis 失败使用 "degraded"
-			redisPing = "error"
-			redisHealthy = false
-			// Redis 失败不影响整体健康（服务可降级运行）
-			issues = append(issues, "redis_degraded")
-			utils.Warn("健康检查：Redis连接失败（降级模式）", zap.Error(err))
-		} else {
-			redisPing = fmt.Sprintf("%.2fms", float64(time.Since(pingStart).Microseconds())/1000.0)
-		}
+		// 并行检查数据库
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pingStart := time.Now()
+			if err := c.tokenService.PingDB(ctx.Request.Context()); err != nil {
+				mu.Lock()
+				dbStatus = "disconnected"
+				dbPing = "error"
+				dbHealthy = false
+				healthy = false // 数据库失败 = 服务不健康
+				issues = append(issues, "database_disconnected")
+				mu.Unlock()
+				utils.Error("健康检查：数据库连接失败", zap.Error(err))
+			} else {
+				mu.Lock()
+				dbPing = fmt.Sprintf("%.2fms", float64(time.Since(pingStart).Microseconds())/1000.0)
+				mu.Unlock()
+			}
+		}()
+
+		// 并行检查Redis
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pingStart := time.Now()
+			if err := c.tokenService.PingRedis(ctx.Request.Context()); err != nil {
+				mu.Lock()
+				redisStatus = "degraded" // Redis 失败使用 "degraded"
+				redisPing = "error"
+				redisHealthy = false
+				// Redis 失败不影响整体健康（服务可降级运行）
+				issues = append(issues, "redis_degraded")
+				mu.Unlock()
+				utils.Warn("健康检查：Redis连接失败（降级模式）", zap.Error(err))
+			} else {
+				mu.Lock()
+				redisPing = fmt.Sprintf("%.2fms", float64(time.Since(pingStart).Microseconds())/1000.0)
+				mu.Unlock()
+			}
+		}()
+
+		// 等待所有检查完成
+		wg.Wait()
 	}
 
 	// ==================== 检查执行器状态 ====================

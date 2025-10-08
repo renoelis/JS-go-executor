@@ -102,3 +102,11 @@ cache/
 .eslintrc*
 tsconfig.json
 
+package.json
+code-executor-tester.html
+
+DATE.js
+test_datefns_fix.go
+test_error_in_timeout.js
+test_eventloop_simple.js
+
