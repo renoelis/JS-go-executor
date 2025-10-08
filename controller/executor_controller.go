@@ -105,17 +105,22 @@ func (c *ExecutorController) Execute(ctx *gin.Context) {
 	totalTime := time.Since(startTime).Milliseconds()
 
 	if err != nil {
-		// 错误分类
+		// 🔥 修复：提取完整的错误信息（包括stack trace）
 		errorType := "RuntimeError"
+		errorMessage := err.Error()
+		errorStack := ""
+
 		if execErr, ok := err.(*model.ExecutionError); ok {
 			errorType = execErr.Type
+			errorMessage = execErr.Message
+			errorStack = execErr.Stack // ✅ 提取stack信息
 		}
 
 		// 🆕 记录执行失败（带详细信息）
 		utils.Error("代码执行失败",
 			zap.String("request_id", requestID),
 			zap.String("error_type", errorType),
-			zap.String("error_message", err.Error()),
+			zap.String("error_message", errorMessage),
 			zap.Int64("total_time_ms", totalTime),
 			zap.String("ws_id", ctx.GetString("wsId")),
 			zap.String("email", ctx.GetString("userEmail")))
@@ -124,7 +129,8 @@ func (c *ExecutorController) Execute(ctx *gin.Context) {
 			Success: false,
 			Error: &model.ExecuteError{
 				Type:    errorType,
-				Message: err.Error(),
+				Message: errorMessage,
+				Stack:   errorStack, // ✅ 返回stack信息
 			},
 			Timing: &model.ExecuteTiming{
 				ExecutionTime: totalTime,
@@ -477,14 +483,18 @@ func (c *ExecutorController) TestTool(ctx *gin.Context) {
 	apiUrl := utils.GetEnvWithDefault("TEST_TOOL_API_URL", "http://localhost:3002")
 	aiAssistantUrl := utils.GetEnvWithDefault("TEST_TOOL_AI_URL", "")
 	helpDocUrl := utils.GetEnvWithDefault("TEST_TOOL_HELP_URL", "")
+	apiDocUrl := utils.GetEnvWithDefault("TEST_TOOL_API_DOC_URL", "")
+	testToolGuideUrl := utils.GetEnvWithDefault("TEST_TOOL_GUIDE_URL", "")
 	exampleDocUrl := utils.GetEnvWithDefault("TEST_TOOL_EXAMPLE_URL", "")
 	applyServiceUrl := utils.GetEnvWithDefault("TEST_TOOL_APPLY_URL", "")
 
 	ctx.HTML(http.StatusOK, "test-tool.html", gin.H{
-		"ApiUrl":          apiUrl,
-		"AiAssistantUrl":  aiAssistantUrl,
-		"HelpDocUrl":      helpDocUrl,
-		"ExampleDocUrl":   exampleDocUrl,
-		"ApplyServiceUrl": applyServiceUrl,
+		"ApiUrl":           apiUrl,
+		"AiAssistantUrl":   aiAssistantUrl,
+		"HelpDocUrl":       helpDocUrl,
+		"ApiDocUrl":        apiDocUrl,
+		"TestToolGuideUrl": testToolGuideUrl,
+		"ExampleDocUrl":    exampleDocUrl,
+		"ApplyServiceUrl":  applyServiceUrl,
 	})
 }

@@ -206,6 +206,18 @@ func (xe *XLSXEnhancer) makeWriteFunc(runtime *goja.Runtime) func(goja.FunctionC
 			panic(runtime.NewGoError(fmt.Errorf("failed to write Excel: %w", err)))
 		}
 
+		// 🔒 安全检查：检查生成的 buffer 大小
+		// 防止大量数据生成超大 buffer 导致内存问题
+		bufferSize := int64(buffer.Len())
+		if bufferSize > xe.maxBufferSize {
+			panic(runtime.NewTypeError(fmt.Sprintf(
+				"Generated Excel buffer size exceeds maximum limit: %d > %d bytes (%d MB > %d MB). "+
+					"Reduce data rows or adjust MAX_BLOB_FILE_SIZE_MB if needed.",
+				bufferSize, xe.maxBufferSize,
+				bufferSize/1024/1024, xe.maxBufferSize/1024/1024,
+			)))
+		}
+
 		// 根据选项返回不同格式
 		if options != nil {
 			if typeStr, ok := options["type"].(string); ok {
@@ -264,10 +276,17 @@ func (xe *XLSXEnhancer) makeSheetToJSONFunc(runtime *goja.Runtime) func(goja.Fun
 			if header, ok := options["header"].(int64); ok && header == 1 {
 				// 返回数组格式
 				result := make([][]interface{}, 0, len(rows))
-				for _, row := range rows {
+				for rowIdx, row := range rows {
 					rowArr := make([]interface{}, len(row))
-					for i, cell := range row {
-						rowArr[i] = cell
+					for colIdx, cellValue := range row {
+						// 🔥 修复：根据单元格类型返回正确的值
+						cellAddr, _ := excelize.CoordinatesToCellName(colIdx+1, rowIdx+1)
+						cellType, err := file.GetCellType(sheetName, cellAddr)
+						if err == nil {
+							rowArr[colIdx] = xe.convertCellValue(cellValue, cellType)
+						} else {
+							rowArr[colIdx] = cellValue
+						}
 					}
 					result = append(result, rowArr)
 				}
@@ -277,22 +296,43 @@ func (xe *XLSXEnhancer) makeSheetToJSONFunc(runtime *goja.Runtime) func(goja.Fun
 
 		// 默认返回对象格式（第一行作为 header）
 		headers := rows[0]
-		result := make([]map[string]interface{}, 0, len(rows)-1)
+
+		// 🔥 修复：使用 JavaScript 数组而不是 Go slice，保持字段顺序
+		resultArray := runtime.NewArray()
 
 		for i := 1; i < len(rows); i++ {
 			row := rows[i]
-			obj := make(map[string]interface{})
+
+			// 🔥 关键：直接在 JavaScript 中创建对象，按顺序设置字段
+			obj := runtime.NewObject()
+
 			for j, header := range headers {
 				if j < len(row) {
-					obj[header] = row[j]
+					// 🔥 修复：根据单元格类型返回正确的 JavaScript 类型
+					// 使用 GetCellType() 识别类型，然后进行适当转换
+					cellAddr, _ := excelize.CoordinatesToCellName(j+1, i+1)
+					cellValue := row[j]
+
+					// 获取单元格类型
+					cellType, err := file.GetCellType(sheetName, cellAddr)
+					if err == nil {
+						convertedValue := xe.convertCellValue(cellValue, cellType)
+						// 直接设置到 JavaScript 对象（按顺序）
+						obj.Set(header, runtime.ToValue(convertedValue))
+					} else {
+						// 无法获取类型，保持为字符串
+						obj.Set(header, runtime.ToValue(cellValue))
+					}
 				} else {
-					obj[header] = nil
+					obj.Set(header, goja.Null())
 				}
 			}
-			result = append(result, obj)
+
+			// 添加到结果数组
+			resultArray.Set(fmt.Sprintf("%d", i-1), obj)
 		}
 
-		return runtime.ToValue(result)
+		return resultArray
 	}
 }
 
@@ -304,6 +344,33 @@ func (xe *XLSXEnhancer) makeJSONToSheetFunc(runtime *goja.Runtime) func(goja.Fun
 		}
 
 		dataVal := call.Argument(0)
+
+		// 🔥 修复：在导出前提取字段顺序（从 JavaScript 对象）
+		var fieldOrder []string
+
+		if dataObj := dataVal.ToObject(runtime); dataObj != nil {
+			// 获取数组长度
+			if lengthVal := dataObj.Get("length"); lengthVal != nil && !goja.IsUndefined(lengthVal) {
+				length := lengthVal.ToInteger()
+
+				if length > 0 {
+					// 获取第一个元素
+					firstItem := dataObj.Get("0")
+
+					if firstItem != nil && !goja.IsUndefined(firstItem) {
+						if firstObj := firstItem.ToObject(runtime); firstObj != nil {
+							// 🔥 使用 goja 的 Keys() 方法获取键顺序
+							keys := firstObj.Keys()
+							fieldOrder = make([]string, len(keys))
+							for i, key := range keys {
+								fieldOrder[i] = key
+							}
+						}
+					}
+				}
+			}
+		}
+
 		data := dataVal.Export()
 
 		// 创建新文件和 sheet
@@ -317,7 +384,7 @@ func (xe *XLSXEnhancer) makeJSONToSheetFunc(runtime *goja.Runtime) func(goja.Fun
 			// 检查第一个元素类型
 			if firstObj, ok := dataArr[0].(map[string]interface{}); ok {
 				// 对象数组格式
-				xe.writeObjectArrayToSheet(file, sheetName, dataArr, firstObj)
+				xe.writeObjectArrayToSheetWithOrder(file, sheetName, dataArr, firstObj, fieldOrder)
 			} else {
 				// 数组数组格式
 				xe.writeArrayArrayToSheet(file, sheetName, dataArr)
@@ -338,8 +405,15 @@ func (xe *XLSXEnhancer) makeBookNewFunc(runtime *goja.Runtime) func(goja.Functio
 	return func(call goja.FunctionCall) goja.Value {
 		file := excelize.NewFile()
 
+		// 🔥 注意：不能在这里删除 Sheet1
+		// excelize 的 DeleteSheet 在只剩一个 sheet 时无效
+		// 我们将在 book_append_sheet 添加第一个 sheet 后删除
+
 		// 使用统一的 createWorkbookObject 创建对象（包含 close() 方法和资源管理）
 		workbook := xe.createWorkbookObject(runtime, file)
+
+		// 🔥 标记：这个 workbook 有默认的 Sheet1（需要在添加其他 sheet 后删除）
+		workbook.(*goja.Object).Set("_hasDefaultSheet1", true)
 
 		return workbook
 	}
@@ -358,7 +432,6 @@ func (xe *XLSXEnhancer) makeBookAppendSheetFunc(runtime *goja.Runtime) func(goja
 
 		workbookFileVal := workbookObj.Get("_file")
 		sheetFileVal := sheetObj.Get("_file")
-		sheetSourceName := sheetObj.Get("_name").String()
 
 		if workbookFileVal == nil || sheetFileVal == nil {
 			panic(runtime.NewTypeError("invalid workbook or sheet object"))
@@ -366,20 +439,46 @@ func (xe *XLSXEnhancer) makeBookAppendSheetFunc(runtime *goja.Runtime) func(goja
 
 		workbookFile := workbookFileVal.Export().(*excelize.File)
 		sheetFile := sheetFileVal.Export().(*excelize.File)
+		sheetSourceName := sheetObj.Get("_name").String()
+
+		// 🔥 检查是否应该删除默认 Sheet1
+		hasDefaultSheet1 := false
+		if val := workbookObj.Get("_hasDefaultSheet1"); val != nil && !goja.IsUndefined(val) {
+			hasDefaultSheet1 = val.ToBoolean()
+		}
 
 		// 复制 sheet 数据到 workbook
-		xe.copySheetData(workbookFile, sheetFile, sheetName, sheetSourceName)
+		// 传递 hasDefaultSheet1 标记，让 copySheetData 知道是否应该删除 Sheet1
+		xe.copySheetDataSmart(workbookFile, sheetFile, sheetName, sheetSourceName, hasDefaultSheet1)
+
+		// 🔥 资源管理：复制完成后关闭源 sheet 的 file
+		// json_to_sheet 创建的是临时 file，复制后应该立即释放
+		// 检查 sheet 对象是否有 _fileWrapper（如果有，说明是通过 createWorkbookObject 创建的）
+		if sheetWrapperVal := sheetObj.Get("_fileWrapper"); sheetWrapperVal == nil || goja.IsUndefined(sheetWrapperVal) {
+			// 没有 wrapper，说明是 json_to_sheet 创建的临时 file，可以直接关闭
+			if sheetFile != workbookFile {
+				// 确保不是同一个 file 对象（避免误关闭）
+				sheetFile.Close()
+			}
+		}
+
+		// 🔥 清除默认 Sheet1 标记（第一次 append 后就清除）
+		workbookObj.Set("_hasDefaultSheet1", false)
 
 		// 更新 SheetNames
 		sheetNames := workbookFile.GetSheetList()
 		workbookObj.Set("SheetNames", sheetNames)
 
-		// 更新 Sheets 对象
-		sheetsObj := workbookObj.Get("Sheets").ToObject(runtime)
-		newSheetObj := runtime.NewObject()
-		newSheetObj.Set("_file", workbookFile)
-		newSheetObj.Set("_name", sheetName)
-		sheetsObj.Set(sheetName, newSheetObj)
+		// 🔥 重新创建 Sheets 对象（确保与实际 sheet 列表一致）
+		// 如果只是添加新 sheet 而不删除旧的，可能导致 Sheets 对象与实际不符
+		sheets := runtime.NewObject()
+		for _, name := range sheetNames {
+			sheetObj := runtime.NewObject()
+			sheetObj.Set("_file", workbookFile)
+			sheetObj.Set("_name", name)
+			sheets.Set(name, sheetObj)
+		}
+		workbookObj.Set("Sheets", sheets)
 
 		return goja.Undefined()
 	}
@@ -701,6 +800,17 @@ func (xe *XLSXEnhancer) makeCreateWriteStreamFunc(runtime *goja.Runtime) func(go
 				panic(runtime.NewGoError(fmt.Errorf("failed to finalize Excel: %w", err)))
 			}
 
+			// 🔒 安全检查：检查生成的 buffer 大小
+			bufferSize := int64(buffer.Len())
+			if bufferSize > xe.maxBufferSize {
+				panic(runtime.NewTypeError(fmt.Sprintf(
+					"Generated Excel buffer size exceeds maximum limit: %d > %d bytes (%d MB > %d MB). "+
+						"Reduce data rows or adjust MAX_BLOB_FILE_SIZE_MB if needed.",
+					bufferSize, xe.maxBufferSize,
+					bufferSize/1024/1024, xe.maxBufferSize/1024/1024,
+				)))
+			}
+
 			return xe.bytesToBuffer(runtime, buffer.Bytes())
 		})
 
@@ -712,38 +822,100 @@ func (xe *XLSXEnhancer) makeCreateWriteStreamFunc(runtime *goja.Runtime) func(go
 // 辅助函数
 // ============================================================================
 
-// bufferToBytes 将 goja Buffer 对象转换为 Go 字节数组，包含安全检查和性能优化。
+// bufferToBytes 将 JavaScript Buffer/ArrayBuffer/TypedArray 转换为 Go 字节数组，包含安全检查和性能优化。
 //
-// 该函数实现了从 JavaScript Buffer 到 Go []byte 的安全转换，并包含：
-//  1. 安全防护：检查 Buffer 大小是否超过 maxBufferSize 限制
-//  2. 性能优化：使用 strconv.Itoa 代替 fmt.Sprintf，提升 10-20 倍
-//  3. 边界检查：处理空 Buffer 和无效长度
+// 该函数实现了从 JavaScript 多种二进制类型到 Go []byte 的安全转换，并包含：
+//  1. 类型支持：Node.js Buffer、ArrayBuffer、Uint8Array、TypedArray
+//  2. 安全防护：检查大小是否超过 maxBufferSize 限制
+//  3. 性能优化：使用 strconv.Itoa 代替 fmt.Sprintf，提升 10-20 倍
+//  4. 边界检查：处理空对象和无效长度
+//
+// 支持的输入类型：
+//   - Node.js Buffer: 有 length 属性和数字索引
+//   - ArrayBuffer: 有 byteLength 属性（使用 goja.ArrayBuffer 接口）
+//   - TypedArray: Uint8Array, Int8Array 等（通过 Export() 导出为 []byte）
 //
 // 参数：
 //   - runtime: goja 运行时实例，用于错误处理
-//   - bufferObj: JavaScript Buffer 对象
+//   - bufferObj: JavaScript Buffer/ArrayBuffer/TypedArray 对象
 //
 // 返回：
 //   - []byte: Go 字节数组
 //
 // 异常：
-//   - TypeError: 如果 Buffer 对象缺少 length 属性
-//   - TypeError: 如果 Buffer 大小超过 maxBufferSize 限制
+//   - TypeError: 如果对象不是支持的二进制类型
+//   - TypeError: 如果大小超过 maxBufferSize 限制
 //
 // 安全性：
-//   - Buffer 大小受 MAX_BLOB_FILE_SIZE_MB 限制（默认 100MB）
-//   - 防止恶意用户通过超大 Buffer 导致 OOM 攻击
+//   - 大小受 MAX_BLOB_FILE_SIZE_MB 限制（默认 100MB）
+//   - 防止恶意用户通过超大对象导致 OOM 攻击
 //   - 错误消息包含当前限制值和调整方法
 //
 // 性能：
-//   - 空 Buffer（length <= 0）直接返回空数组，O(1)
-//   - 正常情况下时间复杂度 O(n)，n 为 Buffer 长度
+//   - 空对象（length <= 0）直接返回空数组，O(1)
+//   - 正常情况下时间复杂度 O(n)，n 为长度
 //   - 使用 strconv.Itoa 优化索引访问性能
+//
+// 示例用法：
+//
+//	// 1. 从 Buffer 转换（原有功能）
+//	const buffer = Buffer.from([1, 2, 3]);
+//	xlsx.read(buffer);
+//
+//	// 2. 从 ArrayBuffer 转换（新增支持）
+//	const arrayBuffer = new ArrayBuffer(100);
+//	xlsx.read(arrayBuffer);
+//
+//	// 3. 从 Uint8Array 转换（新增支持）
+//	const uint8Array = new Uint8Array([1, 2, 3]);
+//	xlsx.read(uint8Array);
+//
+//	// 4. 直接使用 axios/fetch 的响应（新增支持）
+//	const response = await axios.get(url, { responseType: 'arraybuffer' });
+//	xlsx.read(response.data);  // ✅ 不需要 Buffer.from() 转换
 func (xe *XLSXEnhancer) bufferToBytes(runtime *goja.Runtime, bufferObj *goja.Object) []byte {
+	// 🔥 新增：检查是否是 ArrayBuffer（goja.ArrayBuffer）
+	// ArrayBuffer 没有 length 属性，但可以通过 Export() 获取底层字节数组
+	if exported := bufferObj.Export(); exported != nil {
+		// 尝试作为 goja.ArrayBuffer 处理
+		if arrayBuffer, ok := exported.(goja.ArrayBuffer); ok {
+			data := arrayBuffer.Bytes()
+
+			// 安全检查：防止内存攻击
+			if int64(len(data)) > xe.maxBufferSize {
+				panic(runtime.NewTypeError(fmt.Sprintf(
+					"ArrayBuffer size exceeds maximum limit: %d > %d bytes (%d MB). Adjust MAX_BLOB_FILE_SIZE_MB if needed.",
+					len(data), xe.maxBufferSize, xe.maxBufferSize/1024/1024,
+				)))
+			}
+
+			return data
+		}
+
+		// 🔥 新增：检查是否是 TypedArray（已经是 []byte）
+		// goja 的 TypedArray.Export() 会直接返回 []byte
+		if byteArray, ok := exported.([]byte); ok {
+			// 安全检查：防止内存攻击
+			if int64(len(byteArray)) > xe.maxBufferSize {
+				panic(runtime.NewTypeError(fmt.Sprintf(
+					"TypedArray size exceeds maximum limit: %d > %d bytes (%d MB). Adjust MAX_BLOB_FILE_SIZE_MB if needed.",
+					len(byteArray), xe.maxBufferSize, xe.maxBufferSize/1024/1024,
+				)))
+			}
+
+			return byteArray
+		}
+	}
+
+	// 🔥 原有逻辑：处理 Node.js Buffer（有 length 属性和索引访问）
 	// 获取 Buffer 长度
 	lengthVal := bufferObj.Get("length")
 	if lengthVal == nil || goja.IsUndefined(lengthVal) {
-		panic(runtime.NewTypeError("invalid Buffer object: missing length property"))
+		// 🔥 优化：提供更友好的错误信息
+		panic(runtime.NewTypeError(
+			"invalid input: expected Buffer, ArrayBuffer, or TypedArray. " +
+				"Use Buffer.from(data) to convert, or pass ArrayBuffer/Uint8Array directly.",
+		))
 	}
 
 	length := int(lengthVal.ToInteger())
@@ -862,12 +1034,15 @@ func (xe *XLSXEnhancer) createWorkbookObject(runtime *goja.Runtime, file *exceli
 		return goja.Undefined()
 	})
 
-	// 🛡️ 使用 finalizer 作为兜底机制（但不应依赖它）
+	// 🛡️ 使用 finalizer 作为兜底机制（自动资源清理）
+	// 注意：Node.js 标准 xlsx 库没有 close() 方法，依赖 GC 自动清理
+	// 我们的实现兼容这种用法，Finalizer 会自动清理资源
 	goRuntime.SetFinalizer(fileWrapper, func(fw *excelFileWrapper) {
 		if fw != nil && !fw.closed && fw.file != nil {
-			utils.Warn("Unclosed Excel file detected, auto-releasing resources (should use workbook.close())")
+			// 🔥 改为 Debug 级别：这是正常的自动清理，不是警告
+			utils.Debug("Excel file auto-released by GC (Node.js compatible mode)")
 			if err := fw.file.Close(); err != nil {
-				utils.Warn("Finalizer 关闭 Excel 文件失败", zap.Error(err))
+				utils.Debug("Finalizer 关闭 Excel 文件失败", zap.Error(err))
 			}
 		}
 	})
@@ -915,12 +1090,17 @@ type excelFileWrapper struct {
 	closed bool           // 是否已关闭，防止重复关闭
 }
 
-// writeObjectArrayToSheet 写入对象数组到 sheet
-func (xe *XLSXEnhancer) writeObjectArrayToSheet(file *excelize.File, sheetName string, dataArr []interface{}, firstObj map[string]interface{}) {
-	// 提取 headers
-	headers := make([]string, 0, len(firstObj))
-	for k := range firstObj {
-		headers = append(headers, k)
+// writeObjectArrayToSheetWithOrder 写入对象数组到 sheet（保持字段顺序）
+// 🔥 修复：使用从 JavaScript 对象提取的字段顺序
+func (xe *XLSXEnhancer) writeObjectArrayToSheetWithOrder(file *excelize.File, sheetName string, dataArr []interface{}, firstObj map[string]interface{}, fieldOrder []string) {
+	var headers []string
+
+	if len(fieldOrder) > 0 {
+		// 使用传入的字段顺序（从 JavaScript 对象提取）
+		headers = fieldOrder
+	} else {
+		// 降级方案：从 map 提取（会按字母排序）
+		headers = xe.extractOrderedHeaders(dataArr)
 	}
 
 	// 写入 header
@@ -954,23 +1134,95 @@ func (xe *XLSXEnhancer) writeArrayArrayToSheet(file *excelize.File, sheetName st
 	}
 }
 
-// copySheetData 复制 sheet 数据
-func (xe *XLSXEnhancer) copySheetData(destFile *excelize.File, srcFile *excelize.File, destSheetName, srcSheetName string) {
-	// 创建新 sheet
-	index, _ := destFile.NewSheet(destSheetName)
-	destFile.SetActiveSheet(index)
+// copySheetDataSmart 智能复制 sheet 数据（带默认 Sheet1 处理）
+func (xe *XLSXEnhancer) copySheetDataSmart(destFile *excelize.File, srcFile *excelize.File, destSheetName, srcSheetName string, hasDefaultSheet1 bool) {
+	var index int
+
+	// 🔥 关键修复：excelize 对 sheet 名称大小写不敏感
+	// 分三种情况处理：
+	currentSheets := destFile.GetSheetList()
+
+	// 情况 1：用户要添加的就是 "Sheet1"（精确匹配）
+	if destSheetName == "Sheet1" {
+		// 检查是否已经有 Sheet1
+		hasSheet1 := false
+		for _, name := range currentSheets {
+			if name == "Sheet1" {
+				hasSheet1 = true
+				// 获取现有 Sheet1 的索引
+				index, _ = destFile.GetSheetIndex("Sheet1")
+				break
+			}
+		}
+
+		if !hasSheet1 {
+			// 没有 Sheet1，创建它
+			index, _ = destFile.NewSheet("Sheet1")
+		}
+		// 如果已有 Sheet1，直接使用（index 已设置）
+		destFile.SetActiveSheet(index)
+
+		// 情况 2：只有默认 Sheet1，用户要创建其他名称（如 "sheet1", "People"）
+		// 🔥 关键：必须检查 hasDefaultSheet1 标记，避免误删用户添加的 Sheet1
+	} else if len(currentSheets) == 1 && currentSheets[0] == "Sheet1" && hasDefaultSheet1 {
+		// 只有当标记为 true 时，才是默认的 Sheet1，需要删除
+		// 创建临时 sheet（确保至少有 2 个 sheet）
+		destFile.NewSheet("__temp__")
+		// 删除默认的 Sheet1
+		destFile.DeleteSheet("Sheet1")
+		// 创建用户指定的 sheet
+		index, _ = destFile.NewSheet(destSheetName)
+		destFile.SetActiveSheet(index)
+		// 删除临时 sheet
+		destFile.DeleteSheet("__temp__")
+
+		// 情况 3：已经有其他 sheet，直接创建
+	} else {
+		index, _ = destFile.NewSheet(destSheetName)
+		destFile.SetActiveSheet(index)
+	}
 
 	// 读取源 sheet 的所有行
 	rows, err := srcFile.GetRows(srcSheetName)
 	if err != nil {
+		utils.Warn("读取源 sheet 失败", zap.Error(err))
 		return
 	}
 
-	// 复制数据
+	// 🔥 修复：复制数据时保持类型信息
+	// 不能只用 GetRows() + SetCellValue()，这会丢失类型
 	for rowIdx, row := range rows {
-		for colIdx, cellValue := range row {
-			cell, _ := excelize.CoordinatesToCellName(colIdx+1, rowIdx+1)
-			destFile.SetCellValue(destSheetName, cell, cellValue)
+		for colIdx := range row {
+			srcCell, _ := excelize.CoordinatesToCellName(colIdx+1, rowIdx+1)
+			destCell := srcCell
+
+			// 获取源单元格的类型
+			cellType, _ := srcFile.GetCellType(srcSheetName, srcCell)
+			cellValue, _ := srcFile.GetCellValue(srcSheetName, srcCell)
+
+			// 根据类型写入不同的值
+			switch cellType {
+			case excelize.CellTypeBool:
+				// 布尔类型：解析并写入布尔值
+				if cellValue == "TRUE" || cellValue == "true" || cellValue == "1" {
+					destFile.SetCellBool(destSheetName, destCell, true)
+				} else {
+					destFile.SetCellBool(destSheetName, destCell, false)
+				}
+
+			case excelize.CellTypeNumber, excelize.CellTypeUnset:
+				// 数字类型或 Unset：尝试解析为数字
+				if floatVal, err := strconv.ParseFloat(cellValue, 64); err == nil {
+					destFile.SetCellValue(destSheetName, destCell, floatVal)
+				} else {
+					// 解析失败，当作字符串
+					destFile.SetCellValue(destSheetName, destCell, cellValue)
+				}
+
+			default:
+				// 其他类型：直接写入字符串
+				destFile.SetCellValue(destSheetName, destCell, cellValue)
+			}
 		}
 	}
 }
@@ -1000,4 +1252,109 @@ func (xe *XLSXEnhancer) Register(registry *require.Registry) error {
 func (xe *XLSXEnhancer) Setup(runtime *goja.Runtime) error {
 	// XLSX 不需要额外的 Runtime 设置
 	return nil
+}
+
+// convertCellValue 根据 Excel 单元格类型转换为正确的 JavaScript 类型
+// 🔥 修复：智能识别类型（excelize 的 GetCellType 对数字返回 Unset，不可靠）
+func (xe *XLSXEnhancer) convertCellValue(cellValue string, cellType excelize.CellType) interface{} {
+	// 空字符串
+	if cellValue == "" {
+		return ""
+	}
+
+	// 🔥 策略 1：先检查已知的类型（布尔值、字符串）
+	switch cellType {
+	case excelize.CellTypeBool:
+		// 布尔类型：Excel 返回 "TRUE"/"FALSE" 字符串
+		if cellValue == "TRUE" {
+			return true
+		} else if cellValue == "FALSE" {
+			return false
+		}
+		// 兼容其他格式
+		if boolVal, err := strconv.ParseBool(cellValue); err == nil {
+			return boolVal
+		}
+
+	case excelize.CellTypeInlineString, excelize.CellTypeSharedString:
+		// 明确的字符串类型：保持为字符串
+		return cellValue
+
+	case excelize.CellTypeError:
+		// 错误类型：返回错误字符串
+		return cellValue
+	}
+
+	// 🔥 策略 2：对于 Unset 和 Number 类型，尝试智能解析
+	// excelize 对数字单元格常常返回 Unset，需要根据值内容判断
+
+	// 尝试解析为数字（整数）
+	if intVal, err := strconv.ParseInt(cellValue, 10, 64); err == nil {
+		// 检查是否在 JavaScript 安全整数范围内
+		if intVal >= -9007199254740991 && intVal <= 9007199254740991 {
+			return intVal
+		}
+	}
+
+	// 尝试解析为浮点数
+	if floatVal, err := strconv.ParseFloat(cellValue, 64); err == nil {
+		return floatVal
+	}
+
+	// 无法解析为数字，保持为字符串
+	return cellValue
+}
+
+// extractOrderedHeaders 从对象数组中按出现顺序提取字段名
+// 🔥 修复：保持字段顺序与 JavaScript 对象的插入顺序一致
+// 注意：由于 Go map 无序，我们需要特殊处理以保持顺序
+func (xe *XLSXEnhancer) extractOrderedHeaders(dataArr []interface{}) []string {
+	// 使用第一个对象来确定字段顺序
+	// JavaScript 在 ES2015+ 中保证对象字段的插入顺序
+	// 但 Go map 是无序的，所以我们需要从原始数据推断
+
+	// 对于简单情况，我们按字母顺序排序（稳定且可预测）
+	// 这样至少保证每次运行结果一致
+	if len(dataArr) == 0 {
+		return []string{}
+	}
+
+	firstObj, ok := dataArr[0].(map[string]interface{})
+	if !ok {
+		return []string{}
+	}
+
+	// 收集所有字段名
+	headers := make([]string, 0, len(firstObj))
+	for k := range firstObj {
+		headers = append(headers, k)
+	}
+
+	// 🔥 关键：不排序，而是按照 JavaScript 对象的自然顺序
+	// 在 goja 中，map[string]interface{} 导出时会按照字段定义顺序
+	// 但由于 Go map 遍历是随机的，我们需要按字母顺序来保证一致性
+	//
+	// 更好的解决方案：使用稳定排序
+	// 对于数字键优先，然后是字符串键（按字母顺序）
+	return xe.sortHeadersLikeJavaScript(headers)
+}
+
+// sortHeadersLikeJavaScript 按照 JavaScript 对象键的顺序排序
+// 规则：数字键（按数值）→ 字符串键（按插入顺序，这里用字母顺序近似）
+func (xe *XLSXEnhancer) sortHeadersLikeJavaScript(headers []string) []string {
+	// 简化实现：直接按字母顺序排序
+	// 这样可以保证结果稳定且可预测
+	result := make([]string, len(headers))
+	copy(result, headers)
+
+	// 冒泡排序（简单实现，字段数量少）
+	for i := 0; i < len(result)-1; i++ {
+		for j := 0; j < len(result)-i-1; j++ {
+			if result[j] > result[j+1] {
+				result[j], result[j+1] = result[j+1], result[j]
+			}
+		}
+	}
+
+	return result
 }

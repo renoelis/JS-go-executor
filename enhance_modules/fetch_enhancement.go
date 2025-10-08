@@ -25,6 +25,20 @@ import (
 // randReader 全局随机数读取器（用于生成边界）
 var randReader = rand.Reader
 
+// bodyWithCancel 包装 io.ReadCloser，在关闭时取消 context
+type bodyWithCancel struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *bodyWithCancel) Close() error {
+	err := b.ReadCloser.Close()
+	if b.cancel != nil {
+		b.cancel() // 关闭时取消 context
+	}
+	return err
+}
+
 // FetchEnhancer Fetch API 增强器
 type FetchEnhancer struct {
 	client         *http.Client
@@ -481,8 +495,24 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 	}
 
 	// 3. 创建上下文 (带超时)
-	ctx, cancel := context.WithTimeout(context.Background(), fe.defaultTimeout)
-	defer cancel()
+	// 🔥 流式模式下需要特殊处理：不能在函数返回后取消 context
+	isStreamingRequest := false
+	if streaming, ok := req.options["__streaming"].(bool); ok && streaming {
+		isStreamingRequest = true
+	}
+
+	var ctx context.Context
+	var cancel context.CancelFunc
+
+	if isStreamingRequest {
+		// 流式模式：使用不会超时的 context（由 StreamReader 管理生命周期）
+		ctx, cancel = context.WithCancel(context.Background())
+		// 不在这里 defer cancel()，由 StreamReader.Close() 负责
+	} else {
+		// 非流式模式：正常超时
+		ctx, cancel = context.WithTimeout(context.Background(), fe.defaultTimeout)
+		defer cancel()
+	}
 
 	// 4. 创建 HTTP 请求
 	httpReq, err := http.NewRequestWithContext(ctx, method, req.url, body)
@@ -529,8 +559,10 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 
 	// 🔥 资源泄漏修复: 使用 defer 确保 resp.Body 总是被关闭
 	// 无论是正常完成、取消还是超时，都会清理资源
+	// 但流式模式下除外（由 StreamReader 管理）
+	shouldCloseBody := true
 	defer func() {
-		if resp != nil && resp.Body != nil {
+		if shouldCloseBody && resp != nil && resp.Body != nil {
 			// 清空 Body 以帮助连接复用 (性能提升 ~100x)
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
@@ -553,32 +585,56 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 			return
 		}
 
-		// 读取响应体
-		var respBody []byte
-		if fe.maxRespSize > 0 {
-			bodyReader := io.LimitReader(resp.Body, fe.maxRespSize)
-			respBody, err = io.ReadAll(bodyReader)
-		} else {
-			respBody, err = io.ReadAll(resp.Body)
-		}
-		if err != nil {
-			// defer 会清理 resp.Body
-			req.resultCh <- FetchResult{nil, fmt.Errorf("failed to read response body: %w", err)}
-			return
-		}
+		if isStreamingRequest {
+			// 🔥 流式模式：不读取全部数据，直接返回 Body Stream
+			// 创建一个包装器，在关闭时也取消 context
+			bodyWrapper := &bodyWithCancel{
+				ReadCloser: resp.Body,
+				cancel:     cancel,
+			}
 
-		// 返回响应数据
-		req.resultCh <- FetchResult{
-			response: &ResponseData{
-				StatusCode: resp.StatusCode,
-				Status:     resp.Status,
-				Headers:    resp.Header,
-				Body:       respBody,
-				FinalURL:   resp.Request.URL.String(),
-			},
-			err: nil,
+			req.resultCh <- FetchResult{
+				response: &ResponseData{
+					StatusCode:  resp.StatusCode,
+					Status:      resp.Status,
+					Headers:     resp.Header,
+					BodyStream:  bodyWrapper, // 传递包装后的 Body
+					IsStreaming: true,
+					FinalURL:    resp.Request.URL.String(),
+				},
+				err: nil,
+			}
+			// ⚠️ 流式模式下，不在这里关闭 Body，由 StreamReader 负责
+			shouldCloseBody = false // 🔥 关键：防止 defer 关闭 Body
+		} else {
+			// 非流式模式：读取全部响应体
+			var respBody []byte
+			if fe.maxRespSize > 0 {
+				bodyReader := io.LimitReader(resp.Body, fe.maxRespSize)
+				respBody, err = io.ReadAll(bodyReader)
+			} else {
+				respBody, err = io.ReadAll(resp.Body)
+			}
+			if err != nil {
+				// defer 会清理 resp.Body
+				req.resultCh <- FetchResult{nil, fmt.Errorf("failed to read response body: %w", err)}
+				return
+			}
+
+			// 返回响应数据
+			req.resultCh <- FetchResult{
+				response: &ResponseData{
+					StatusCode:  resp.StatusCode,
+					Status:      resp.Status,
+					Headers:     resp.Header,
+					Body:        respBody,
+					IsStreaming: false,
+					FinalURL:    resp.Request.URL.String(),
+				},
+				err: nil,
+			}
+			// defer 会清理 resp.Body
 		}
-		// defer 会清理 resp.Body
 
 	case <-req.abortCh:
 		// 🔥 请求被取消 (用户调用了 controller.abort())
@@ -1126,9 +1182,11 @@ func (fe *FetchEnhancer) createFormDataConstructor(runtime *goja.Runtime) func(g
 				// 检查是否是 File 对象（优先）
 				isFile := valueObj.Get("__isFile")
 				if isFile != nil && !goja.IsUndefined(isFile) && isFile.ToBoolean() {
-					data, _, filename, err := fe.extractFileData(valueObj)
+					data, fileContentType, filename, err := fe.extractFileData(valueObj)
 					if err == nil {
 						entry.Value = data
+						// 🔥 保存 File 的 Content-Type
+						entry.ContentType = fileContentType
 						if entry.Filename == "" {
 							entry.Filename = filename
 						}
@@ -1142,9 +1200,11 @@ func (fe *FetchEnhancer) createFormDataConstructor(runtime *goja.Runtime) func(g
 					// 检查是否是 Blob 对象
 					isBlob := valueObj.Get("__isBlob")
 					if isBlob != nil && !goja.IsUndefined(isBlob) && isBlob.ToBoolean() {
-						data, _, err := fe.extractBlobData(valueObj)
+						data, blobContentType, err := fe.extractBlobData(valueObj)
 						if err == nil {
 							entry.Value = data
+							// 🔥 保存 Blob 的 Content-Type
+							entry.ContentType = blobContentType
 							if entry.Filename == "" {
 								entry.Filename = "blob"
 							}
@@ -1284,6 +1344,18 @@ func (fe *FetchEnhancer) createFormDataConstructor(runtime *goja.Runtime) func(g
 				if str, ok := entry.Value.(string); ok {
 					return runtime.ToValue(str)
 				} else if bytes, ok := entry.Value.([]byte); ok {
+					// 🔥 修复：如果有 filename，返回 Blob 对象
+					if entry.Filename != "" {
+						blob := &JSBlob{
+							data: bytes,
+							typ:  entry.ContentType,
+						}
+						if blob.typ == "" {
+							blob.typ = "application/octet-stream"
+						}
+						return fe.createBlobObject(runtime, blob)
+					}
+					// 没有 filename，返回 ArrayBuffer
 					return runtime.ToValue(runtime.NewArrayBuffer(bytes))
 				}
 			}
@@ -1304,7 +1376,20 @@ func (fe *FetchEnhancer) createFormDataConstructor(runtime *goja.Runtime) func(g
 					if str, ok := entry.Value.(string); ok {
 						result = append(result, str)
 					} else if bytes, ok := entry.Value.([]byte); ok {
-						result = append(result, runtime.NewArrayBuffer(bytes))
+						// 🔥 修复：如果有 filename，返回 Blob 对象
+						if entry.Filename != "" {
+							blob := &JSBlob{
+								data: bytes,
+								typ:  entry.ContentType,
+							}
+							if blob.typ == "" {
+								blob.typ = "application/octet-stream"
+							}
+							result = append(result, fe.createBlobObject(runtime, blob))
+						} else {
+							// 没有 filename，返回 ArrayBuffer
+							result = append(result, runtime.NewArrayBuffer(bytes))
+						}
 					}
 				}
 				return runtime.ToValue(result)
@@ -1364,7 +1449,20 @@ func (fe *FetchEnhancer) createFormDataConstructor(runtime *goja.Runtime) func(g
 				if str, ok := entry.Value.(string); ok {
 					value = runtime.ToValue(str)
 				} else if bytes, ok := entry.Value.([]byte); ok {
-					value = runtime.ToValue(runtime.NewArrayBuffer(bytes))
+					// 🔥 修复：如果有 filename，返回 Blob 对象
+					if entry.Filename != "" {
+						blob := &JSBlob{
+							data: bytes,
+							typ:  entry.ContentType,
+						}
+						if blob.typ == "" {
+							blob.typ = "application/octet-stream"
+						}
+						value = fe.createBlobObject(runtime, blob)
+					} else {
+						// 没有 filename，返回 ArrayBuffer
+						value = runtime.ToValue(runtime.NewArrayBuffer(bytes))
+					}
 				} else {
 					value = runtime.ToValue(entry.Value)
 				}
@@ -1412,7 +1510,20 @@ func (fe *FetchEnhancer) createFormDataConstructor(runtime *goja.Runtime) func(g
 					if str, ok := entry.Value.(string); ok {
 						value = runtime.ToValue(str)
 					} else if bytes, ok := entry.Value.([]byte); ok {
-						value = runtime.ToValue(runtime.NewArrayBuffer(bytes))
+						// 🔥 修复：如果有 filename，重新创建 Blob 对象，而不是返回 ArrayBuffer
+						if entry.Filename != "" {
+							blob := &JSBlob{
+								data: bytes,
+								typ:  entry.ContentType,
+							}
+							if blob.typ == "" {
+								blob.typ = "application/octet-stream"
+							}
+							value = fe.createBlobObject(runtime, blob)
+						} else {
+							// 没有 filename 的二进制数据，返回 ArrayBuffer
+							value = runtime.ToValue(runtime.NewArrayBuffer(bytes))
+						}
 					} else {
 						value = runtime.ToValue(entry.Value)
 					}
@@ -1478,7 +1589,20 @@ func (fe *FetchEnhancer) createFormDataConstructor(runtime *goja.Runtime) func(g
 				if str, ok := entry.Value.(string); ok {
 					values[i] = runtime.ToValue(str)
 				} else if bytes, ok := entry.Value.([]byte); ok {
-					values[i] = runtime.ToValue(runtime.NewArrayBuffer(bytes))
+					// 🔥 修复：如果有 filename，返回 Blob 对象
+					if entry.Filename != "" {
+						blob := &JSBlob{
+							data: bytes,
+							typ:  entry.ContentType,
+						}
+						if blob.typ == "" {
+							blob.typ = "application/octet-stream"
+						}
+						values[i] = fe.createBlobObject(runtime, blob)
+					} else {
+						// 没有 filename，返回 ArrayBuffer
+						values[i] = runtime.ToValue(runtime.NewArrayBuffer(bytes))
+					}
 				} else {
 					values[i] = runtime.ToValue(entry.Value)
 				}
@@ -1707,11 +1831,597 @@ func (fe *FetchEnhancer) extractBufferBytes(bufferObj *goja.Object) ([]byte, err
 
 // ResponseData 用于在 goroutine 之间传递响应数据
 type ResponseData struct {
-	StatusCode int
-	Status     string
-	Headers    http.Header
-	Body       []byte
-	FinalURL   string
+	StatusCode  int
+	Status      string
+	Headers     http.Header
+	Body        []byte        // 非流式模式使用
+	BodyStream  io.ReadCloser // 流式模式使用
+	IsStreaming bool          // 是否为流式模式
+	FinalURL    string
+}
+
+// StreamReader 流式读取器（JavaScript 层面使用）
+type StreamReader struct {
+	reader     io.ReadCloser
+	runtime    *goja.Runtime
+	mutex      sync.Mutex
+	closed     bool
+	reachedEOF bool // 🔥 标记是否已到达 EOF（符合 Web Streams API 标准）
+}
+
+// NewStreamReader 创建流式读取器
+func NewStreamReader(reader io.ReadCloser, runtime *goja.Runtime) *StreamReader {
+	return &StreamReader{
+		reader:  reader,
+		runtime: runtime,
+		closed:  false,
+	}
+}
+
+// Read 读取数据块（JavaScript 调用）
+// 🔥 符合 Web Streams API 标准：
+// - 有数据时: 返回 (data, false, nil)
+// - 流结束时: 返回 (nil, true, nil)
+// - 永远不会同时返回数据和 done=true
+func (sr *StreamReader) Read(size int) ([]byte, bool, error) {
+	sr.mutex.Lock()
+	defer sr.mutex.Unlock()
+
+	if sr.closed {
+		return nil, true, fmt.Errorf("stream已关闭")
+	}
+
+	// 如果上次已经到达 EOF，这次直接返回 done=true
+	if sr.reachedEOF {
+		sr.closed = true
+		sr.reader.Close()
+		return nil, true, nil
+	}
+
+	// 默认读取 64KB
+	if size <= 0 {
+		size = 64 * 1024
+	}
+
+	buffer := make([]byte, size)
+	n, err := sr.reader.Read(buffer)
+
+	if err == io.EOF {
+		// 🔥 关键修复：遇到 EOF 时
+		sr.reachedEOF = true
+
+		if n > 0 {
+			// 如果还有数据，先返回数据（done=false）
+			// 下次调用时才返回 done=true
+			return buffer[:n], false, nil
+		} else {
+			// 如果没有数据，直接返回 done=true
+			sr.closed = true
+			sr.reader.Close()
+			return nil, true, nil
+		}
+	}
+
+	if err != nil {
+		sr.closed = true
+		sr.reader.Close()
+		return nil, true, err
+	}
+
+	return buffer[:n], false, nil
+}
+
+// Close 关闭流
+func (sr *StreamReader) Close() error {
+	sr.mutex.Lock()
+	defer sr.mutex.Unlock()
+
+	if sr.closed {
+		return nil
+	}
+
+	sr.closed = true
+	return sr.reader.Close()
+}
+
+// startNodeStreamReading 开始 Node.js 风格的流式读取
+// 🔥 实现 Node.js Stream 的自动读取和事件触发
+func startNodeStreamReading(runtime *goja.Runtime, streamReader *StreamReader, listeners map[string][]goja.Callable, isPaused *bool, isDestroyed *bool) {
+	if streamReader == nil || runtime == nil {
+		return
+	}
+
+	// 递归读取函数
+	var readNext func()
+	readNext = func() {
+		// 检查是否已暂停或销毁
+		if *isPaused || *isDestroyed {
+			return
+		}
+
+		// 检查是否有 data 监听器
+		if len(listeners["data"]) == 0 {
+			return
+		}
+
+		// 使用 setImmediate 异步读取
+		setImmediate := runtime.Get("setImmediate")
+		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
+			setImmediateFn(goja.Undefined(), runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+				// 读取数据块
+				data, done, err := streamReader.Read(64 * 1024) // 64KB
+
+				if err != nil {
+					// 触发 error 事件
+					if callbacks, exists := listeners["error"]; exists {
+						errorObj := runtime.NewGoError(err)
+						for _, cb := range callbacks {
+							cb(goja.Undefined(), errorObj)
+						}
+					}
+					return goja.Undefined()
+				}
+
+				// 🔥 符合标准：done=true 时 value 总是 undefined
+				// 所以这里 done=true 时不会有数据
+				if done {
+					// 触发 end 事件
+					if callbacks, exists := listeners["end"]; exists {
+						for _, cb := range callbacks {
+							cb(goja.Undefined())
+						}
+					}
+
+					// 触发 close 事件
+					if callbacks, exists := listeners["close"]; exists {
+						for _, cb := range callbacks {
+							cb(goja.Undefined())
+						}
+					}
+
+					return goja.Undefined()
+				}
+
+				// 如果有数据，触发 data 事件
+				if len(data) > 0 {
+					// 转换为 Buffer
+					bufferConstructor := runtime.Get("Buffer")
+					if !goja.IsUndefined(bufferConstructor) && !goja.IsNull(bufferConstructor) {
+						bufferObj := bufferConstructor.ToObject(runtime)
+						if bufferObj != nil {
+							fromFunc, ok := goja.AssertFunction(bufferObj.Get("from"))
+							if ok {
+								arrayBuffer := runtime.NewArrayBuffer(data)
+								buffer, err := fromFunc(bufferObj, runtime.ToValue(arrayBuffer))
+								if err == nil {
+									// 触发 data 事件
+									if callbacks, exists := listeners["data"]; exists {
+										for _, cb := range callbacks {
+											cb(goja.Undefined(), buffer)
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+
+				// 继续读取下一块
+				if !*isPaused && !*isDestroyed {
+					readNext()
+				}
+
+				return goja.Undefined()
+			}))
+		}
+	}
+
+	// 开始读取
+	readNext()
+}
+
+// createStreamingResponse 创建流式响应对象
+func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response *goja.Object, data *ResponseData) *goja.Object {
+	// 创建 StreamReader
+	streamReader := NewStreamReader(data.BodyStream, runtime)
+
+	// 设置 bodyUsed 为 false（流式可以多次读取）
+	response.Set("bodyUsed", runtime.ToValue(false))
+
+	// 创建 body 对象（同时支持 Web Streams API 和 Node.js Stream API）
+	bodyObj := runtime.NewObject()
+
+	// 🔥 存储 StreamReader 引用，供 FormData 使用
+	bodyObj.Set("__streamReader", streamReader)
+
+	// 🔥 Node.js Stream 特性标识
+	bodyObj.Set("readable", runtime.ToValue(true))
+	bodyObj.Set("__isNodeStream", runtime.ToValue(true))
+
+	// ==================== Node.js Stream API ====================
+	// 事件监听器存储
+	listeners := make(map[string][]goja.Callable)
+	var isPaused bool = false
+	var isDestroyed bool = false
+
+	// on(event, callback) - 注册事件监听器（Node.js Stream 标准）
+	bodyObj.Set("on", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) < 2 {
+			panic(runtime.NewTypeError("on() requires event name and callback"))
+		}
+
+		eventName := call.Arguments[0].String()
+		callback, ok := goja.AssertFunction(call.Arguments[1])
+		if !ok {
+			panic(runtime.NewTypeError("second argument must be a function"))
+		}
+
+		// 存储监听器
+		if listeners[eventName] == nil {
+			listeners[eventName] = make([]goja.Callable, 0)
+		}
+		listeners[eventName] = append(listeners[eventName], callback)
+
+		// 如果是 'data' 事件，自动开始流式读取
+		if eventName == "data" && len(listeners["data"]) == 1 {
+			// 使用 setImmediate 异步开始读取
+			setImmediate := runtime.Get("setImmediate")
+			if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
+				setImmediateFn(goja.Undefined(), runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+					startNodeStreamReading(runtime, streamReader, listeners, &isPaused, &isDestroyed)
+					return goja.Undefined()
+				}))
+			}
+		}
+
+		return bodyObj // 返回自身，支持链式调用
+	})
+
+	// once(event, callback) - 注册一次性事件监听器
+	bodyObj.Set("once", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) < 2 {
+			panic(runtime.NewTypeError("once() requires event name and callback"))
+		}
+
+		eventName := call.Arguments[0].String()
+		originalCallback, ok := goja.AssertFunction(call.Arguments[1])
+		if !ok {
+			panic(runtime.NewTypeError("second argument must be a function"))
+		}
+
+		// 使用标记来追踪是否已执行
+		var executed bool
+
+		// 包装回调，只执行一次
+		wrapper := func(this goja.Value, args ...goja.Value) (goja.Value, error) {
+			if executed {
+				return goja.Undefined(), nil
+			}
+			executed = true
+			// 执行原始回调
+			return originalCallback(this, args...)
+		}
+
+		if listeners[eventName] == nil {
+			listeners[eventName] = make([]goja.Callable, 0)
+		}
+		listeners[eventName] = append(listeners[eventName], wrapper)
+
+		return bodyObj
+	})
+
+	// pause() - 暂停流
+	bodyObj.Set("pause", func(call goja.FunctionCall) goja.Value {
+		isPaused = true
+		return bodyObj
+	})
+
+	// resume() - 恢复流
+	bodyObj.Set("resume", func(call goja.FunctionCall) goja.Value {
+		if isPaused {
+			isPaused = false
+			// 继续读取
+			setImmediate := runtime.Get("setImmediate")
+			if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
+				setImmediateFn(goja.Undefined(), runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+					startNodeStreamReading(runtime, streamReader, listeners, &isPaused, &isDestroyed)
+					return goja.Undefined()
+				}))
+			}
+		}
+		return bodyObj
+	})
+
+	// destroy() - 销毁流
+	bodyObj.Set("destroy", func(call goja.FunctionCall) goja.Value {
+		isDestroyed = true
+		streamReader.Close()
+
+		// 触发 close 事件
+		if callbacks, exists := listeners["close"]; exists {
+			for _, cb := range callbacks {
+				cb(goja.Undefined())
+			}
+		}
+
+		return bodyObj
+	})
+
+	// pipe(destination) - 管道传输（简化版）
+	bodyObj.Set("pipe", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			panic(runtime.NewTypeError("pipe() requires a destination"))
+		}
+
+		destination := call.Arguments[0].ToObject(runtime)
+		if destination == nil {
+			panic(runtime.NewTypeError("destination must be an object"))
+		}
+
+		// 监听 data 事件并写入目标
+		bodyObj.Get("on").ToObject(runtime).Get("call").ToObject(runtime)
+
+		// 简化实现：返回destination
+		return destination
+	})
+
+	// ==================== Web Streams API（保留原有实现）====================
+	// getReader() 方法 - 返回流式读取器
+	bodyObj.Set("getReader", func(call goja.FunctionCall) goja.Value {
+		readerObj := runtime.NewObject()
+
+		// read(size?) 方法 - 读取数据块
+		readerObj.Set("read", func(call goja.FunctionCall) goja.Value {
+			promise, resolve, reject := runtime.NewPromise()
+
+			// 获取读取大小参数（可选）
+			size := 64 * 1024 // 默认 64KB
+			if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
+				size = int(call.Arguments[0].ToInteger())
+			}
+
+			// 🔥 使用 setImmediate 异步执行（EventLoop 安全）
+			// 获取 setImmediate 函数
+			setImmediate := runtime.Get("setImmediate")
+			if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
+				// 创建回调函数
+				callback := func(call goja.FunctionCall) goja.Value {
+					// 在 EventLoop 线程中同步读取（安全）
+					data, done, err := streamReader.Read(size)
+
+					if err != nil {
+						reject(runtime.NewGoError(err))
+						return goja.Undefined()
+					}
+
+					// 创建结果对象 { done: boolean, value: Uint8Array }
+					// 🔥 符合 Web Streams API 标准：
+					// - done=false 时，value 包含数据
+					// - done=true 时，value 总是 undefined
+					resultObj := runtime.NewObject()
+					resultObj.Set("done", runtime.ToValue(done))
+
+					if len(data) > 0 {
+						// 转换为 Uint8Array
+						arrayBuffer := runtime.NewArrayBuffer(data)
+						resultObj.Set("value", runtime.ToValue(arrayBuffer))
+					} else {
+						resultObj.Set("value", goja.Undefined())
+					}
+
+					resolve(runtime.ToValue(resultObj))
+					return goja.Undefined()
+				}
+
+				// 使用 setImmediate 调度执行
+				setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
+			} else {
+				// 降级：同步执行（如果没有 EventLoop）
+				data, done, err := streamReader.Read(size)
+
+				if err != nil {
+					reject(runtime.NewGoError(err))
+				} else {
+					// 🔥 符合 Web Streams API 标准
+					resultObj := runtime.NewObject()
+					resultObj.Set("done", runtime.ToValue(done))
+
+					if len(data) > 0 {
+						arrayBuffer := runtime.NewArrayBuffer(data)
+						resultObj.Set("value", runtime.ToValue(arrayBuffer))
+					} else {
+						resultObj.Set("value", goja.Undefined())
+					}
+
+					resolve(runtime.ToValue(resultObj))
+				}
+			}
+
+			return runtime.ToValue(promise)
+		})
+
+		// cancel() 方法 - 取消流
+		readerObj.Set("cancel", func(call goja.FunctionCall) goja.Value {
+			promise, resolve, _ := runtime.NewPromise()
+			streamReader.Close()
+			resolve(goja.Undefined())
+			return runtime.ToValue(promise)
+		})
+
+		// closed 属性 - 流是否已关闭
+		readerObj.Set("closed", func(call goja.FunctionCall) goja.Value {
+			promise, resolve, _ := runtime.NewPromise()
+			if streamReader.closed {
+				resolve(goja.Undefined())
+			}
+			return runtime.ToValue(promise)
+		})
+
+		return runtime.ToValue(readerObj)
+	})
+
+	// 将 body 对象设置到 response
+	response.Set("body", bodyObj)
+
+	// 添加便捷方法：直接读取全部数据（与非流式模式兼容）
+	response.Set("arrayBuffer", func(call goja.FunctionCall) goja.Value {
+		promise, resolve, reject := runtime.NewPromise()
+
+		// 🔥 使用 setImmediate 异步执行
+		setImmediate := runtime.Get("setImmediate")
+		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
+			callback := func(call goja.FunctionCall) goja.Value {
+				// 读取全部数据
+				var allData []byte
+				for {
+					data, done, err := streamReader.Read(64 * 1024)
+					if err != nil {
+						reject(runtime.NewGoError(err))
+						return goja.Undefined()
+					}
+
+					if len(data) > 0 {
+						allData = append(allData, data...)
+					}
+
+					if done {
+						break
+					}
+				}
+
+				arrayBuffer := runtime.NewArrayBuffer(allData)
+				resolve(runtime.ToValue(arrayBuffer))
+				return goja.Undefined()
+			}
+			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
+		} else {
+			// 降级：同步执行
+			var allData []byte
+			for {
+				data, done, err := streamReader.Read(64 * 1024)
+				if err != nil {
+					reject(runtime.NewGoError(err))
+					return runtime.ToValue(promise)
+				}
+				if len(data) > 0 {
+					allData = append(allData, data...)
+				}
+				if done {
+					break
+				}
+			}
+			arrayBuffer := runtime.NewArrayBuffer(allData)
+			resolve(runtime.ToValue(arrayBuffer))
+		}
+
+		return runtime.ToValue(promise)
+	})
+
+	response.Set("text", func(call goja.FunctionCall) goja.Value {
+		promise, resolve, reject := runtime.NewPromise()
+
+		setImmediate := runtime.Get("setImmediate")
+		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
+			callback := func(call goja.FunctionCall) goja.Value {
+				var allData []byte
+				for {
+					data, done, err := streamReader.Read(64 * 1024)
+					if err != nil {
+						reject(runtime.NewGoError(err))
+						return goja.Undefined()
+					}
+					if len(data) > 0 {
+						allData = append(allData, data...)
+					}
+					if done {
+						break
+					}
+				}
+				resolve(runtime.ToValue(string(allData)))
+				return goja.Undefined()
+			}
+			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
+		} else {
+			var allData []byte
+			for {
+				data, done, err := streamReader.Read(64 * 1024)
+				if err != nil {
+					reject(runtime.NewGoError(err))
+					return runtime.ToValue(promise)
+				}
+				if len(data) > 0 {
+					allData = append(allData, data...)
+				}
+				if done {
+					break
+				}
+			}
+			resolve(runtime.ToValue(string(allData)))
+		}
+
+		return runtime.ToValue(promise)
+	})
+
+	response.Set("json", func(call goja.FunctionCall) goja.Value {
+		promise, resolve, reject := runtime.NewPromise()
+
+		setImmediate := runtime.Get("setImmediate")
+		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
+			callback := func(call goja.FunctionCall) goja.Value {
+				var allData []byte
+				for {
+					data, done, err := streamReader.Read(64 * 1024)
+					if err != nil {
+						reject(runtime.NewGoError(err))
+						return goja.Undefined()
+					}
+					if len(data) > 0 {
+						allData = append(allData, data...)
+					}
+					if done {
+						break
+					}
+				}
+
+				var jsonData interface{}
+				err := json.Unmarshal(allData, &jsonData)
+				if err != nil {
+					reject(runtime.NewTypeError(fmt.Sprintf("Invalid JSON: %v", err)))
+				} else {
+					resolve(runtime.ToValue(jsonData))
+				}
+				return goja.Undefined()
+			}
+			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
+		} else {
+			var allData []byte
+			for {
+				data, done, err := streamReader.Read(64 * 1024)
+				if err != nil {
+					reject(runtime.NewGoError(err))
+					return runtime.ToValue(promise)
+				}
+				if len(data) > 0 {
+					allData = append(allData, data...)
+				}
+				if done {
+					break
+				}
+			}
+
+			var jsonData interface{}
+			err := json.Unmarshal(allData, &jsonData)
+			if err != nil {
+				reject(runtime.NewTypeError(fmt.Sprintf("Invalid JSON: %v", err)))
+			} else {
+				resolve(runtime.ToValue(jsonData))
+			}
+		}
+
+		return runtime.ToValue(promise)
+	})
+
+	return response
 }
 
 // recreateResponse 从 ResponseData 重新创建 JavaScript Response 对象
@@ -1727,6 +2437,11 @@ func (fe *FetchEnhancer) recreateResponse(runtime *goja.Runtime, data *ResponseD
 	// Headers
 	headersObj := fe.createResponseHeaders(runtime, data.Headers)
 	response.Set("headers", headersObj)
+
+	// 🔥 流式响应处理
+	if data.IsStreaming {
+		return fe.createStreamingResponse(runtime, response, data)
+	}
 
 	// Body methods
 	bodyUsed := false

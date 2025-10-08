@@ -34,6 +34,10 @@ type CacheService struct {
 
 	// 统计信息
 	stats cacheStats
+
+	// 🔥 新增：优雅关闭支持
+	shutdown chan struct{}
+	wg       sync.WaitGroup
 }
 
 type cacheItem struct {
@@ -60,9 +64,11 @@ func NewCacheService(hotMaxSize int, hotTTL time.Duration, redisClient *redis.Cl
 		redis:       redisClient,
 		redisPrefix: "token_cache:",
 		redisTTL:    redisTTL,
+		shutdown:    make(chan struct{}), // 🔥 初始化关闭信号
 	}
 
 	// 启动定期清理任务
+	cs.wg.Add(1) // 🔥 注册 goroutine
 	go cs.cleanupLoop()
 
 	utils.Info("缓存服务初始化完成",
@@ -242,11 +248,19 @@ func (cs *CacheService) evictLRU() {
 
 // cleanupLoop 定期清理过期数据
 func (cs *CacheService) cleanupLoop() {
+	defer cs.wg.Done() // 🔥 goroutine 退出时通知
+
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		cs.cleanup()
+	for {
+		select {
+		case <-ticker.C:
+			cs.cleanup()
+		case <-cs.shutdown: // 🔥 监听关闭信号
+			utils.Info("CacheService 清理任务已停止")
+			return
+		}
 	}
 }
 
@@ -345,4 +359,18 @@ func (cs *CacheService) PingRedis(ctx context.Context) error {
 		return fmt.Errorf("Redis未启用")
 	}
 	return cs.redis.Ping(ctx).Err()
+}
+
+// Close 关闭缓存服务，释放所有资源
+func (cs *CacheService) Close() error {
+	utils.Info("开始关闭 CacheService")
+
+	// 发送关闭信号
+	close(cs.shutdown)
+
+	// 等待清理 goroutine 退出
+	cs.wg.Wait()
+
+	utils.Info("CacheService 已关闭")
+	return nil
 }

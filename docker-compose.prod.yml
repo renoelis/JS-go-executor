@@ -1,7 +1,5 @@
 # Flow-CodeBlock Go版本 - 生产环境 Docker Compose配置
 # 基于 Go + goja 的高性能 JavaScript 代码执行服务
-version: '3.8'
-
 services:
   # ====================================================================================
   # Go 代码执行服务
@@ -49,8 +47,8 @@ services:
       
       # ==================== 🔐 认证配置 ====================
       # ⚠️ 生产环境必须修改！使用强随机密码！
-      # 生成方法: openssl rand -base64 32
-      - ADMIN_TOKEN=PLEASE_CHANGE_THIS_IN_PRODUCTION_USE_STRONG_RANDOM_TOKEN
+      # 生成方法: openssl rand -base64 32  /  ADMIN_TOKEN=$(uuidgen)
+      - ADMIN_TOKEN=9560D6C9-264A-45E4-B8BF-BF4957860484
       
       # ==================== Token缓存配置 ====================
       - TOKEN_CACHE_HOT_SIZE=300         # 🔧 热缓存大小 500→300 (内存优化)
@@ -59,8 +57,8 @@ services:
       
       # ==================== 🔥 缓存写入池配置 ====================
       # 说明：统一管理所有异步缓存写入，防止 goroutine 暴涨
-      - CACHE_WRITE_POOL_WORKERS=15      # Worker数量 (推荐: 10-20)
-      - CACHE_WRITE_POOL_QUEUE_SIZE=1500 # 队列大小 (推荐: 1000-2000)
+      - CACHE_WRITE_POOL_WORKERS=15      # Worker数量 (推荐:10-20)
+      - CACHE_WRITE_POOL_QUEUE_SIZE=1500 # 队列大小 (推荐:1000-2000)
       - CACHE_WRITE_POOL_SUBMIT_TIMEOUT_MS=50 # 提交超时(毫秒)
       
       # ==================== Token限流配置 ====================
@@ -69,17 +67,17 @@ services:
       - RATE_LIMIT_BATCH_SIZE=100        # 批量写入大小
       
       # ==================== 🚦 IP限流配置 ====================
-      # 认证前IP限流（严格）- 防止暴力破解Token
-      - IP_RATE_LIMIT_PRE_AUTH=50        # 每秒请求数 (推荐: 50)
-      - IP_RATE_LIMIT_PRE_AUTH_BURST=100 # 突发请求数 (推荐: 100)
+      # # 认证前IP限流（严格）- 防止暴力破解Token
+      - IP_RATE_LIMIT_PRE_AUTH=50        # 每秒请求数 (推荐:50)
+      - IP_RATE_LIMIT_PRE_AUTH_BURST=100 # 突发请求数 (推荐:100)
       
       # 认证后IP限流（宽松）- 防止极端滥用
-      - IP_RATE_LIMIT_POST_AUTH=200      # 每秒请求数 (推荐: 200)
-      - IP_RATE_LIMIT_POST_AUTH_BURST=400 # 突发请求数 (推荐: 400)
+      - IP_RATE_LIMIT_POST_AUTH=200      # 每秒请求数 (推荐:200)
+      - IP_RATE_LIMIT_POST_AUTH_BURST=400 # 突发请求数 (推荐:400)
       
       # 全局IP限流（公开端点）
-      - IP_RATE_LIMIT_GLOBAL=50          # 每秒请求数 (推荐: 50)
-      - IP_RATE_LIMIT_GLOBAL_BURST=100   # 突发请求数 (推荐: 100)
+      - IP_RATE_LIMIT_GLOBAL=50          # 每秒请求数 (推荐:50)
+      - IP_RATE_LIMIT_GLOBAL_BURST=100   # 突发请求数 (推荐:100)
       
       # ==================== 🚀 JavaScript执行器配置 ====================
       # 📋 推荐配置:
@@ -91,15 +89,20 @@ services:
       - MIN_RUNTIME_POOL_SIZE=100        # 最小池大小 (100 个)
       - MAX_RUNTIME_POOL_SIZE=200        # 最大池大小 (200 个)
       - RUNTIME_IDLE_TIMEOUT_MIN=5       # Runtime空闲超时(分钟)
-      - MAX_CONCURRENT_EXECUTIONS=1600   # 🔧 最大并发数 (200 Runtime 推荐)
+      #- MAX_CONCURRENT_EXECUTIONS=1600   # 🔧 最大并发数 (200 Runtime 推荐)，不传系统会动态计算
       - CODE_CACHE_SIZE=100              # 代码缓存大小
       - ALLOW_CONSOLE=false              # 🔧 生产环境禁用console
       
       # 执行限制
       - MAX_CODE_LENGTH=65535            # 代码长度限制(字节) - 64KB
-      - MAX_INPUT_SIZE=2097152           # Input大小限制(字节) - 2MB
+      - MAX_INPUT_SIZE=1048576           # Input大小限制(字节) - 1MB
       - MAX_RESULT_SIZE=5242880          # 结果大小限制(字节) - 5MB
-      - EXECUTION_TIMEOUT_MS=180000      # 🔧 执行超时(毫秒) - 3分钟
+      - EXECUTION_TIMEOUT_MS=60000      # 🔧 执行超时(毫秒) - 1分钟
+      
+      # ==================== 🔥 并发控制超时配置 ====================
+      # 说明：控制系统繁忙时的等待行为
+      - CONCURRENCY_WAIT_TIMEOUT_SEC=10  # 并发槽位等待超时(秒) - 默认 10 秒
+      - RUNTIME_POOL_ACQUIRE_TIMEOUT_SEC=5  # Runtime 池获取超时(秒) - 默认 5 秒
       
       # ==================== 🔥 熔断器配置 ====================
       # 说明：防止重度过载，保护系统稳定性
@@ -110,26 +113,32 @@ services:
       - CIRCUIT_BREAKER_MAX_REQUESTS=100 # Half-Open状态最大探测请求数
       
       # ==================== Fetch API配置 ====================
-      - FETCH_TIMEOUT_MS=180000          # Fetch超时(毫秒) - 3分钟
-      - MAX_FORMDATA_SIZE_MB=100         # FormData最大大小(MB)
+      - FETCH_TIMEOUT_MS=30000          # Fetch超时(毫秒) - 30秒
+      - MAX_FORMDATA_SIZE_MB=10         # FormData最大大小(MB)
       - FORMDATA_STREAMING_THRESHOLD_MB=1 # 流式上传阈值(MB)
       - ENABLE_CHUNKED_UPLOAD=1          # 启用分块上传
-      - MAX_BLOB_FILE_SIZE_MB=100        # Blob文件最大大小(MB)
-      - FORMDATA_BUFFER_SIZE=2097152     # FormData缓冲区大小(字节)
-      - MAX_FILE_SIZE_MB=50              # 文件最大大小(MB)
+      - MAX_BLOB_FILE_SIZE_MB=5        # Blob文件最大大小(MB)
+      - FORMDATA_BUFFER_SIZE=524288     # FormData缓冲区大小(字节)，512KB
+      - MAX_FILE_SIZE_MB=5              # 文件最大大小(MB)
       
       # ==================== Go运行时配置 ====================
       - GOMAXPROCS=0                     # 0=使用所有CPU核心
-      - GOGC=75                          # 🔧 GC目标百分比 (100→75，更频繁GC，降低内存峰值)
+      - GOGC=100                          # 🔧 GC目标百分比 (100→75，更频繁GC，降低内存峰值)
+      
+      # ==================== 🔍 调试配置 ====================
+      # 生产环境默认禁用，需要时可临时启用
+      - ENABLE_PPROF=false               # pprof 性能分析接口 (生产环境建议禁用)
       
       # ==================== 🔧 测试工具配置 ====================
       # 测试工具页面配置 - 访问地址: http://your-domain:3002/flow/test-tool
       # 可根据部署环境修改这些链接
-      - TEST_TOOL_API_URL=http://localhost:3002                                      # API服务地址
-      - TEST_TOOL_AI_URL=https://qingflow.com/pc-ultron/share/agent/289302286342078465  # 轻翼AI助手链接
-      - TEST_TOOL_HELP_URL=https://exiao.yuque.com/ixwxsb/cqfg2y/or5052bo2dtukro2  # 帮助文档链接
-      - TEST_TOOL_EXAMPLE_URL=https://exiao.yuque.com/rlf3k1/oanb79/tlty7ic7szfr2v7v?singleDoc#  # 代码块示例链接
-      - TEST_TOOL_APPLY_URL=https://qingflow.com/f/9cah24om6402                    # 申请开通服务链接
+      - TEST_TOOL_API_URL=https://api.renoelis.top                                           # API服务地址
+      - TEST_TOOL_HELP_URL=https://exiao.yuque.com/rlf3k1/oanb79/fa3tqkxk1h2n912q         # Flow CodeBlock 帮助文档
+      - TEST_TOOL_API_DOC_URL=https://exiao.yuque.com/rlf3k1/oanb79/ybd2nfdshmhaihc2      # Flow CodeBlock API 接口文档
+      - TEST_TOOL_GUIDE_URL=https://exiao.yuque.com/rlf3k1/oanb79/olsa9bvc6vm2m26c        # Flow CodeBlock 在线测试工具使用指南
+      - TEST_TOOL_EXAMPLE_URL=https://exiao.yuque.com/rlf3k1/oanb79/tlty7ic7szfr2v7v     # Flow CodeBlock 代码示例
+      - TEST_TOOL_AI_URL=https://wings.qingflow.com/ultron/share/agent/443790716135587842 # 轻翼AI：Flow CodeBlock 代码AI助手
+      - TEST_TOOL_APPLY_URL=https://qingflow.com/f/cabirpa60001                          # 申请开通服务链接
     
     restart: unless-stopped
     
@@ -144,8 +153,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 3G          # 🔧 3GB内存 (适合4H8G服务器)
-          cpus: '2.0'         # 🔧 2核CPU
+          memory: 2.5G          # 🔧 3GB内存 (适合4H8G服务器)
+          cpus: '1.5'         # 🔧 2核CPU
         reservations:
           memory: 1G          # 🔧 保留1GB内存
           cpus: '1.0'         # 🔧 保留1核CPU
@@ -214,10 +223,10 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G          # 🔧 2GB内存，支持更多连接
-          cpus: '1.5'         # 🔧 1.5核CPU
+          memory: 1G          # 🔧 2GB内存，支持更多连接
+          cpus: '1'         # 🔧 1.5核CPU
         reservations:
-          memory: 1G          # 🔧 保留1GB内存
+          memory: 512M          # 🔧 保留1GB内存
           cpus: '0.5'         # 保留0.5核CPU
     
     # 网络配置
@@ -264,8 +273,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G          # 1GB内存
-          cpus: '1.0'         # 1核CPU
+          memory: 512M           # 1GB内存
+          cpus: '0.5'         # 1核CPU
         reservations:
           memory: 512M        # 保留512MB内存
           cpus: '0.5'         # 保留0.5核CPU

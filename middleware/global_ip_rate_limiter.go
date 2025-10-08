@@ -19,6 +19,10 @@ type IPRateLimiter struct {
 	mu       sync.RWMutex
 	rate     rate.Limit
 	burst    int
+
+	// 🔥 优雅关闭支持
+	shutdown chan struct{}
+	wg       sync.WaitGroup
 }
 
 // limiterEntry 限流器条目
@@ -33,9 +37,11 @@ func NewIPRateLimiter(r rate.Limit, b int) *IPRateLimiter {
 		limiters: make(map[string]*limiterEntry),
 		rate:     r,
 		burst:    b,
+		shutdown: make(chan struct{}), // 🔥 初始化关闭信号
 	}
 
 	// 启动清理 goroutine（每 5 分钟清理一次，清理 10 分钟未活跃的 IP）
+	limiter.wg.Add(1) // 🔥 注册 goroutine
 	go limiter.cleanup(5*time.Minute, 10*time.Minute)
 
 	return limiter
@@ -62,26 +68,35 @@ func (i *IPRateLimiter) GetLimiter(ip string) *rate.Limiter {
 
 // cleanup 定期清理不活跃的 IP
 func (i *IPRateLimiter) cleanup(interval, maxAge time.Duration) {
+	defer i.wg.Done() // 🔥 goroutine 退出时通知
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		i.mu.Lock()
-		now := time.Now()
-		cleaned := 0
-		for ip, entry := range i.limiters {
-			if now.Sub(entry.lastSeen) > maxAge {
-				delete(i.limiters, ip)
-				cleaned++
+	for {
+		select {
+		case <-ticker.C:
+			i.mu.Lock()
+			now := time.Now()
+			cleaned := 0
+			for ip, entry := range i.limiters {
+				if now.Sub(entry.lastSeen) > maxAge {
+					delete(i.limiters, ip)
+					cleaned++
+				}
 			}
-		}
-		i.mu.Unlock()
+			i.mu.Unlock()
 
-		if cleaned > 0 {
-			utils.Debug("IP 限流器清理完成",
-				zap.Int("cleaned_count", cleaned),
-				zap.Int("remaining_count", len(i.limiters)),
-			)
+			if cleaned > 0 {
+				utils.Debug("IP 限流器清理完成",
+					zap.Int("cleaned_count", cleaned),
+					zap.Int("remaining_count", len(i.limiters)),
+				)
+			}
+
+		case <-i.shutdown: // 🔥 监听关闭信号
+			utils.Info("IPRateLimiter 清理任务已停止")
+			return
 		}
 	}
 }
@@ -96,6 +111,20 @@ func (i *IPRateLimiter) GetStats() map[string]interface{} {
 		"rate":      float64(i.rate),
 		"burst":     i.burst,
 	}
+}
+
+// Close 关闭IP限流器，等待清理任务完成
+func (i *IPRateLimiter) Close() error {
+	utils.Info("开始关闭 IPRateLimiter")
+
+	// 发送关闭信号
+	close(i.shutdown)
+
+	// 等待 goroutine 退出
+	i.wg.Wait()
+
+	utils.Info("IPRateLimiter 已关闭")
+	return nil
 }
 
 // ========================================
@@ -148,6 +177,12 @@ func GlobalIPRateLimiterMiddleware(cfg *config.Config) gin.HandlerFunc {
 // 🔧 辅助函数
 // ========================================
 
+// GetRealIP 获取真实 IP 地址（导出版本）
+// 支持 CDN、反向代理等场景
+func GetRealIP(c *gin.Context) string {
+	return getRealIP(c)
+}
+
 // getRealIP 获取真实 IP 地址
 // 支持 CDN、反向代理等场景
 func getRealIP(c *gin.Context) string {
@@ -174,3 +209,25 @@ func getRealIP(c *gin.Context) string {
 	// 3. 最后使用 ClientIP（Gin 内置方法）
 	return c.ClientIP()
 }
+
+// HandleRateLimitExceeded 处理限流超限（导出版本）
+func HandleRateLimitExceeded(c *gin.Context, rate, burst int) {
+	utils.Warn("全局 IP 限流拒绝",
+		zap.String("ip", getRealIP(c)),
+		zap.String("path", c.Request.URL.Path),
+	)
+
+	utils.RespondError(c, http.StatusTooManyRequests,
+		utils.ErrorTypeIPRateLimit,
+		"IP 请求频率超限，请稍后再试",
+		map[string]interface{}{
+			"limit": map[string]interface{}{
+				"rate":  rate,
+				"burst": burst,
+			},
+		})
+	c.Abort()
+}
+
+// RateLimit 类型别名（用于 router 导入）
+type RateLimit = rate.Limit

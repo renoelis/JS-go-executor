@@ -49,12 +49,20 @@ type ExecutorConfig struct {
 	CodeCacheSize    int
 	AllowConsole     bool // 是否允许用户代码使用 console（开发环境：true，生产环境：false）
 
+	// 🔥 超时配置（新增可配置项）
+	ConcurrencyWaitTimeout    time.Duration // 并发槽位等待超时（默认 10 秒）
+	RuntimePoolAcquireTimeout time.Duration // Runtime 池获取超时（默认 5 秒）
+
 	// 🔥 熔断器配置
 	CircuitBreakerEnabled      bool          // 是否启用熔断器
 	CircuitBreakerMinRequests  uint32        // 最小请求数（触发熔断的最小样本）
 	CircuitBreakerFailureRatio float64       // 失败率阈值（0.0-1.0）
 	CircuitBreakerTimeout      time.Duration // Open 状态持续时间
 	CircuitBreakerMaxRequests  uint32        // Half-Open 状态最大探测请求数
+
+	// 🔥 JavaScript 内存限制配置
+	EnableJSMemoryLimit bool  // 是否启用 JavaScript 侧内存限制（默认：true）
+	JSMemoryLimitMB     int64 // JavaScript 单次分配最大大小（MB，默认使用 MaxBlobFileSize）
 }
 
 // FetchConfig Fetch API配置
@@ -280,12 +288,20 @@ func LoadConfig() *Config {
 		CodeCacheSize:    getEnvInt("CODE_CACHE_SIZE", 100),
 		AllowConsole:     allowConsole, // 🔥 Console 控制
 
+		// 🔥 超时配置（新增可配置项）
+		ConcurrencyWaitTimeout:    time.Duration(getEnvInt("CONCURRENCY_WAIT_TIMEOUT_SEC", 10)) * time.Second,    // 并发等待超时（默认 10 秒）
+		RuntimePoolAcquireTimeout: time.Duration(getEnvInt("RUNTIME_POOL_ACQUIRE_TIMEOUT_SEC", 5)) * time.Second, // Runtime 获取超时（默认 5 秒）
+
 		// 🔥 熔断器配置
 		CircuitBreakerEnabled:      getEnvBool("CIRCUIT_BREAKER_ENABLED", true),                               // 默认启用
 		CircuitBreakerMinRequests:  uint32(getEnvInt("CIRCUIT_BREAKER_MIN_REQUESTS", 100)),                    // 最少 100 个请求
 		CircuitBreakerFailureRatio: getEnvFloat("CIRCUIT_BREAKER_FAILURE_RATIO", 0.9),                         // 90% 失败率
 		CircuitBreakerTimeout:      time.Duration(getEnvInt("CIRCUIT_BREAKER_TIMEOUT_SEC", 10)) * time.Second, // 10 秒
 		CircuitBreakerMaxRequests:  uint32(getEnvInt("CIRCUIT_BREAKER_MAX_REQUESTS", 100)),                    // 最多 100 个探测请求
+
+		// 🔥 JavaScript 内存限制配置
+		EnableJSMemoryLimit: getEnvBool("ENABLE_JS_MEMORY_LIMIT", true), // 默认启用
+		JSMemoryLimitMB:     int64(getEnvInt("JS_MEMORY_LIMIT_MB", 0)),  // 默认 0（使用 MaxBlobFileSize）
 	}
 
 	// 加载Fetch配置

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -27,6 +28,10 @@ type RateLimiterService struct {
 	warmHits int64
 	coldHits int64
 	misses   int64
+
+	// 🔥 新增：优雅关闭支持
+	shutdown chan struct{}
+	wg       sync.WaitGroup
 }
 
 // NewRateLimiterService 创建限流服务
@@ -45,9 +50,11 @@ func NewRateLimiterService(
 		coldTier:         NewColdDataTier(db, batchSize),
 		writePool:        writePool,
 		writePoolTimeout: writePoolTimeout,
+		shutdown:         make(chan struct{}), // 🔥 初始化关闭信号
 	}
 
 	// 启动定期清理任务
+	service.wg.Add(1) // 🔥 注册 goroutine
 	go service.startCleanupTasks()
 
 	utils.Info("限流服务初始化完成",
@@ -267,14 +274,20 @@ func (s *RateLimiterService) GetStats(ctx context.Context) *model.RateLimitStats
 
 // startCleanupTasks 启动定期清理任务
 func (s *RateLimiterService) startCleanupTasks() {
-	// 每1分钟清理热数据层
-	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
+	defer s.wg.Done() // 🔥 goroutine 退出时通知
+
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
 			s.hotTier.Cleanup(5 * time.Minute)
+		case <-s.shutdown: // 🔥 监听关闭信号
+			utils.Info("RateLimiterService 清理任务已停止")
+			return
 		}
-	}()
+	}
 }
 
 // 辅助函数
@@ -308,4 +321,25 @@ func getStringOrEmpty(m map[string]interface{}, key string) string {
 		}
 	}
 	return ""
+}
+
+// Close 关闭限流服务，释放所有资源
+func (s *RateLimiterService) Close() error {
+	utils.Info("开始关闭 RateLimiterService")
+
+	// 1. 发送关闭信号
+	close(s.shutdown)
+
+	// 2. 等待清理 goroutine 退出
+	s.wg.Wait()
+
+	// 3. 关闭冷数据层（刷新剩余数据）
+	if s.coldTier != nil {
+		if err := s.coldTier.Close(); err != nil {
+			utils.Warn("关闭 ColdDataTier 失败", zap.Error(err))
+		}
+	}
+
+	utils.Info("RateLimiterService 已关闭")
+	return nil
 }

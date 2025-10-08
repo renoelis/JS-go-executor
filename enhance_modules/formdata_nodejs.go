@@ -1,8 +1,8 @@
 package enhance_modules
 
 import (
-	"flow-codeblock-go/utils"
 	"bytes"
+	"flow-codeblock-go/utils"
 	"fmt"
 	"io"
 	"reflect"
@@ -349,8 +349,19 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 	// 关键修复：先转换为对象，不要先 Export（Export 会破坏 Blob/File 对象）
 	obj := value.ToObject(runtime)
 
-	// 1. 优先处理对象类型（File、Blob、Buffer）
+	// 1. 优先处理对象类型（ReadableStream、File、Blob、Buffer）
 	if obj != nil {
+		// 1.0 检查 ReadableStream（最优先）
+		// 🔥 新增：支持直接传入 axios stream
+		getReaderFunc := obj.Get("getReader")
+		if !goja.IsUndefined(getReaderFunc) && getReaderFunc != nil {
+			// 这是一个 ReadableStream 对象
+			if err := nfm.handleReadableStream(streamingFormData, name, obj, filename, contentType); err == nil {
+				return nil
+			}
+			// 如果处理失败，继续尝试其他方式
+		}
+
 		// 1.1 检查 File（最优先，因为 File 继承自 Blob，必须先检查）
 		isFile := obj.Get("__isFile")
 		if !goja.IsUndefined(isFile) && isFile != nil && isFile.ToBoolean() {
@@ -515,6 +526,78 @@ func (nfm *NodeFormDataModule) appendFile(streamingFormData *StreamingFormData, 
 
 	// 更新总大小估算
 	streamingFormData.totalSize += int64(len(name) + len(filename) + len(contentType) + len(data) + 200) // 200 字节为 header 开销
+}
+
+// handleReadableStream 处理 ReadableStream 对象（axios stream）
+// 🔥 新增方法：支持直接传入流式响应
+func (nfm *NodeFormDataModule) handleReadableStream(streamingFormData *StreamingFormData, name string, streamObj *goja.Object, filename, contentType string) error {
+	if nfm == nil || streamingFormData == nil || streamObj == nil {
+		return fmt.Errorf("invalid parameters")
+	}
+
+	// 尝试获取内部的 StreamReader 对象
+	// 在 fetch_enhancement.go 的 createStreamingResponse 中，
+	// 我们将 streamReader 存储在 ReadableStream 的内部属性中
+	streamReaderVal := streamObj.Get("__streamReader")
+	if goja.IsUndefined(streamReaderVal) || goja.IsNull(streamReaderVal) {
+		return fmt.Errorf("ReadableStream 没有 __streamReader 属性")
+	}
+
+	// 尝试导出为 Go 对象
+	exported := streamReaderVal.Export()
+	if exported == nil {
+		return fmt.Errorf("无法导出 StreamReader")
+	}
+
+	// 类型断言为 *StreamReader
+	streamReader, ok := exported.(*StreamReader)
+	if !ok {
+		return fmt.Errorf("__streamReader 不是有效的 StreamReader 类型")
+	}
+
+	// 获取底层的 io.ReadCloser
+	if streamReader.reader == nil {
+		return fmt.Errorf("StreamReader 的 reader 为 nil")
+	}
+
+	// 设置默认值
+	if filename == "" {
+		filename = "stream-file"
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	// 🔥 关键：将 io.ReadCloser 添加到 FormData
+	// StreamingFormData 已经支持 io.Reader 类型
+	nfm.appendStreamFile(streamingFormData, name, filename, contentType, streamReader.reader)
+
+	return nil
+}
+
+// appendStreamFile 添加流式文件到 StreamingFormData
+func (nfm *NodeFormDataModule) appendStreamFile(streamingFormData *StreamingFormData, name, filename, contentType string, reader io.ReadCloser) {
+	if streamingFormData == nil {
+		return
+	}
+
+	entry := FormDataEntry{
+		Name:        name,
+		Value:       reader, // io.ReadCloser 实现了 io.Reader 接口
+		Filename:    filename,
+		ContentType: contentType,
+	}
+
+	// 检查 entries 是否为 nil
+	if streamingFormData.entries == nil {
+		streamingFormData.entries = make([]FormDataEntry, 0)
+	}
+
+	streamingFormData.entries = append(streamingFormData.entries, entry)
+
+	// 🔥 注意：流式数据的大小未知，不更新 totalSize
+	// 这样会自动触发流式处理模式
+	streamingFormData.totalSize += 1024 * 1024 // 预估 1MB，确保触发流式模式
 }
 
 // extractBufferData 从 Buffer 对象提取字节数据

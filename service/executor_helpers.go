@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -44,9 +45,10 @@ const (
 	poolExpansionThresholdPercent = 0.1 // 池扩展阈值（可用槽位 < 10% 时扩展）
 
 	// 超时配置
-	runtimePoolAcquireTimeout   = 5 * time.Second  // Runtime 池获取超时
-	healthCheckInterval         = 30 * time.Second // 健康检查间隔
-	concurrencyLimitWaitTimeout = 10 * time.Second // 并发限制等待超时（定义在 executor_service.go）
+	// 🔥 已移至配置文件，支持环境变量控制：
+	//   - runtimePoolAcquireTimeout → cfg.Executor.RuntimePoolAcquireTimeout
+	//   - concurrencyLimitWaitTimeout → cfg.Executor.ConcurrencyWaitTimeout
+	healthCheckInterval = 30 * time.Second // 健康检查间隔
 )
 
 // ============================================================================
@@ -309,8 +311,8 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 			Message: "请求已取消",
 		}
 
-	case <-time.After(runtimePoolAcquireTimeout):
-		utils.Warn("运行时池超时，创建临时运行时")
+	case <-time.After(e.runtimePoolAcquireTimeout):
+		utils.Warn("运行时池超时，创建临时运行时", zap.Duration("timeout", e.runtimePoolAcquireTimeout))
 		runtime = goja.New()
 		if err := e.setupRuntime(runtime); err != nil {
 			utils.Error("创建临时运行时失败", zap.Error(err))
@@ -361,10 +363,10 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 
 	program, err := e.getCompiledCode(wrappedCode)
 	if err != nil {
-		return nil, &model.ExecutionError{
-			Type:    "CompilationError",
-			Message: fmt.Sprintf("代码编译失败: %v", err),
-		}
+		// 🔥 使用 categorizeError 处理编译错误，并调整行号
+		categorizedErr := e.categorizeError(err)
+		adjustedErr := adjustErrorLineNumber(categorizedErr, 4) // Runtime Pool 包装增加了 4 行
+		return nil, adjustedErr
 	}
 
 	resultChan := make(chan *model.ExecutionResult, 1)
@@ -382,7 +384,10 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 
 		value, err := runtime.RunProgram(program)
 		if err != nil {
-			errorChan <- e.categorizeError(err)
+			// 🔥 使用 categorizeError 处理运行时错误，并调整行号
+			categorizedErr := e.categorizeError(err)
+			adjustedErr := adjustErrorLineNumber(categorizedErr, 4) // Runtime Pool 包装增加了 4 行
+			errorChan <- adjustedErr
 			return
 		}
 
@@ -400,6 +405,10 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 			errorChan <- err
 			return
 		}
+
+		// 🔥 转换所有 time.Time 对象为 UTC ISO 字符串
+		// 修复 date-fns 时区问题：确保返回 UTC 时间（Z）
+		result = convertTimesToUTC(result)
 
 		executionResult := &model.ExecutionResult{
 			Result:    result,
@@ -565,51 +574,68 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 
 			// 包装用户代码以支持 async/await：
 			//   1. 'use strict'：启用严格模式
-			//   2. IIFE：隔离作用域，防止污染全局
-			//   3. 内层 IIFE：包裹用户代码，捕获返回值
-			//   4. Promise 检测：判断返回值是否为 Promise（支持 async 函数）
-			//   5. .then/.catch：处理 Promise 的 resolve/reject
-			//   6. __finalResult/__finalError：存储最终结果/错误（供外部读取）
-			//   7. try-catch：捕获同步错误（Promise 错误由 .catch 捕获）
+			//   2. Promise.resolve()：将结果包装为Promise，确保EventLoop等待
+			//   3. .then：执行用户代码并捕获返回值
+			//   4. .then：存储结果到 __finalResult
+			//   5. .catch：捕获所有错误到 __finalError（不重新抛出，避免干扰Go的错误检测）
+			//   6. try-catch：捕获同步编译错误
 			wrappedCode := fmt.Sprintf(`
 				(function() {
 					'use strict';
 					try {
-						var userResult = (function() {
-							%s
-						})();
-
-						if (userResult && typeof userResult === 'object' && typeof userResult.then === 'function') {
-							userResult
-								.then(function(value) {
-									__finalResult = value;
-								})
-								.catch(function(error) {
-									__finalError = error ? error : new Error('Promise rejected');
-								});
-						} else {
-							__finalResult = userResult;
-						}
+						// 🔥 关键：返回Promise，让EventLoop知道要等待
+						return Promise.resolve()
+							.then(function() {
+								// 执行用户代码
+								return (function() {
+									%s
+								})();
+							})
+							.then(function(result) {
+								// 存储结果
+								__finalResult = result;
+								return result;
+							})
+							.catch(function(error) {
+								// 捕获所有错误（包括用户代码的错误）
+								// 🔥 关键：存储错误但不重新抛出，让Promise正常resolve
+								// 这样EventLoop会认为Promise成功完成，我们在Go端检查 __finalError
+								__finalError = error ? error : new Error('Promise rejected');
+								return undefined;  // 返回undefined，避免 __finalResult 被覆盖
+							});
 					} catch (error) {
+						// 捕获同步编译错误
 						__finalError = error;
+						// 返回一个已resolve的Promise，让EventLoop继续
+						return Promise.resolve(undefined);
 					}
 				})()
 			`, code)
 
 			_, err := vm.RunString(wrappedCode)
 			if err != nil {
-				finalError = e.categorizeError(err)
+				// 🔥 使用 categorizeError 处理编译/运行时错误，并调整行号
+				categorizedErr := e.categorizeError(err)
+				finalError = adjustErrorLineNumber(categorizedErr, 5) // EventLoop 包装增加了 5 行
 			}
 		})
+
+		// 🔥 重要：loop.Run() 会阻塞直到所有异步任务完成
+		// EventLoop内部会自动等待setTimeout、Promise等任务
+		// 所以执行到这里时，异步任务已经全部完成
 
 		if finalError == nil && vm != nil {
 			finalErr := vm.Get("__finalError")
 			if !goja.IsUndefined(finalErr) && finalErr != nil {
-				errMsg := extractErrorMessage(finalErr)
-				finalError = &model.ExecutionError{
+				// 🔥 修复：提取完整的错误信息（包括stack trace）
+				errMsg, errStack := extractErrorDetails(finalErr)
+				rawError := &model.ExecutionError{
 					Type:    "RuntimeError",
 					Message: errMsg,
+					Stack:   errStack, // ✅ 新增：包含stack信息
 				}
+				// 🔥 调整行号（如果错误消息中包含行号）
+				finalError = adjustErrorLineNumber(rawError, 5) // EventLoop 包装增加了 5 行
 			} else {
 				finalRes := vm.Get("__finalResult")
 				if goja.IsUndefined(finalRes) {
@@ -627,6 +653,10 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 
 					if err := e.validateResult(finalResult); err != nil {
 						finalError = err
+					} else {
+						// 🔥 转换所有 time.Time 对象为 UTC ISO 字符串
+						// 修复 date-fns 时区问题：确保返回 UTC 时间（Z）
+						finalResult = convertTimesToUTC(finalResult)
 					}
 				}
 			}
@@ -983,12 +1013,16 @@ func (e *JSExecutor) validateCodeSecurity(code string) error {
 // ============================================================================
 
 // checkProhibitedModules 检查被禁用的模块引用
-func (e *JSExecutor) checkProhibitedModules(cleanedCode string) error {
+func (e *JSExecutor) checkProhibitedModules(originalCode, cleanedCode string) error {
 	for _, mod := range prohibitedModules {
-		if strings.Contains(cleanedCode, mod.pattern) {
+		if idx := strings.Index(cleanedCode, mod.pattern); idx != -1 {
+			// 在原始代码中查找对应位置
+			lineNum, colNum, lineContent := e.findPatternInOriginalCode(originalCode, cleanedCode, idx, mod.pattern)
+
 			return &model.ExecutionError{
-				Type:    "SecurityError",
-				Message: fmt.Sprintf("禁止使用 %s 模块：%s出于安全考虑已被禁用", mod.module, mod.reason),
+				Type: "SecurityError",
+				Message: fmt.Sprintf("禁止使用 %s 模块：%s出于安全考虑已被禁用\n位置: 第 %d 行，第 %d 列\n代码: %s",
+					mod.module, mod.reason, lineNum, colNum, lineContent),
 			}
 		}
 	}
@@ -996,12 +1030,16 @@ func (e *JSExecutor) checkProhibitedModules(cleanedCode string) error {
 }
 
 // checkDangerousPatterns 检查危险代码模式（字符串匹配）
-func (e *JSExecutor) checkDangerousPatterns(cleanedCode string) error {
+func (e *JSExecutor) checkDangerousPatterns(originalCode, cleanedCode string) error {
 	for _, pattern := range dangerousPatterns {
-		if strings.Contains(cleanedCode, pattern.pattern) {
+		if idx := strings.Index(cleanedCode, pattern.pattern); idx != -1 {
+			// 在原始代码中查找对应位置
+			lineNum, colNum, lineContent := e.findPatternInOriginalCode(originalCode, cleanedCode, idx, pattern.pattern)
+
 			return &model.ExecutionError{
-				Type:    "SecurityError",
-				Message: fmt.Sprintf("代码包含危险模式 '%s': %s", pattern.pattern, pattern.reason),
+				Type: "SecurityError",
+				Message: fmt.Sprintf("代码包含危险模式 '%s': %s\n位置: 第 %d 行，第 %d 列\n代码: %s",
+					pattern.pattern, pattern.reason, lineNum, colNum, lineContent),
 			}
 		}
 	}
@@ -1010,12 +1048,17 @@ func (e *JSExecutor) checkDangerousPatterns(cleanedCode string) error {
 
 // checkDangerousRegexPatterns 检查危险代码模式（正则表达式匹配）
 // 🔥 安全加固：限制空格数量为 3，防止 ReDoS 攻击
-func (e *JSExecutor) checkDangerousRegexPatterns(cleanedCode string) error {
+func (e *JSExecutor) checkDangerousRegexPatterns(originalCode, cleanedCode string) error {
 	for _, pattern := range dangerousRegexes {
-		if pattern.pattern.MatchString(cleanedCode) {
+		if loc := pattern.pattern.FindStringIndex(cleanedCode); loc != nil {
+			matchedText := cleanedCode[loc[0]:loc[1]]
+			// 在原始代码中查找对应位置
+			lineNum, colNum, lineContent := e.findPatternInOriginalCode(originalCode, cleanedCode, loc[0], matchedText)
+
 			return &model.ExecutionError{
-				Type:    "SecurityError",
-				Message: fmt.Sprintf("代码包含危险模式: %s", pattern.reason),
+				Type: "SecurityError",
+				Message: fmt.Sprintf("代码包含危险模式: %s\n位置: 第 %d 行，第 %d 列\n匹配内容: %s\n代码: %s",
+					pattern.reason, lineNum, colNum, matchedText, lineContent),
 			}
 		}
 	}
@@ -1024,12 +1067,17 @@ func (e *JSExecutor) checkDangerousRegexPatterns(cleanedCode string) error {
 
 // checkDynamicPropertyAccess 检查危险的动态属性访问
 // 检测 this["eval"], globalThis["Function"] 等模式
-func (e *JSExecutor) checkDynamicPropertyAccess(cleanedCode string) error {
+func (e *JSExecutor) checkDynamicPropertyAccess(originalCode, cleanedCode string) error {
 	for _, pattern := range dangerousDynamicAccessPatterns {
-		if pattern.pattern.MatchString(cleanedCode) {
+		if loc := pattern.pattern.FindStringIndex(cleanedCode); loc != nil {
+			matchedText := cleanedCode[loc[0]:loc[1]]
+			// 在原始代码中查找对应位置
+			lineNum, colNum, lineContent := e.findPatternInOriginalCode(originalCode, cleanedCode, loc[0], matchedText)
+
 			return &model.ExecutionError{
-				Type:    "SecurityError",
-				Message: fmt.Sprintf("代码包含危险模式: %s", pattern.reason),
+				Type: "SecurityError",
+				Message: fmt.Sprintf("代码包含危险模式: %s\n位置: 第 %d 行，第 %d 列\n匹配内容: %s\n代码: %s",
+					pattern.reason, lineNum, colNum, matchedText, lineContent),
 			}
 		}
 	}
@@ -1040,10 +1088,15 @@ func (e *JSExecutor) checkDynamicPropertyAccess(cleanedCode string) error {
 // 注意：需要使用原始代码，因为需要分析字符串内容
 func (e *JSExecutor) checkSuspiciousStringPatterns(code string) error {
 	for _, pattern := range suspiciousStringPatterns {
-		if pattern.pattern.MatchString(code) {
+		if loc := pattern.pattern.FindStringIndex(code); loc != nil {
+			// 计算行号和列号
+			lineNum, colNum, lineContent := e.findLineAndColumn(code, loc[0])
+			matchedText := code[loc[0]:loc[1]]
+
 			return &model.ExecutionError{
-				Type:    "SecurityError",
-				Message: fmt.Sprintf("代码包含可疑模式: %s", pattern.reason),
+				Type: "SecurityError",
+				Message: fmt.Sprintf("代码包含可疑模式: %s\n位置: 第 %d 行，第 %d 列\n匹配内容: %s\n代码: %s",
+					pattern.reason, lineNum, colNum, matchedText, lineContent),
 			}
 		}
 	}
@@ -1052,16 +1105,34 @@ func (e *JSExecutor) checkSuspiciousStringPatterns(code string) error {
 
 // checkInfiniteLoops 检查可能的无限循环
 // 注意：需要使用原始代码
+// 🔥 优化：允许带有 break 的 while(true) 循环（流式读取等合法场景）
 func (e *JSExecutor) checkInfiniteLoops(code string) error {
-	if strings.Contains(code, "while(true)") ||
-		strings.Contains(code, "for(;;)") ||
-		strings.Contains(code, "while (true)") ||
-		strings.Contains(code, "for (;;)") {
+	// 检查 while(true) 或 while (true)
+	hasWhileTrue := strings.Contains(code, "while(true)") || strings.Contains(code, "while (true)")
+
+	// 检查 for(;;) 或 for (;;)
+	hasForInfinite := strings.Contains(code, "for(;;)") || strings.Contains(code, "for (;;)")
+
+	if hasWhileTrue || hasForInfinite {
+		// 🔥 智能检测：如果循环体内有 break/return，则认为是安全的
+		// 常见合法模式：
+		// - while (true) { if (done) break; }  // 流式读取
+		// - while (true) { if (condition) return; }  // 条件退出
+
+		// 简化检测：检查代码中是否包含 break 或 return
+		// 这个检测不是完美的，但可以覆盖大多数合法场景
+		if strings.Contains(code, "break") || strings.Contains(code, "return") {
+			// 包含退出条件，认为是安全的
+			return nil
+		}
+
+		// 没有明显的退出条件，认为可能是无限循环
 		return &model.ExecutionError{
 			Type:    "SecurityError",
-			Message: "代码可能包含无限循环，已被阻止执行",
+			Message: "代码可能包含无限循环，已被阻止执行。提示：如果使用 while(true)，请确保包含 break 或 return 退出条件",
 		}
 	}
+
 	return nil
 }
 
@@ -1070,31 +1141,33 @@ func (e *JSExecutor) validateCodeSecurityCleaned(code, cleanedCode string) error
 	// 不再需要检测和拒绝 async/await 语法
 
 	// 🔥 重构：调用拆分后的检查函数
-	if err := e.checkProhibitedModules(cleanedCode); err != nil {
+	// 注意：传入原始代码用于行号计算
+	if err := e.checkProhibitedModules(code, cleanedCode); err != nil {
 		return err
 	}
 
-	if err := e.checkDangerousPatterns(cleanedCode); err != nil {
+	if err := e.checkDangerousPatterns(code, cleanedCode); err != nil {
 		return err
 	}
 
-	if err := e.checkDangerousRegexPatterns(cleanedCode); err != nil {
+	if err := e.checkDangerousRegexPatterns(code, cleanedCode); err != nil {
 		return err
 	}
 
-	if err := e.checkDynamicPropertyAccess(cleanedCode); err != nil {
+	if err := e.checkDynamicPropertyAccess(code, cleanedCode); err != nil {
 		return err
 	}
 
-	if err := e.checkSuspiciousStringPatterns(code); err != nil { // 使用原始代码
+	if err := e.checkSuspiciousStringPatterns(code); err != nil {
 		return err
 	}
 
-	return e.checkInfiniteLoops(code) // 使用原始代码
+	return e.checkInfiniteLoops(code)
 }
 
 // validateResult 验证执行结果
 func (e *JSExecutor) validateResult(result interface{}) error {
+	// 1. 检查结果大小
 	if resultSize := len(fmt.Sprintf("%v", result)); resultSize > e.maxResultSize {
 		return &model.ExecutionError{
 			Type:    "ValidationError",
@@ -1102,11 +1175,169 @@ func (e *JSExecutor) validateResult(result interface{}) error {
 		}
 	}
 
+	// 2. 检查是否包含无效的JSON值 (NaN, Infinity等)
+	if err := validateJSONSerializable(result); err != nil {
+		return &model.ExecutionError{
+			Type:    "ValidationError",
+			Message: fmt.Sprintf("返回结果包含无效的JSON值: %v", err),
+		}
+	}
+
 	return nil
 }
 
-// extractErrorMessage 从 goja.Value 中提取错误消息
+// convertTimesToUTC 递归将结果中所有 time.Time 对象转换为 UTC ISO 字符串
+// 🔥 修复 date-fns 时区问题：确保返回 UTC 时间（Z）而不是本地时区（+08:00）
+func convertTimesToUTC(value interface{}) interface{} {
+	switch v := value.(type) {
+	case time.Time:
+		// 🔥 转换为 UTC 时间并格式化为 ISO 8601 字符串
+		// 使用自定义格式确保始终包含毫秒部分（与 JavaScript Date.toISOString() 一致）
+		// 例如：2025-10-13T01:58:30.658Z 或 2023-10-08T02:00:00.000Z
+		utc := v.UTC()
+		// 格式：YYYY-MM-DDTHH:MM:SS.sssZ（始终包含 3 位毫秒）
+		return fmt.Sprintf("%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
+			utc.Year(), utc.Month(), utc.Day(),
+			utc.Hour(), utc.Minute(), utc.Second(),
+			utc.Nanosecond()/1000000) // 纳秒转毫秒
+
+	case map[string]interface{}:
+		// 递归处理对象的所有值
+		result := make(map[string]interface{}, len(v))
+		for key, val := range v {
+			result[key] = convertTimesToUTC(val)
+		}
+		return result
+
+	case []interface{}:
+		// 递归处理数组的所有元素
+		result := make([]interface{}, len(v))
+		for i, val := range v {
+			result[i] = convertTimesToUTC(val)
+		}
+		return result
+
+	default:
+		// 其他类型不做转换
+		return v
+	}
+}
+
+// validateJSONSerializable 递归检查结果是否可以安全地序列化为JSON
+func validateJSONSerializable(value interface{}) error {
+	switch v := value.(type) {
+	case float64:
+		// 检查 NaN 和 Infinity
+		if math.IsNaN(v) {
+			return fmt.Errorf("检测到 NaN (Not a Number),请检查数学运算 (如: undefined * 2)")
+		}
+		if math.IsInf(v, 0) {
+			return fmt.Errorf("检测到 Infinity,请检查数学运算 (如: 1/0)")
+		}
+	case float32:
+		v64 := float64(v)
+		if math.IsNaN(v64) {
+			return fmt.Errorf("检测到 NaN (Not a Number)")
+		}
+		if math.IsInf(v64, 0) {
+			return fmt.Errorf("检测到 Infinity")
+		}
+	case map[string]interface{}:
+		// 递归检查对象的所有值
+		for key, val := range v {
+			if err := validateJSONSerializable(val); err != nil {
+				return fmt.Errorf("字段 '%s': %v", key, err)
+			}
+		}
+	case []interface{}:
+		// 递归检查数组的所有元素
+		for i, val := range v {
+			if err := validateJSONSerializable(val); err != nil {
+				return fmt.Errorf("数组索引 [%d]: %v", i, err)
+			}
+		}
+	}
+	return nil
+}
+
+// extractErrorDetails 从 goja.Value 中提取完整错误信息（包括message和stack）
+// 🔥 修复：异步代码执行时，错误信息应包含stack trace
+func extractErrorDetails(errValue goja.Value) (message string, stack string) {
+	if errValue == nil || goja.IsUndefined(errValue) {
+		return "Unknown error", ""
+	}
+
+	var errorName string
+	var errorMessage string
+	var errorStack string
+
+	if obj := errValue.ToObject(nil); obj != nil {
+		// 提取 error.name
+		if nameVal := obj.Get("name"); !goja.IsUndefined(nameVal) {
+			errorName = nameVal.String()
+		}
+
+		// 提取 error.message
+		if msgVal := obj.Get("message"); !goja.IsUndefined(msgVal) {
+			errorMessage = msgVal.String()
+		}
+
+		// 🔥 关键修复：提取 error.stack
+		if stackVal := obj.Get("stack"); !goja.IsUndefined(stackVal) {
+			errorStack = stackVal.String()
+		}
+
+		// 如果没有message，尝试使用toString
+		if errorMessage == "" {
+			if toStringMethod := obj.Get("toString"); !goja.IsUndefined(toStringMethod) {
+				if fn, ok := goja.AssertFunction(toStringMethod); ok {
+					if result, err := fn(obj); err == nil {
+						resultStr := result.String()
+						if resultStr != "[object Object]" && resultStr != "" {
+							errorMessage = resultStr
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 构建完整的错误消息
+	if errorName != "" && errorMessage != "" {
+		message = fmt.Sprintf("%s: %s", errorName, errorMessage)
+	} else if errorMessage != "" {
+		message = errorMessage
+	} else {
+		// Fallback: 尝试Export
+		exported := errValue.Export()
+		if exported != nil {
+			if exportedMap, ok := exported.(map[string]interface{}); ok {
+				if msg, exists := exportedMap["message"]; exists {
+					message = fmt.Sprintf("%v", msg)
+				} else if len(exportedMap) == 0 {
+					message = "JavaScript 错误 (无详细信息)"
+				} else {
+					message = fmt.Sprintf("%v", exported)
+				}
+			} else {
+				message = fmt.Sprintf("%v", exported)
+			}
+		} else {
+			message = "Unknown error"
+		}
+	}
+
+	return message, errorStack
+}
+
+// extractErrorMessage 从 goja.Value 中提取错误消息（保留旧函数以兼容）
 func extractErrorMessage(errValue goja.Value) string {
+	message, _ := extractErrorDetails(errValue)
+	return message
+}
+
+// extractErrorMessageLegacy 旧的实现（已废弃，保留以防万一）
+func extractErrorMessageLegacy(errValue goja.Value) string {
 	if errValue == nil || goja.IsUndefined(errValue) {
 		return "Unknown error"
 	}
@@ -1306,6 +1537,125 @@ func (e *JSExecutor) categorizeCompilerError(syntaxErr *goja.CompilerSyntaxError
 		Type:    "SyntaxError",
 		Message: fmt.Sprintf("语法错误: %s", message),
 	}
+}
+
+// adjustErrorLineNumber 调整错误信息中的行号，还原为用户代码的真实行号
+// lineOffset: 代码包装增加的行数（runtimePool = 4, eventLoop = 5）
+func adjustErrorLineNumber(err error, lineOffset int) error {
+	if err == nil || lineOffset == 0 {
+		return err
+	}
+
+	// 只处理 ExecutionError 类型
+	execErr, ok := err.(*model.ExecutionError)
+	if !ok {
+		return err
+	}
+
+	message := execErr.Message
+	stack := execErr.Stack
+
+	// 正则表达式匹配行号模式：
+	// 1. "Line 81:" 格式
+	// 2. "line 81:" 格式（不区分大小写）
+	// 3. ":81:" 格式（如 "user_code.js:81:"）
+	// 4. ":81:12" 格式（如 "user_code.js:81:12"）- 用于stack trace
+	linePatterns := []struct {
+		pattern *regexp.Regexp
+		format  string
+	}{
+		{
+			pattern: regexp.MustCompile(`(?i)\bLine\s+(\d+):`),
+			format:  "Line %d:",
+		},
+		{
+			pattern: regexp.MustCompile(`(?i)\bline\s+(\d+):`),
+			format:  "line %d:",
+		},
+		{
+			pattern: regexp.MustCompile(`:(\d+):`),
+			format:  ":%d:",
+		},
+	}
+
+	// 🔥 修复：调整Message中的行号
+	messageAdjusted := false
+	for _, p := range linePatterns {
+		if matches := p.pattern.FindStringSubmatch(message); len(matches) > 1 {
+			// 提取行号
+			lineNum, err := strconv.Atoi(matches[1])
+			if err != nil {
+				continue
+			}
+
+			// 调整行号（减去包装代码的行数）
+			adjustedLineNum := lineNum - lineOffset
+			if adjustedLineNum < 1 {
+				adjustedLineNum = 1 // 确保行号至少为 1
+			}
+
+			// 替换行号
+			oldLineStr := fmt.Sprintf(p.format, lineNum)
+			newLineStr := fmt.Sprintf(p.format, adjustedLineNum)
+			message = strings.Replace(message, oldLineStr, newLineStr, 1)
+			messageAdjusted = true
+			break
+		}
+	}
+
+	// 🔥 新增：调整Stack中的行号（所有出现的行号都需要调整）
+	if stack != "" {
+		// 匹配stack trace中的行号格式：user_code.js:81:12
+		stackPattern := regexp.MustCompile(`(user_code\.js|<anonymous>):(\d+):(\d+)`)
+		stack = stackPattern.ReplaceAllStringFunc(stack, func(match string) string {
+			submatches := stackPattern.FindStringSubmatch(match)
+			if len(submatches) > 2 {
+				lineNum, err := strconv.Atoi(submatches[2])
+				if err != nil {
+					return match
+				}
+
+				adjustedLineNum := lineNum - lineOffset
+				if adjustedLineNum < 1 {
+					adjustedLineNum = 1
+				}
+
+				// 重构行号部分
+				return fmt.Sprintf("%s:%d:%s", submatches[1], adjustedLineNum, submatches[3])
+			}
+			return match
+		})
+
+		// 也处理没有列号的格式：user_code.js:81
+		stackPattern2 := regexp.MustCompile(`(user_code\.js|<anonymous>):(\d+)(\)|$|\s)`)
+		stack = stackPattern2.ReplaceAllStringFunc(stack, func(match string) string {
+			submatches := stackPattern2.FindStringSubmatch(match)
+			if len(submatches) > 2 {
+				lineNum, err := strconv.Atoi(submatches[2])
+				if err != nil {
+					return match
+				}
+
+				adjustedLineNum := lineNum - lineOffset
+				if adjustedLineNum < 1 {
+					adjustedLineNum = 1
+				}
+
+				return fmt.Sprintf("%s:%d%s", submatches[1], adjustedLineNum, submatches[3])
+			}
+			return match
+		})
+	}
+
+	// 更新错误信息
+	if messageAdjusted || stack != execErr.Stack {
+		execErr.Message = message
+		execErr.Stack = stack
+		return execErr
+	}
+
+	// 如果没有调整任何内容，返回原始错误
+	return err
 }
 
 // categorizeByMessage 根据错误消息字符串分类（Fallback 策略）
@@ -2147,4 +2497,79 @@ AddLoop:
 	utils.Info("池扩展完成",
 		zap.Int("added", added),
 		zap.Int32("current_pool_size", atomic.LoadInt32(&e.currentPoolSize)))
+}
+
+// ============================================================================
+// 🔥 错误定位辅助函数
+// ============================================================================
+
+// findPatternInOriginalCode 在原始代码中查找模式的位置
+// 参数:
+//   - originalCode: 原始代码（包含注释和字符串）
+//   - cleanedCode: 清理后的代码（去除了注释和字符串）
+//   - cleanedIndex: 模式在 cleanedCode 中的索引位置
+//   - pattern: 要查找的模式字符串
+//
+// 返回: lineNum, colNum, lineContent
+func (e *JSExecutor) findPatternInOriginalCode(originalCode, cleanedCode string, cleanedIndex int, pattern string) (int, int, string) {
+	// 直接在原始代码中搜索模式
+	// 因为危险模式通常不会出现在字符串或注释中（如果出现也应该被检测）
+	idx := strings.Index(originalCode, pattern)
+	if idx == -1 {
+		// 如果找不到，使用 cleanedCode 的位置作为近似值
+		return e.findLineAndColumn(cleanedCode, cleanedIndex)
+	}
+
+	// 在原始代码中计算行号和列号
+	return e.findLineAndColumn(originalCode, idx)
+}
+
+// findLineAndColumn 根据字符索引查找行号、列号和该行内容
+// 返回值: lineNum (从1开始), colNum (从1开始), lineContent
+func (e *JSExecutor) findLineAndColumn(code string, index int) (int, int, string) {
+	if index < 0 || index >= len(code) {
+		return 1, 1, ""
+	}
+
+	lineNum := 1
+	colNum := 1
+	lineStart := 0
+
+	// 遍历代码，计算行号和列号
+	for i := 0; i < index; i++ {
+		if code[i] == '\n' {
+			lineNum++
+			colNum = 1
+			lineStart = i + 1
+		} else {
+			colNum++
+		}
+	}
+
+	// 提取当前行内容
+	lineEnd := lineStart
+	for lineEnd < len(code) && code[lineEnd] != '\n' {
+		lineEnd++
+	}
+	lineContent := code[lineStart:lineEnd]
+
+	// 限制行内容长度，避免输出过长
+	maxLineLength := 100
+	if len(lineContent) > maxLineLength {
+		// 尝试截取匹配位置附近的内容
+		contextStart := colNum - 1 - 20 // 匹配位置前20个字符
+		if contextStart < 0 {
+			contextStart = 0
+		}
+		contextEnd := contextStart + maxLineLength
+		if contextEnd > len(lineContent) {
+			contextEnd = len(lineContent)
+		}
+		lineContent = "..." + lineContent[contextStart:contextEnd]
+		if contextEnd < len(lineContent) {
+			lineContent += "..."
+		}
+	}
+
+	return lineNum, colNum, strings.TrimSpace(lineContent)
 }

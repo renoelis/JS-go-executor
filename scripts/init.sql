@@ -53,8 +53,15 @@ CREATE TABLE IF NOT EXISTS `token_rate_limit_history` (
   KEY `idx_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Token限流历史记录表(冷数据层)';
 
--- ==================== 插入测试数据（可选） ====================
--- 插入一个测试Token（永不过期，不限流）
+-- ==================== 查看表结构（验证创建成功） ====================
+SELECT '✅ 表结构创建完成，开始验证...' AS status;
+SHOW CREATE TABLE `access_tokens`;
+SHOW CREATE TABLE `token_rate_limit_history`;
+
+-- ==================== 插入测试数据（用于验证数据库连接和表结构） ====================
+SELECT '📝 开始插入测试数据...' AS status;
+
+-- 插入测试Token 1：永不过期，不限流
 INSERT INTO `access_tokens` (
   `ws_id`, 
   `email`, 
@@ -71,7 +78,7 @@ INSERT INTO `access_tokens` (
   NULL
 ) ON DUPLICATE KEY UPDATE `updated_at` = CURRENT_TIMESTAMP;
 
--- 插入一个测试Token（有限流：60次/分钟，10次/秒）
+-- 插入测试Token 2：有限流（60次/分钟，10次/秒）
 INSERT INTO `access_tokens` (
   `ws_id`, 
   `email`, 
@@ -92,11 +99,65 @@ INSERT INTO `access_tokens` (
   60
 ) ON DUPLICATE KEY UPDATE `updated_at` = CURRENT_TIMESTAMP;
 
+-- ==================== 验证测试数据插入成功 ====================
+SELECT '🔍 验证测试数据插入...' AS status;
+SELECT 
+  id,
+  ws_id,
+  email,
+  access_token,
+  operation_type,
+  rate_limit_per_minute,
+  rate_limit_burst,
+  expires_at,
+  created_at
+FROM `access_tokens` 
+WHERE `access_token` LIKE 'flow_test_token%';
+
+-- ==================== 清理测试数据 ====================
+SELECT '🗑️  开始清理测试数据...' AS status;
+
+-- 删除测试Token
+DELETE FROM `access_tokens` 
+WHERE `access_token` LIKE 'flow_test_token%';
+
+-- 验证测试数据已删除
+SELECT '✅ 测试数据清理完成，验证删除结果...' AS status;
+SELECT 
+  CASE 
+    WHEN COUNT(*) = 0 THEN '✅ 测试数据已成功清理，数据库初始化完成！'
+    ELSE '⚠️  警告：仍有测试数据残留'
+  END AS cleanup_status,
+  COUNT(*) AS remaining_test_tokens
+FROM `access_tokens` 
+WHERE `access_token` LIKE 'flow_test_token%';
+
+-- ==================== 重置 AUTO_INCREMENT ====================
+SELECT '🔄 重置 AUTO_INCREMENT 计数器...' AS status;
+
+-- 重置 access_tokens 表的 AUTO_INCREMENT 为 1
+ALTER TABLE `access_tokens` AUTO_INCREMENT = 1;
+
+-- 重置 token_rate_limit_history 表的 AUTO_INCREMENT 为 1
+ALTER TABLE `token_rate_limit_history` AUTO_INCREMENT = 1;
+
+-- 验证 AUTO_INCREMENT 重置结果
+SELECT '✅ AUTO_INCREMENT 重置完成，当前值：' AS status;
+SELECT 
+  TABLE_NAME,
+  AUTO_INCREMENT AS current_value
+FROM information_schema.TABLES 
+WHERE TABLE_SCHEMA = 'flow_codeblock_go' 
+  AND TABLE_NAME IN ('access_tokens', 'token_rate_limit_history');
+
+-- ==================== 最终验证 ====================
+-- 显示当前所有Token（应该为空）
+SELECT '📊 当前数据库中的Token数量：' AS status;
+SELECT COUNT(*) AS total_tokens FROM `access_tokens`;
+
 SET FOREIGN_KEY_CHECKS = 1;
 
--- ==================== 查看表结构 ====================
-SHOW CREATE TABLE `access_tokens`;
-SHOW CREATE TABLE `token_rate_limit_history`;
-
--- ==================== 查看测试数据 ====================
-SELECT * FROM `access_tokens` WHERE `access_token` LIKE 'flow_test_token%';
+-- ==================== 初始化完成提示 ====================
+SELECT '🎉 数据库初始化完成！' AS status;
+SELECT '📝 下一步：使用管理员API创建正式Token' AS next_step;
+SELECT 'POST /flow/tokens -H "Authorization: Bearer YOUR_ADMIN_TOKEN"' AS api_endpoint;

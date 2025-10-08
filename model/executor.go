@@ -1,6 +1,9 @@
 package model
 
-import "runtime"
+import (
+	"fmt"
+	"runtime"
+)
 
 // ExecutorStats 执行器统计信息
 type ExecutorStats struct {
@@ -25,9 +28,14 @@ type ExecutorStats struct {
 type ExecutionError struct {
 	Type    string
 	Message string
+	Stack   string `json:",omitempty"` // 🔥 新增：支持JavaScript错误的stack trace
 }
 
 func (e *ExecutionError) Error() string {
+	// 如果有stack信息，返回完整的错误信息
+	if e.Stack != "" {
+		return fmt.Sprintf("%s\n%s", e.Message, e.Stack)
+	}
 	return e.Message
 }
 

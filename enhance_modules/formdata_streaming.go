@@ -86,14 +86,27 @@ func (sfd *StreamingFormData) CreateReader() (io.Reader, error) {
 			sfd.totalSize, sfd.config.MaxFormDataSize)
 	}
 
+	var reader io.Reader
+	var err error
+
 	// 根据阈值选择处理策略
 	if sfd.totalSize < sfd.config.StreamingThreshold {
 		// 小文件：使用缓冲模式（性能更好）
-		return sfd.createBufferedReader()
+		reader, err = sfd.createBufferedReader()
+	} else {
+		// 大文件：使用流式处理（内存友好）
+		reader, err = sfd.createPipedReader()
 	}
 
-	// 大文件：使用流式处理（内存友好）
-	return sfd.createPipedReader()
+	if err != nil {
+		return nil, err
+	}
+
+	// 🔥 清理 entries，释放内存
+	// Reader 已创建，数据已被复制或在 goroutine 中处理，可以安全释放
+	sfd.entries = nil
+
+	return reader, nil
 }
 
 // createBufferedReader 创建缓冲读取器（小文件模式）
@@ -178,16 +191,23 @@ func (sfd *StreamingFormData) writeFileDataBuffered(writer *multipart.Writer, na
 func (sfd *StreamingFormData) createPipedReader() (io.Reader, error) {
 	pr, pw := io.Pipe()
 
+	// 🔥 关键修复：复制 entries 到局部变量，避免竞态条件
+	// 因为 CreateReader() 会在返回前清空 sfd.entries
+	// 但后台 goroutine 需要访问这些数据
+	entriesCopy := make([]FormDataEntry, len(sfd.entries))
+	copy(entriesCopy, sfd.entries)
+	boundary := sfd.boundary
+
 	// 在后台 goroutine 中写入数据
 	go func() {
 		defer pw.Close()
 
 		writer := multipart.NewWriter(pw)
-		writer.SetBoundary(sfd.boundary)
+		writer.SetBoundary(boundary)
 
 		var writeErr error
-		for _, entry := range sfd.entries {
-			if err := sfd.writeEntryStreaming(writer, &entry); err != nil {
+		for i := range entriesCopy {
+			if err := sfd.writeEntryStreaming(writer, &entriesCopy[i]); err != nil {
 				writeErr = fmt.Errorf("流式写入字段失败: %w", err)
 				break
 			}
@@ -207,17 +227,20 @@ func (sfd *StreamingFormData) createPipedReader() (io.Reader, error) {
 }
 
 // writeEntryStreaming 写入单个字段（流式模式）
-
 func (sfd *StreamingFormData) writeEntryStreaming(writer *multipart.Writer, entry *FormDataEntry) error {
 	switch v := entry.Value.(type) {
 	case string:
 		// 文本字段
-
 		return writer.WriteField(entry.Name, v)
 
 	case []byte:
 		// 二进制文件（流式写入）
 		return sfd.writeFileDataStreaming(writer, entry.Name, entry.Filename, entry.ContentType, bytes.NewReader(v), int64(len(v)))
+
+	case io.Reader:
+		// 🔥 新增：支持 io.Reader（包括 io.ReadCloser）
+		// 用于流式文件上传（axios stream -> FormData）
+		return sfd.writeFileDataStreaming(writer, entry.Name, entry.Filename, entry.ContentType, v, -1)
 
 	default:
 		// 其他类型转为字符串
@@ -233,8 +256,9 @@ func (sfd *StreamingFormData) writeFileDataStreaming(writer *multipart.Writer, n
 		return fmt.Errorf("StreamingFormData or config is nil")
 	}
 
-	// 检查文件大小限制
-	if size > sfd.config.MaxFileSize {
+	// 检查文件大小限制（如果已知大小）
+	// size = -1 表示大小未知（流式数据）
+	if size > 0 && size > sfd.config.MaxFileSize {
 		return fmt.Errorf("文件 %s 大小超过限制: %d > %d 字节",
 			filename, size, sfd.config.MaxFileSize)
 	}
@@ -301,21 +325,60 @@ func (sfd *StreamingFormData) GetBoundary() string {
 func (sfd *StreamingFormData) AddEntry(entry FormDataEntry) {
 	sfd.entries = append(sfd.entries, entry)
 
-	// 更新总大小
-	switch v := entry.Value.(type) {
-	case string:
-		sfd.totalSize += int64(len(v))
-	case []byte:
-		sfd.totalSize += int64(len(v))
-	}
+	// 🔥 不在这里计算，统一在 GetTotalSize() 中精确计算
+	// 原因：multipart/form-data 格式包含 boundary、headers 等开销
 }
 
-// GetTotalSize 获取预估总大小
+// GetTotalSize 获取精确的 multipart/form-data 总大小
+// 🔥 修复：计算完整的 multipart 格式大小，与 Node.js form-data 一致
 func (sfd *StreamingFormData) GetTotalSize() int64 {
 	if sfd == nil {
 		return 0
 	}
-	return sfd.totalSize
+
+	// 🔥 精确计算：包含 boundary、headers、数据、换行符
+	totalSize := int64(0)
+
+	for _, entry := range sfd.entries {
+		// 1. Boundary 行: "--" + boundary + "\r\n"
+		totalSize += int64(len("--")) + int64(len(sfd.boundary)) + 2 // \r\n
+
+		// 2. Content-Disposition header
+		contentDisposition := fmt.Sprintf("Content-Disposition: form-data; name=\"%s\"", entry.Name)
+		if entry.Filename != "" {
+			contentDisposition += fmt.Sprintf("; filename=\"%s\"", entry.Filename)
+		}
+		totalSize += int64(len(contentDisposition)) + 2 // \r\n
+
+		// 3. Content-Type header (如果有文件名，总是添加)
+		if entry.Filename != "" {
+			contentType := entry.ContentType
+			if contentType == "" {
+				// 默认值与 createFormFilePart 保持一致
+				contentType = "application/octet-stream"
+			}
+			totalSize += int64(len(fmt.Sprintf("Content-Type: %s", contentType))) + 2 // \r\n
+		}
+
+		// 4. 空行分隔 headers 和 body
+		totalSize += 2 // \r\n
+
+		// 5. 数据本身
+		switch v := entry.Value.(type) {
+		case string:
+			totalSize += int64(len(v))
+		case []byte:
+			totalSize += int64(len(v))
+		}
+
+		// 6. 数据后的换行
+		totalSize += 2 // \r\n
+	}
+
+	// 7. 结束 boundary: "--" + boundary + "--" + "\r\n"
+	totalSize += int64(len("--")) + int64(len(sfd.boundary)) + int64(len("--")) + 2 // \r\n
+
+	return totalSize
 }
 
 // ShouldUseStreaming 判断是否应该使用流式处理
@@ -327,23 +390,17 @@ func (sfd *StreamingFormData) ShouldUseStreaming() bool {
 }
 
 // randomBoundary 生成随机边界字符串
+// 🔥 与 Node.js form-data 兼容：26个'-' + 24个十六进制字符 = 50 字符
 func randomBoundary() string {
-
-	return fmt.Sprintf("----FormDataBoundary%d", randomInt63())
-}
-
-// randomInt63 生成随机 int64
-func randomInt63() int64 {
-
-	return int64(randomUint32())<<31 | int64(randomUint32())
-}
-
-// randomUint32 生成随机 uint32
-func randomUint32() uint32 {
-
-	b := make([]byte, 4)
+	// 生成 12 字节的随机数据（12 * 2 = 24 个十六进制字符）
+	b := make([]byte, 12)
 	_, _ = io.ReadFull(randReader, b)
-	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
+
+	// 转换为十六进制字符串
+	hexStr := fmt.Sprintf("%x", b)
+
+	// Node.js form-data 格式：26个'-' + 24个十六进制字符
+	return fmt.Sprintf("--------------------------%s", hexStr)
 }
 
 // createFormFilePart 创建带自定义 Content-Type 的文件 part
@@ -400,4 +457,12 @@ func removeControlChars(s string) string {
 		}
 	}
 	return result.String()
+}
+
+// Release 显式释放内存（可选，CreateReader 已自动释放）
+// 如果 CreateReader 失败，可以调用此方法手动释放
+func (sfd *StreamingFormData) Release() {
+	if sfd != nil {
+		sfd.entries = nil
+	}
 }

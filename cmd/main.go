@@ -106,7 +106,7 @@ func main() {
 	tokenController := controller.NewTokenController(tokenService, rateLimiterService, cacheWritePool, adminToken)
 
 	// ==================== 设置路由 ====================
-	ginRouter := router.SetupRouter(
+	ginRouter, routerResources := router.SetupRouter(
 		executorController,
 		tokenController,
 		tokenService,
@@ -153,6 +153,33 @@ func main() {
 
 		// 🔥 3. 关闭缓存写入池（等待所有缓存写入完成）
 		cacheWritePool.Shutdown(5 * time.Second)
+		_ = utils.Sync()
+
+		// 🔥 4. 关闭限流服务（新增）
+		if err := rateLimiterService.Close(); err != nil {
+			utils.Warn("关闭限流服务失败", zap.Error(err))
+		}
+		_ = utils.Sync()
+
+		// 🔥 5. 关闭缓存服务（新增）
+		if err := cacheService.Close(); err != nil {
+			utils.Warn("关闭缓存服务失败", zap.Error(err))
+		}
+		_ = utils.Sync()
+
+		// 🔥 6. 关闭路由器中的限流器（新增）
+		if routerResources != nil {
+			if routerResources.SmartIPLimiter != nil {
+				if err := routerResources.SmartIPLimiter.Close(); err != nil {
+					utils.Warn("关闭 SmartIPLimiter 失败", zap.Error(err))
+				}
+			}
+			if routerResources.GlobalIPLimiter != nil {
+				if err := routerResources.GlobalIPLimiter.Close(); err != nil {
+					utils.Warn("关闭 GlobalIPLimiter 失败", zap.Error(err))
+				}
+			}
+		}
 		_ = utils.Sync()
 
 		utils.Info("服务关闭完成")

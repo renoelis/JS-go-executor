@@ -52,17 +52,22 @@ type JSExecutor struct {
 	currentExecs  int64
 
 	// 配置参数
-	maxCodeLength    int
-	maxInputSize     int
-	maxResultSize    int
-	executionTimeout time.Duration
-	allowConsole     bool // 是否允许用户代码使用 console
+	maxCodeLength             int
+	maxInputSize              int
+	maxResultSize             int
+	executionTimeout          time.Duration
+	allowConsole              bool          // 是否允许用户代码使用 console
+	concurrencyWaitTimeout    time.Duration // 🔥 并发槽位等待超时（可配置）
+	runtimePoolAcquireTimeout time.Duration // 🔥 Runtime 池获取超时（可配置）
 
 	// Node.js兼容性
 	registry *require.Registry
 
 	// 🔥 模块注册器（统一管理所有模块增强器）
 	moduleRegistry *ModuleRegistry
+
+	// 🔥 JavaScript 内存限制器（可配置）
+	jsMemoryLimiter *enhance_modules.JSMemoryLimiter
 
 	// 🔒 预加载的库导出（安全隔离）
 	preloadedLibs map[string]interface{}
@@ -127,34 +132,56 @@ type runtimeHealthInfo struct {
 // NewJSExecutor 创建新的JavaScript执行器
 func NewJSExecutor(cfg *config.Config) *JSExecutor {
 	executor := &JSExecutor{
-		runtimePool:      make(chan *goja.Runtime, cfg.Executor.MaxPoolSize),
-		poolSize:         cfg.Executor.PoolSize,
-		minPoolSize:      cfg.Executor.MinPoolSize,
-		maxPoolSize:      cfg.Executor.MaxPoolSize,
-		idleTimeout:      cfg.Executor.IdleTimeout,
-		currentPoolSize:  int32(cfg.Executor.PoolSize),
-		runtimeHealth:    make(map[*goja.Runtime]*runtimeHealthInfo),
-		semaphore:        make(chan struct{}, cfg.Executor.MaxConcurrent),
-		maxConcurrent:    cfg.Executor.MaxConcurrent,
-		maxCodeLength:    cfg.Executor.MaxCodeLength,
-		maxInputSize:     cfg.Executor.MaxInputSize,
-		maxResultSize:    cfg.Executor.MaxResultSize,
-		executionTimeout: cfg.Executor.ExecutionTimeout,
-		allowConsole:     cfg.Executor.AllowConsole, // 🔥 Console 控制
-		registry:         new(require.Registry),
-		moduleRegistry:   NewModuleRegistry(), // 🔥 创建模块注册器
-		codeCache:        utils.NewLRUCache(cfg.Executor.CodeCacheSize),
-		validationCache:  utils.NewGenericLRUCache(cfg.Executor.CodeCacheSize), // 🔥 验证缓存（与代码缓存相同大小）
-		maxCacheSize:     cfg.Executor.CodeCacheSize,
-		analyzer:         utils.NewCodeAnalyzer(),
-		stats:            &model.ExecutorStats{},
-		warmupStats:      &model.WarmupStats{Status: "not_started"},
-		shutdown:         make(chan struct{}),
-		preloadedLibs:    make(map[string]interface{}),
+		runtimePool:               make(chan *goja.Runtime, cfg.Executor.MaxPoolSize),
+		poolSize:                  cfg.Executor.PoolSize,
+		minPoolSize:               cfg.Executor.MinPoolSize,
+		maxPoolSize:               cfg.Executor.MaxPoolSize,
+		idleTimeout:               cfg.Executor.IdleTimeout,
+		currentPoolSize:           int32(cfg.Executor.PoolSize),
+		runtimeHealth:             make(map[*goja.Runtime]*runtimeHealthInfo),
+		semaphore:                 make(chan struct{}, cfg.Executor.MaxConcurrent),
+		maxConcurrent:             cfg.Executor.MaxConcurrent,
+		maxCodeLength:             cfg.Executor.MaxCodeLength,
+		maxInputSize:              cfg.Executor.MaxInputSize,
+		maxResultSize:             cfg.Executor.MaxResultSize,
+		executionTimeout:          cfg.Executor.ExecutionTimeout,
+		allowConsole:              cfg.Executor.AllowConsole,              // 🔥 Console 控制
+		concurrencyWaitTimeout:    cfg.Executor.ConcurrencyWaitTimeout,    // 🔥 并发等待超时（可配置）
+		runtimePoolAcquireTimeout: cfg.Executor.RuntimePoolAcquireTimeout, // 🔥 Runtime 获取超时（可配置）
+		registry:                  new(require.Registry),
+		moduleRegistry:            NewModuleRegistry(), // 🔥 创建模块注册器
+		codeCache:                 utils.NewLRUCache(cfg.Executor.CodeCacheSize),
+		validationCache:           utils.NewGenericLRUCache(cfg.Executor.CodeCacheSize), // 🔥 验证缓存（与代码缓存相同大小）
+		maxCacheSize:              cfg.Executor.CodeCacheSize,
+		analyzer:                  utils.NewCodeAnalyzer(),
+		stats:                     &model.ExecutorStats{},
+		warmupStats:               &model.WarmupStats{Status: "not_started"},
+		shutdown:                  make(chan struct{}),
+		preloadedLibs:             make(map[string]interface{}),
 	}
 
 	// 🔥 注册所有模块（统一管理）
 	executor.registerModules(cfg)
+
+	// 🔥 初始化 JavaScript 内存限制器（可配置）
+	var jsMemLimitMB int64
+	if cfg.Executor.JSMemoryLimitMB > 0 {
+		jsMemLimitMB = cfg.Executor.JSMemoryLimitMB
+	} else {
+		// 默认使用 Blob/File 的限制
+		jsMemLimitMB = cfg.Fetch.MaxBlobFileSize / 1024 / 1024
+	}
+	executor.jsMemoryLimiter = enhance_modules.NewJSMemoryLimiter(
+		cfg.Executor.EnableJSMemoryLimit,
+		jsMemLimitMB,
+	)
+
+	if executor.jsMemoryLimiter.IsEnabled() {
+		utils.Info("JavaScript 内存限制已启用",
+			zap.Int64("limit_mb", executor.jsMemoryLimiter.GetMaxAllocationMB()))
+	} else {
+		utils.Warn("JavaScript 内存限制已禁用，建议仅在开发环境禁用")
+	}
 
 	// 🔒 预加载嵌入库（在可信环境中）
 	executor.preloadEmbeddedLibraries()
@@ -187,7 +214,9 @@ func NewJSExecutor(cfg *config.Config) *JSExecutor {
 		zap.Int("max_concurrent", cfg.Executor.MaxConcurrent),
 		zap.Int("max_code_length", cfg.Executor.MaxCodeLength),
 		zap.Duration("execution_timeout", executor.executionTimeout),
-		zap.Bool("allow_console", cfg.Executor.AllowConsole), // 🔥 Console 状态
+		zap.Duration("concurrency_wait_timeout", executor.concurrencyWaitTimeout),   // 🔥 并发等待超时
+		zap.Duration("runtime_acquire_timeout", executor.runtimePoolAcquireTimeout), // 🔥 Runtime 获取超时
+		zap.Bool("allow_console", cfg.Executor.AllowConsole),                        // 🔥 Console 状态
 		zap.Int("registered_modules", executor.moduleRegistry.Count()),
 		zap.Strings("module_list", executor.moduleRegistry.List()),
 	)
@@ -582,6 +611,14 @@ func (e *JSExecutor) setupRuntime(runtime *goja.Runtime) error {
 	// 步骤2: 设置全局对象
 	e.setupGlobalObjects(runtime)
 
+	// 🔥 步骤2.5: 注册 JavaScript 内存限制器
+	// 提前拦截大内存分配（Array, TypedArray），防止在 JavaScript 侧就消耗大量内存
+	if e.jsMemoryLimiter != nil && e.jsMemoryLimiter.IsEnabled() {
+		if err := e.jsMemoryLimiter.RegisterLimiter(runtime); err != nil {
+			utils.Warn("JavaScript 内存限制器注册失败（非致命）", zap.Error(err))
+		}
+	}
+
 	// 🔒 步骤3: 禁用危险功能和 constructor
 	// 注意：我们无法完全禁用 Function（库需要它），但可以禁用 constructor 链攻击
 	runtime.Set("eval", goja.Undefined())
@@ -591,6 +628,7 @@ func (e *JSExecutor) setupRuntime(runtime *goja.Runtime) error {
 	runtime.Set("self", goja.Undefined())
 
 	// 🔥 禁用 Reflect 和 Proxy（防止绕过 constructor 防护）
+	// 注意：JSMemoryLimiter 必须在此之前注册
 	runtime.Set("Reflect", goja.Undefined())
 	runtime.Set("Proxy", goja.Undefined())
 
@@ -742,19 +780,27 @@ func (e *JSExecutor) disableConstructorAccess(runtime *goja.Runtime) {
 					} catch(e) {}
 				}
 				
-				// ======================================
-				// 第 3 层：保护原型 constructor（白名单机制）
-				// ======================================
-				// 策略：保留所有 prototype.constructor 以支持库功能
-				// 
-				// 保留的 Prototype（白名单）：
-				//   - Object/Array/Date/Promise 等所有标准原型的 constructor
-				//
-				// 安全性通过以下方式保证：
-				//   1. 静态代码分析：检测用户代码中的 .constructor 访问
-				//   2. 禁用 eval、Function 构造器等危险功能
-				//   3. 禁用 Reflect 和 Proxy，防止绕过检测
-				//   4. 代码执行超时和资源限制
+			// ======================================
+			// 第 3 层：保护原型 constructor（权衡设计）
+			// ======================================
+			// 策略：保留所有 prototype.constructor 以支持库功能
+			// 
+			// 🔒 安全权衡说明：
+			//   - 保留 constructor 链是为了兼容主流 JavaScript 库
+			//   - 很多库（axios, lodash, date-fns 等）依赖 constructor
+			//   - 删除会导致库功能异常或报错
+			//
+			// 🛡️ 已有的安全防护：
+			//   1. ✅ 代码执行超时（300s）
+			//   2. ✅ 并发限制（20个）
+			//   3. ✅ 内存限制（12MB）
+			//   4. ✅ 禁用 eval、globalThis、Reflect、Proxy
+			//   5. ✅ 多层资源限制
+			//
+			// 🎯 设计决策：
+			//   - 优先保证库的可用性（核心功能）
+			//   - 通过其他机制限制恶意代码（超时、资源限制）
+			//   - 适用场景：可信代码执行环境
 				
 			// ======================================
 			// 第 4 层：原型链操作方法（通过静态分析检测）
@@ -900,7 +946,7 @@ func (e *JSExecutor) executeInternal(ctx context.Context, code string, input map
 	// 机制：
 	//   - 使用 semaphore 限制并发（默认 100）
 	//   - 监听 Context 取消信号，避免无限等待
-	//   - 等待超时后返回 ConcurrencyError（默认 5s）
+	//   - 等待超时后返回 ConcurrencyError（可配置，默认 10s）
 	// defer 确保即使 panic 也会释放 semaphore
 	select {
 	case e.semaphore <- struct{}{}:
@@ -910,10 +956,10 @@ func (e *JSExecutor) executeInternal(ctx context.Context, code string, input map
 			Type:    "CancelledError",
 			Message: "请求已取消",
 		}
-	case <-time.After(concurrencyLimitWaitTimeout):
+	case <-time.After(e.concurrencyWaitTimeout):
 		return nil, &model.ExecutionError{
 			Type:    "ConcurrencyError",
-			Message: "系统繁忙，请稍后重试",
+			Message: fmt.Sprintf("系统繁忙，请稍后重试（等待超时: %v）", e.concurrencyWaitTimeout),
 		}
 	}
 
@@ -965,6 +1011,12 @@ func (e *JSExecutor) preloadEmbeddedLibraries() {
 
 	// 🔥 注册 btoa/atob 函数（避免 axios 警告）
 	e.registerBase64Functions(trustedRuntime)
+
+	// 🔥 重要：在预加载其他库之前，先 Setup 所有模块（特别是 Buffer，它提供 BigInt）
+	// qs 库需要 BigInt.prototype.valueOf，而 Buffer 模块会设置 BigInt 及其 prototype
+	if err := e.moduleRegistry.SetupAll(trustedRuntime); err != nil {
+		utils.Warn("预加载时设置模块失败", zap.Error(err))
+	}
 
 	// 需要预加载的库列表
 	libsToPreload := []string{

@@ -1,67 +1,112 @@
-# 编译产物
-flow-codeblock-go
-flow-codeblock-go-race
-*.exe
-*.dll
-*.so
-*.dylib
+# Git相关
+.git
+.gitignore
+.gitattributes
 
-# 测试和日志文件
-*.log
-*_output.log
-*_results.txt
+# 文档文件
+*.md
+!README.md
+!API接口完整文档.md
+CHANGELOG*.md
+LICENSE
+docs/
+
+# 测试文件和目录
+test/
+*_test.go
 *.test
-*.out
+coverage.txt
+coverage.out
 
-# 临时文件
-/tmp/
+# 开发脚本
+*.sh
+dev_start.sh
+start.sh
+deploy_production.sh
+redeploy.sh
+show_admin_token.sh
+quick_stress_test.sh
+production_stress_test*.sh
+run_stress_test_with_monitor.sh
+monitor_*.sh
+final_verification_test.sh
+test_*.sh
+
+# 临时文件和日志
+*.log
+service.log
 *.tmp
 *.swp
 *.swo
 *~
+.DS_Store
+Thumbs.db
 
-# IDE
+# Node.js相关
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# 编译产物和二进制文件
+flow-codeblock-go
+*.exe
+*.dll
+*.so
+*.dylib
+*.tar.gz
+*.tar.xz
+*.zip
+
+# Docker相关（避免递归）
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+.gitignore
+
+# 环境配置（生产环境在容器中使用环境变量）
+.env
+.env.*
+env.development
+env.production
+env.example
+
+# IDE和编辑器配置
 .vscode/
 .idea/
+*.swp
+*.swo
 *.iml
+.project
+.classpath
+.settings/
 
-# 环境配置
-.env
-.env.local
-.env.*.local
+# 临时数据和缓存
+tmp/
+temp/
+cache/
+*.cache
 
-# 🔒 管理员 Token（敏感信息，绝不提交）
-.admin_token
-.env.prod
-env.prod
-env.dev
-*.backup.*
-
-# 依赖
-vendor/
-
-# macOS
-.DS_Store
-
-# 数据文件
-*.db
-*.sqlite
-
-
-TODO.md
-CHANGELOG.md
-LICENSE
-.editorconfig
-
+# 压力测试和性能分析
+压力测试*.txt
+性能分析*.md
 分析评估/
-test/
-.admin_token
 
-.claude/
-*.md
-*.sh
-!README.md
-!API接口完整文档.md
+# 备份文件
+*.bak
+*.backup
+*_backup
 
-base64-validator.html
+# 其他不需要的文件
+.editorconfig
+.prettierrc
+.eslintrc*
+tsconfig.json
+package.json
 code-executor-tester.html
+
+DATE.js
+test_datefns_fix.go
+test_error_in_timeout.js
+test_eventloop_simple.js

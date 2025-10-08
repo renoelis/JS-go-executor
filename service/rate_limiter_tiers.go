@@ -268,6 +268,10 @@ type ColdDataTier struct {
 	batchBuffer map[string]*batchItem
 	batchSize   int
 	mutex       sync.RWMutex
+
+	// 🔥 新增：优雅关闭支持
+	shutdown chan struct{}
+	wg       sync.WaitGroup
 }
 
 type batchItem struct {
@@ -287,9 +291,11 @@ func NewColdDataTier(db *sqlx.DB, batchSize int) *ColdDataTier {
 		tableName:   "token_rate_limit_history",
 		batchBuffer: make(map[string]*batchItem),
 		batchSize:   batchSize,
+		shutdown:    make(chan struct{}), // 🔥 初始化关闭信号
 	}
 
 	// 启动批量写入定时器
+	tier.wg.Add(1) // 🔥 注册 goroutine
 	go tier.startBatchTimer()
 
 	return tier
@@ -327,7 +333,12 @@ func (c *ColdDataTier) Set(ctx context.Context, tokenKey string, requests []int6
 
 	// 如果缓冲区满了，触发批量写入
 	if len(c.batchBuffer) >= c.batchSize {
-		go c.flushBatch()
+		// 🔥 使用 WaitGroup 追踪临时 goroutine，确保优雅关闭时等待完成
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			c.flushBatch()
+		}()
 	}
 
 	return nil
@@ -417,11 +428,22 @@ func (c *ColdDataTier) flushBatch() {
 
 // startBatchTimer 启动批量写入定时器
 func (c *ColdDataTier) startBatchTimer() {
+	defer c.wg.Done() // 🔥 goroutine 退出时通知
+
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		c.flushBatch()
+	for {
+		select {
+		case <-ticker.C:
+			c.flushBatch()
+		case <-c.shutdown: // 🔥 监听关闭信号
+			// 🔥 关闭前最后一次刷新，避免数据丢失
+			utils.Info("ColdDataTier 正在关闭，执行最后一次批量刷新")
+			c.flushBatch()
+			utils.Info("ColdDataTier 批量写入定时器已停止")
+			return
+		}
 	}
 }
 
@@ -436,4 +458,18 @@ func (c *ColdDataTier) GetStats() map[string]interface{} {
 		"batch_size":        c.batchSize,
 		"table_name":        c.tableName,
 	}
+}
+
+// Close 关闭冷数据层，等待所有批量写入完成
+func (c *ColdDataTier) Close() error {
+	utils.Info("开始关闭 ColdDataTier")
+
+	// 发送关闭信号
+	close(c.shutdown)
+
+	// 等待 goroutine 退出
+	c.wg.Wait()
+
+	utils.Info("ColdDataTier 已关闭")
+	return nil
 }

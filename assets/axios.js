@@ -242,19 +242,18 @@
    */
   function transformRequestData(data, headers) {
     // 🔥 优先检测 Node.js form-data 模块
+    // 关键修复：不调用 getBuffer()，直接传递给 fetch 以支持流式上传
     if (data && data.__isNodeFormData === true) {
-      // 获取 Buffer 数据
-      if (typeof data.getBuffer === 'function') {
-        const buffer = data.getBuffer();
-        
-        // 自动合并 FormData 的 headers (包含正确的 boundary)
-        if (typeof data.getHeaders === 'function') {
-          const formHeaders = data.getHeaders();
-          Object.assign(headers, formHeaders);
-        }
-        
-        return buffer;
+      // 自动合并 FormData 的 headers (包含正确的 boundary)
+      if (typeof data.getHeaders === 'function') {
+        const formHeaders = data.getHeaders();
+        Object.assign(headers, formHeaders);
       }
+      
+      // 🔥 直接返回 FormData 对象，让 fetch 处理流式上传
+      // fetch 会通过 __getGoStreamingFormData 直接访问底层的 Go StreamingFormData
+      // 这样可以支持大文件的流式上传（>1MB 自动启用流式模式）
+      return data;
     }
     
     // 🔥 如果是浏览器 FormData，删除 Content-Type 让浏览器自动设置（包含正确的 boundary）
@@ -612,6 +611,11 @@
       fetchOptions.body = data;
     }
 
+    // 🔥 添加流式标记（内部使用）
+    if (config.responseType === 'stream') {
+      fetchOptions.__streaming = true;
+    }
+
     // 添加 AbortSignal
     if (config.cancelToken) {
       fetchOptions.signal = config.cancelToken.signal;
@@ -648,6 +652,9 @@
         if (method === 'HEAD' || method === 'OPTIONS') {
           // HEAD/OPTIONS 请求不尝试解析 body，直接返回空字符串或 null
           dataPromise = Promise.resolve(responseType === 'json' ? null : '');
+        } else if (responseType === 'stream') {
+          // 🔥 流式响应：直接返回 response.body（ReadableStream）
+          dataPromise = Promise.resolve(response.body);
         } else if (responseType === 'json') {
           dataPromise = response.json().catch(function(jsonError) {
             // JSON 解析失败时降级为文本，但记录警告

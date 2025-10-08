@@ -24,6 +24,10 @@ type SmartIPRateLimiter struct {
 	preAuthBurst     int
 	postAuthRate     rate.Limit
 	postAuthBurst    int
+
+	// 🔥 优雅关闭支持
+	shutdown chan struct{}
+	wg       sync.WaitGroup
 }
 
 // NewSmartIPRateLimiter 创建智能IP限流器
@@ -36,9 +40,11 @@ func NewSmartIPRateLimiter(preRate, preBurst, postRate, postBurst int) *SmartIPR
 		preAuthBurst:     preBurst,
 		postAuthRate:     rate.Limit(postRate),
 		postAuthBurst:    postBurst,
+		shutdown:         make(chan struct{}), // 🔥 初始化关闭信号
 	}
 
 	// 启动清理goroutine
+	limiter.wg.Add(1) // 🔥 注册 goroutine
 	go limiter.cleanup(5*time.Minute, 30*time.Minute)
 
 	return limiter
@@ -101,44 +107,53 @@ func (s *SmartIPRateLimiter) GetLimiter(ip string, authenticated bool) *rate.Lim
 
 // cleanup 定期清理不活跃的IP
 func (s *SmartIPRateLimiter) cleanup(interval, maxAge time.Duration) {
+	defer s.wg.Done() // 🔥 goroutine 退出时通知
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		s.mu.Lock()
-		now := time.Now()
-		cleaned := 0
+	for {
+		select {
+		case <-ticker.C:
+			s.mu.Lock()
+			now := time.Now()
+			cleaned := 0
 
-		// 清理PreAuth限流器
-		for ip, entry := range s.preAuthLimiters {
-			if now.Sub(entry.lastSeen) > maxAge {
-				delete(s.preAuthLimiters, ip)
-				cleaned++
+			// 清理PreAuth限流器
+			for ip, entry := range s.preAuthLimiters {
+				if now.Sub(entry.lastSeen) > maxAge {
+					delete(s.preAuthLimiters, ip)
+					cleaned++
+				}
 			}
-		}
 
-		// 清理PostAuth限流器
-		for ip, entry := range s.postAuthLimiters {
-			if now.Sub(entry.lastSeen) > maxAge {
-				delete(s.postAuthLimiters, ip)
-				cleaned++
+			// 清理PostAuth限流器
+			for ip, entry := range s.postAuthLimiters {
+				if now.Sub(entry.lastSeen) > maxAge {
+					delete(s.postAuthLimiters, ip)
+					cleaned++
+				}
 			}
-		}
 
-		// 清理已认证IP列表
-		for ip, lastAuth := range s.authenticatedIPs {
-			if now.Sub(lastAuth) > maxAge {
-				delete(s.authenticatedIPs, ip)
-				cleaned++
+			// 清理已认证IP列表
+			for ip, lastAuth := range s.authenticatedIPs {
+				if now.Sub(lastAuth) > maxAge {
+					delete(s.authenticatedIPs, ip)
+					cleaned++
+				}
 			}
-		}
 
-		s.mu.Unlock()
+			s.mu.Unlock()
 
-		if cleaned > 0 {
-			utils.Debug("智能IP限流器清理完成",
-				zap.Int("cleaned_count", cleaned),
-			)
+			if cleaned > 0 {
+				utils.Debug("智能IP限流器清理完成",
+					zap.Int("cleaned_count", cleaned),
+				)
+			}
+
+		case <-s.shutdown: // 🔥 监听关闭信号
+			utils.Info("SmartIPRateLimiter 清理任务已停止")
+			return
 		}
 	}
 }
@@ -163,6 +178,20 @@ func (s *SmartIPRateLimiter) GetStats() map[string]interface{} {
 	}
 }
 
+// Close 关闭智能IP限流器，等待清理任务完成
+func (s *SmartIPRateLimiter) Close() error {
+	utils.Info("开始关闭 SmartIPRateLimiter")
+
+	// 发送关闭信号
+	close(s.shutdown)
+
+	// 等待 goroutine 退出
+	s.wg.Wait()
+
+	utils.Info("SmartIPRateLimiter 已关闭")
+	return nil
+}
+
 // ========================================
 // 🔥 智能IP限流中间件
 // ========================================
@@ -184,6 +213,58 @@ func SmartIPRateLimiterMiddleware(cfg *config.Config) gin.HandlerFunc {
 		zap.Int("post_auth_burst", cfg.RateLimit.PostAuthIPBurst),
 	)
 
+	return func(c *gin.Context) {
+		ip := getRealIP(c)
+
+		// 检查IP是否已认证过
+		authenticated := limiter.IsAuthenticated(ip)
+
+		// 获取对应的限流器
+		ipLimiter := limiter.GetLimiter(ip, authenticated)
+
+		// 检查限流
+		if !ipLimiter.Allow() {
+			limitType := "认证前"
+			limitRate := cfg.RateLimit.PreAuthIPRate
+			limitBurst := cfg.RateLimit.PreAuthIPBurst
+
+			if authenticated {
+				limitType = "认证后"
+				limitRate = cfg.RateLimit.PostAuthIPRate
+				limitBurst = cfg.RateLimit.PostAuthIPBurst
+			}
+
+			utils.Warn("智能IP限流拒绝",
+				zap.String("ip", ip),
+				zap.String("limit_type", limitType),
+				zap.Bool("authenticated", authenticated),
+			)
+
+			utils.RespondError(c, http.StatusTooManyRequests,
+				utils.ErrorTypeIPRateLimit,
+				"IP 请求频率超限，请稍后再试（"+limitType+"限制）",
+				map[string]interface{}{
+					"limit": map[string]interface{}{
+						"rate":  limitRate,
+						"burst": limitBurst,
+						"type":  limitType,
+					},
+				})
+			c.Abort()
+			return
+		}
+
+		// 保存限流器引用，供认证中间件使用
+		c.Set("smartIPLimiter", limiter)
+		c.Set("clientIP", ip)
+
+		c.Next()
+	}
+}
+
+// SmartIPRateLimiterHandlerWithInstance 使用已有实例的智能IP限流中间件
+// 用于在 router 中复用限流器实例
+func SmartIPRateLimiterHandlerWithInstance(limiter *SmartIPRateLimiter, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ip := getRealIP(c)
 

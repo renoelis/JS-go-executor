@@ -215,6 +215,37 @@
             transform: none !important;
         }
 
+        /* 复制结果按钮样式 */
+        .copy-result-btn {
+            padding: 8px 16px;
+            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 4px rgba(40, 167, 69, 0.2);
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .copy-result-btn:hover {
+            background: linear-gradient(135deg, #218838 0%, #1aa179 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(40, 167, 69, 0.3);
+        }
+
+        .copy-result-btn:active {
+            transform: translateY(0);
+        }
+
+        .copy-result-btn.copied {
+            background: linear-gradient(135deg, #17a2b8 0%, #138496 100%);
+        }
+
         .result-section {
             grid-column: 1 / -1;
         }
@@ -232,8 +263,11 @@
             height: calc(100vh - 200px);
             max-height: 600px;
             overflow-y: auto;
+            overflow-x: auto;
             white-space: pre-wrap;
             word-wrap: break-word;
+            word-break: break-all;
+            overflow-wrap: break-word;
         }
 
         .result-box.success {
@@ -435,8 +469,8 @@
             background: #fff9e6;
             border: 1px solid #ffe066;
             border-radius: 8px;
-            padding: 15px;
-            margin-bottom: 20px;
+            padding: 14px 15px;
+            margin-bottom: 15px;
         }
 
         .config-label {
@@ -711,25 +745,52 @@
                     使用说明
                 </div>
                 <div class="info-box">
-                    1. 输入 Access Token（必需）<br>
-                    2. 填写 Input 参数（JSON 格式）<br>
-                    3. 编写 JavaScript 代码<br>
-                    4. 点击"运行代码"执行测试<br>
-                    5. 查看执行结果或报错信息<br><br>
-                    <strong>📚 相关链接：</strong><br>
-                    • <a href="{{.AiAssistantUrl}}" target="_blank" style="color: #28a745; text-decoration: none;">轻翼AI：代码块AI助手</a><br>
-                    • <a href="{{.HelpDocUrl}}" target="_blank" style="color: #28a745; text-decoration: none;">Flow CodeBlock 帮助文档</a><br>
-                    • <a href="{{.ExampleDocUrl}}" target="_blank" style="color: #28a745; text-decoration: none;">代码块示例</a>
+                    <strong style="color: #495057;">📚 相关链接：</strong>
+                    <div style="margin-top: 8px; line-height: 1.8;">
+                        • <a href="{{.HelpDocUrl}}" target="_blank" style="color: #1976D2; text-decoration: none; font-weight: 600;">📖 Flow CodeBlock 帮助文档</a>
+                        <span style="color: #6c757d; font-size: 13px;"> - 完整的功能介绍和使用指南</span><br>
+                        
+                        • <a href="{{.ApiDocUrl}}" target="_blank" style="color: #1976D2; text-decoration: none; font-weight: 600;">📘 Flow CodeBlock API 接口文档</a>
+                        <span style="color: #6c757d; font-size: 13px;"> - 详细说明 API 接口调用规则</span><br>
+                        
+                        • <a href="{{.TestToolGuideUrl}}" target="_blank" style="color: #1976D2; text-decoration: none; font-weight: 600;">🛠️ Flow CodeBlock 在线测试工具使用指南</a>
+                        <span style="color: #6c757d; font-size: 13px;"> - 功能强大的在线测试工具详解</span><br>
+                        
+                        • <a href="{{.ExampleDocUrl}}" target="_blank" style="color: #1976D2; text-decoration: none; font-weight: 600;">💡 Flow CodeBlock 代码示例</a>
+                        <span style="color: #6c757d; font-size: 13px;"> - 结合轻流的多种代码块示例</span><br>
+                        
+                        • <a href="{{.AiAssistantUrl}}" target="_blank" style="color: #1976D2; text-decoration: none; font-weight: 600;">🤖 轻翼AI：Flow CodeBlock 代码AI助手</a>
+                        <span style="color: #6c757d; font-size: 13px;"> - 帮助用户快速编写代码</span>
+                    </div>
+                    
+                    <div style="margin-top: 15px; padding-top: 12px; border-top: 1px solid #dee2e6;">
+                        <strong style="color: #495057; font-size: 15px;">💡 快速开始：</strong>
+                        <div style="margin-top: 8px; background: #fff8e6; border-left: 4px solid #ffc107; padding: 12px 15px; border-radius: 6px;">
+                            <div style="color: #333; font-size: 14px; line-height: 1.8; font-weight: 500;">
+                                <div style="margin-bottom: 6px;">1️⃣ 输入 <span style="color: #dc3545; font-weight: 600;">Access Token</span>（必需）</div>
+                                <div style="margin-bottom: 6px;">2️⃣ 填写 <span style="color: #17a2b8; font-weight: 600;">Input 参数</span>（JSON 格式）</div>
+                                <div style="margin-bottom: 6px;">3️⃣ 编写 <span style="color: #28a745; font-weight: 600;">JavaScript 代码</span></div>
+                                <div style="margin-bottom: 6px;">4️⃣ 点击 <span style="color: #667eea; font-weight: 600;">"运行代码"</span> 执行测试</div>
+                                <div style="margin-bottom: 6px;">5️⃣ 查看 <span style="color: #fd7e14; font-weight: 600;">执行结果</span> 或报错信息</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 底部提示信息，用于对齐右侧 -->
+                    <div style="margin-top: 15px; padding: 8px 10px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; font-size: 13px; color: #6c757d; line-height: 1.6;">
+                        <div style="margin-bottom: 4px;">💬 如有疑问，请查阅上方文档或联系技术支持</div>
+                        <div>🌟 建议先查看代码示例，快速掌握使用方法</div>
+                    </div>
                 </div>
             </div>
 
             <div class="section">
-                <div class="section-title">
+                <div class="section-title" style="margin-bottom: 15px;">
                     <span class="icon">🔐</span>
                     认证配置
                 </div>
 
-                <div class="config-section">
+                <div class="config-section" style="margin-bottom: 12px;">
                     <div class="config-label">API 服务地址</div>
                     <input type="text" 
                            id="apiUrl" 
@@ -738,7 +799,7 @@
                            placeholder="{{.ApiUrl}}">
                 </div>
 
-                <div class="config-section">
+                <div class="config-section" style="margin-bottom: 12px;">
                     <div class="config-label">Access Token <span style="color: red;">*</span></div>
                     <input type="text" 
                            id="accessToken" 
@@ -747,17 +808,51 @@
                 </div>
 
                 <!-- 按钮组 -->
-                <div style="text-align: center; margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
-                    <a href="{{.ApplyServiceUrl}}" target="_blank" style="flex: 1; min-width: 200px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4); transition: all 0.3s ease; font-size: 16px; text-align: center;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(102, 126, 234, 0.6)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(102, 126, 234, 0.4)';">🎯 申请开通服务</a>
-                    <button onclick="showTokenQuery()" style="flex: 1; min-width: 200px; background: linear-gradient(135deg, #20b2aa 0%, #008b8b 100%); color: white; padding: 12px 24px; border: none; border-radius: 8px; font-weight: bold; box-shadow: 0 4px 15px rgba(32, 178, 170, 0.4); transition: all 0.3s ease; font-size: 16px; cursor: pointer;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(32, 178, 170, 0.6)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(32, 178, 170, 0.4)';">🔍 查询 Token</button>
+                <div style="margin-top: 8px; display: flex; gap: 10px;">
+                    <a href="{{.ApplyServiceUrl}}" target="_blank" style="flex: 1; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; font-weight: bold; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4); transition: all 0.3s ease; font-size: 14px; text-align: center;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(102, 126, 234, 0.6)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(102, 126, 234, 0.4)';">🎯 申请试用服务</a>
+                    <button onclick="showTokenQuery()" style="flex: 1; background: linear-gradient(135deg, #20b2aa 0%, #008b8b 100%); color: white; padding: 12px 20px; border: none; border-radius: 8px; font-weight: bold; box-shadow: 0 4px 15px rgba(32, 178, 170, 0.4); transition: all 0.3s ease; font-size: 14px; cursor: pointer;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(32, 178, 170, 0.6)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(32, 178, 170, 0.4)';">🔍 查询 Token</button>
+                </div>
+
+                <!-- 配置说明 -->
+                <div style="margin-top: 15px; background: #f0f7ff; border: 1px solid #b3d9ff; border-radius: 8px; padding: 12px 15px;">
+                    <div style="color: #2c5aa0; font-size: 13px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+                        💡 配置说明
+                    </div>
+                    <div style="color: #495057; font-size: 13px; line-height: 1.8;">
+                        <div style="margin-bottom: 6px;">
+                            <strong style="color: #856404;">📍 API 服务地址：</strong>
+                            <span style="color: #666;">代码执行服务的接口地址，默认已配置无需修改</span>
+                        </div>
+                        <div style="margin-bottom: 6px;">
+                            <strong style="color: #856404;">🔑 Access Token：</strong>
+                            <span style="color: #666;">您的访问凭证（必填），用于身份验证和权限控制</span>
+                        </div>
+                        <div style="margin-bottom: 6px;">
+                            <strong style="color: #667eea;">🎯 申请试用服务：</strong>
+                            <span style="color: #666;">首次使用可申请试用 Token，点击跳转到申请页面</span>
+                        </div>
+                        <div style="margin-bottom: 6px;">
+                            <strong style="color: #20b2aa;">🔍 查询 Token：</strong>
+                            <span style="color: #666;">已有 Token 但忘记了？点击查询您的历史 Token 信息</span>
+                        </div>
+                        <div style="margin-top: 8px; padding: 8px 10px; background: #fff3cd; border-left: 3px solid #ffc107; border-radius: 4px;">
+                            <strong style="color: #d97706;">⚠️ 重要提示：</strong>
+                            <span style="color: #666;">若需要申请正式开通服务，请联系<strong style="color: #d97706;">轻流售后服务人员</strong></span>
+                        </div>
+                    </div>
                 </div>
             </div>
 
             <!-- Input 参数 -->
             <div class="section result-section">
-                <div class="section-title">
-                    <span class="icon">📥</span>
-                    Input 参数
+                <div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <span class="icon">📥</span>
+                        Input 参数
+                    </div>
+                    <button id="copyInputBtn" class="copy-result-btn" onclick="copyInputData()" title="复制 Input 参数">
+                        📋 复制内容
+                    </button>
                 </div>
 
                 <div id="inputAlertBox" class="alert"></div>
@@ -840,9 +935,14 @@ return {
 
             <!-- 执行结果 -->
             <div class="section">
-                <div class="section-title">
-                    <span class="icon">📊</span>
-                    执行结果
+                <div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <span class="icon">📊</span>
+                        执行结果
+                    </div>
+                    <button id="copyResultBtn" class="copy-result-btn" onclick="copyExecutionResult()" style="display: none;" title="复制执行结果">
+                        📋 复制结果
+                    </button>
                 </div>
 
                 <div id="alertBox" class="alert"></div>
@@ -1026,6 +1126,154 @@ return {
             document.body.removeChild(textArea);
         }
 
+        // ==================== 复制执行结果 ====================
+        function copyExecutionResult() {
+            const resultBox = document.getElementById('resultBox');
+            const copyBtn = document.getElementById('copyResultBtn');
+            
+            if (!resultBox || resultBox.style.display === 'none') {
+                showAlertInArea('alertBox', '⚠️ 暂无执行结果可复制', 'warning');
+                return;
+            }
+            
+            // 获取纯文本内容（去除 HTML 标签）
+            const resultText = resultBox.innerText || resultBox.textContent;
+            
+            if (!resultText.trim()) {
+                showAlertInArea('alertBox', '⚠️ 执行结果为空，无法复制', 'warning');
+                return;
+            }
+            
+            // 使用现代的 Clipboard API
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(resultText)
+                    .then(() => {
+                        // 显示成功提示
+                        showAlertInArea('alertBox', '✅ 执行结果已复制到剪贴板！', 'success');
+                        
+                        // 按钮视觉反馈
+                        const originalText = copyBtn.innerHTML;
+                        copyBtn.innerHTML = '✓ 已复制';
+                        copyBtn.classList.add('copied');
+                        
+                        // 2秒后恢复按钮
+                        setTimeout(() => {
+                            copyBtn.innerHTML = originalText;
+                            copyBtn.classList.remove('copied');
+                        }, 2000);
+                    })
+                    .catch(err => {
+                        console.error('复制失败:', err);
+                        // 降级方案
+                        fallbackCopyResult(resultText);
+                    });
+            } else {
+                // 降级方案：使用传统方法
+                fallbackCopyResult(resultText);
+            }
+        }
+        
+        // 降级复制方案（用于执行结果）
+        function fallbackCopyResult(text) {
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-999999px';
+            document.body.appendChild(textArea);
+            textArea.select();
+            
+            try {
+                document.execCommand('copy');
+                showAlertInArea('alertBox', '✅ 执行结果已复制到剪贴板！', 'success');
+                
+                // 按钮视觉反馈
+                const copyBtn = document.getElementById('copyResultBtn');
+                const originalText = copyBtn.innerHTML;
+                copyBtn.innerHTML = '✓ 已复制';
+                copyBtn.classList.add('copied');
+                
+                setTimeout(() => {
+                    copyBtn.innerHTML = originalText;
+                    copyBtn.classList.remove('copied');
+                }, 2000);
+            } catch (err) {
+                showAlertInArea('alertBox', '❌ 复制失败，请手动复制', 'error');
+            }
+            
+            document.body.removeChild(textArea);
+        }
+
+        // ==================== 复制 Input 参数 ====================
+        function copyInputData() {
+            const inputData = document.getElementById('inputData');
+            const copyBtn = document.getElementById('copyInputBtn');
+            
+            if (!inputData || !inputData.value.trim()) {
+                showAlertInArea('inputAlertBox', '⚠️ Input 参数为空，无法复制', 'warning');
+                return;
+            }
+            
+            const inputText = inputData.value;
+            
+            // 使用现代的 Clipboard API
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(inputText)
+                    .then(() => {
+                        // 显示成功提示
+                        showAlertInArea('inputAlertBox', '✅ Input 参数已复制到剪贴板！', 'success');
+                        
+                        // 按钮视觉反馈
+                        const originalText = copyBtn.innerHTML;
+                        copyBtn.innerHTML = '✓ 已复制';
+                        copyBtn.classList.add('copied');
+                        
+                        // 2秒后恢复按钮
+                        setTimeout(() => {
+                            copyBtn.innerHTML = originalText;
+                            copyBtn.classList.remove('copied');
+                        }, 2000);
+                    })
+                    .catch(err => {
+                        console.error('复制失败:', err);
+                        // 降级方案
+                        fallbackCopyInput(inputText);
+                    });
+            } else {
+                // 降级方案：使用传统方法
+                fallbackCopyInput(inputText);
+            }
+        }
+        
+        // 降级复制方案（用于 Input 参数）
+        function fallbackCopyInput(text) {
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-999999px';
+            document.body.appendChild(textArea);
+            textArea.select();
+            
+            try {
+                document.execCommand('copy');
+                showAlertInArea('inputAlertBox', '✅ Input 参数已复制到剪贴板！', 'success');
+                
+                // 按钮视觉反馈
+                const copyBtn = document.getElementById('copyInputBtn');
+                const originalText = copyBtn.innerHTML;
+                copyBtn.innerHTML = '✓ 已复制';
+                copyBtn.classList.add('copied');
+                
+                setTimeout(() => {
+                    copyBtn.innerHTML = originalText;
+                    copyBtn.classList.remove('copied');
+                }, 2000);
+            } catch (err) {
+                showAlertInArea('inputAlertBox', '❌ 复制失败，请手动复制', 'error');
+            }
+            
+            document.body.removeChild(textArea);
+        }
+
         // ==================== 代码执行 ====================
         async function executeCode() {
             // 验证必填项
@@ -1075,6 +1323,7 @@ return {
             hideAlert();
             document.getElementById('resultBox').style.display = 'none';
             document.getElementById('statsBox').style.display = 'none';
+            document.getElementById('copyResultBtn').style.display = 'none';
             document.getElementById('runBtn').disabled = true;
 
             try {
@@ -1122,9 +1371,15 @@ return {
         function displayResult(result, isSuccess) {
             const resultBox = document.getElementById('resultBox');
             const statsBox = document.getElementById('statsBox');
+            const copyBtn = document.getElementById('copyResultBtn');
             
             resultBox.style.display = 'block';
             resultBox.className = 'result-box ' + (isSuccess ? 'success' : 'error');
+            
+            // 显示复制按钮
+            if (copyBtn) {
+                copyBtn.style.display = 'inline-flex';
+            }
             
             // 使用 Postman 风格的 JSON 语法高亮
             const jsonString = JSON.stringify(result, null, 2);
@@ -1591,7 +1846,7 @@ return {
                 },
                 xlsx: {
                     input: {
-                        excelUrl: "https://file-examples.com/wp-content/storage/2017/02/file_example_XLSX_10.xlsx",
+                        excelUrl: "https://qingliu-obs.obs.cn-north-1.myhuaweicloud.com/documents/data/invite/13569E7/afff4c5a-b13e-48dc-acac-31d95d193c38.xlsx",
                         sheetIndex: 0,
                         maxRows: 10
                     },
@@ -1809,9 +2064,46 @@ return readExcelFromUrl();`
                 if (response.ok && result.success && result.data) {
                     // 处理返回的数据
                     const tokens = Array.isArray(result.data) ? result.data : (result.data.tokens || []);
-                    if (tokens.length > 0) {
-                        handleTokensResult(tokens);
-                        showAlertInModal(`✅ 查询成功！找到 ${tokens.length} 个 Token`, 'success');
+                    
+                    // 🔥 根据用户选择决定是否过滤已过期的 Token
+                    const includeExpired = document.getElementById('includeExpiredTokens').checked;
+                    const now = new Date();
+                    
+                    let displayTokens;
+                    let expiredCount = 0;
+                    
+                    if (includeExpired) {
+                        // 包含已失效Token，显示所有
+                        displayTokens = tokens;
+                        // 统计过期数量
+                        expiredCount = tokens.filter(token => {
+                            if (!token.expires_at) return false;
+                            return new Date(token.expires_at) <= now;
+                        }).length;
+                    } else {
+                        // 只显示有效Token
+                        displayTokens = tokens.filter(token => {
+                            if (!token.expires_at) {
+                                // 永久有效的 Token
+                                return true;
+                            }
+                            const expiresAt = new Date(token.expires_at);
+                            return expiresAt > now; // 只保留未过期的
+                        });
+                    }
+                    
+                    if (displayTokens.length > 0) {
+                        handleTokensResult(displayTokens);
+                        let message = `✅ 查询成功！找到 ${displayTokens.length} 个 Token`;
+                        if (includeExpired && expiredCount > 0) {
+                            message += `（其中 ${expiredCount} 个已过期）`;
+                        } else if (!includeExpired) {
+                            message += '（仅显示有效Token）';
+                        }
+                        showAlertInModal(message, 'success');
+                    } else if (tokens.length > 0) {
+                        // 所有 Token 都已过期
+                        showAlertInModal(`❌ 所有 ${tokens.length} 个 Token 均已过期。提示：勾选"包含已失效的 Token"可查看过期Token`, 'warning');
                     } else {
                         showAlertInModal('❌ 未找到 Token 信息', 'error');
                     }
@@ -1825,7 +2117,6 @@ return readExcelFromUrl();`
                 showAlertInModal('❌ 查询失败: ' + error.message, 'error');
             }
         }
-
         // 处理查询到的 Token 结果
         function handleTokensResult(tokens) {
             if (tokens.length === 1) {
@@ -2039,7 +2330,7 @@ return readExcelFromUrl();`
             </div>
 
             <div style="background: #e7f3ff; border-left: 4px solid #2196F3; padding: 12px; margin-bottom: 20px; border-radius: 4px; font-size: 13px; color: #333;">
-                💡 <strong>提示：</strong>点击右上角 <strong>×</strong> 按钮关闭弹窗
+                💡 <strong>提示：</strong>点击右上角 <strong>×</strong> 或 <strong>取消</strong> 按钮关闭弹窗
             </div>
 
             <div id="modalAlert" class="alert"></div>
@@ -2058,6 +2349,15 @@ return readExcelFromUrl();`
                        id="queryEmail" 
                        class="form-input"
                        placeholder="请输入 Email 地址">
+            </div>
+
+            <div class="form-group" style="margin-top: 10px;">
+                <label style="display: flex; align-items: center; cursor: pointer; font-size: 14px; user-select: none;">
+                    <input type="checkbox" 
+                           id="includeExpiredTokens" 
+                           style="width: 18px; height: 18px; margin-right: 8px; cursor: pointer;">
+                    <span style="color: #666;">📋 包含已失效的 Token（用于查看过期Token以便续期）</span>
+                </label>
             </div>
 
             <div class="button-group">

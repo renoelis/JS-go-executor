@@ -14,6 +14,7 @@ type ExecuteResponse struct {
 type ExecuteError struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
+	Stack   string `json:"stack,omitempty"` // 🔥 新增：JavaScript错误的stack trace
 }
 
 // ExecuteTiming 执行时间统计

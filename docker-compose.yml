@@ -98,25 +98,34 @@ services:
       
       # ==================== Fetch API配置 ====================
       - FETCH_TIMEOUT_MS=30000           # 30秒
-      - MAX_FORMDATA_SIZE_MB=50          # 🔧 开发环境减少限制
+      - MAX_FORMDATA_SIZE_MB=15          # 🔧 验证流式后提高：15MB
       - FORMDATA_STREAMING_THRESHOLD_MB=1
       - ENABLE_CHUNKED_UPLOAD=1
-      - MAX_BLOB_FILE_SIZE_MB=50
-      - FORMDATA_BUFFER_SIZE=1048576     # 1MB
-      - MAX_FILE_SIZE_MB=25
+      - MAX_BLOB_FILE_SIZE_MB=12         # 🔧 验证流式后提高：12MB
+      - FORMDATA_BUFFER_SIZE=524288      # 🔧 512KB 缓冲区
+      - MAX_FILE_SIZE_MB=12              # 🔧 验证流式后提高：12MB
+      
+      # ==================== JavaScript 内存限制 ====================
+      - ENABLE_JS_MEMORY_LIMIT=true      # 🔧 启用 JS 侧内存限制
+      - JS_MEMORY_LIMIT_MB=0              # 🔧 限制大小（0=使用 MAX_BLOB_FILE_SIZE_MB）
       
       # ==================== Go运行时配置 ====================
       - GOMAXPROCS=0                     # 使用所有CPU
       - GOGC=100
       
+      # ==================== 🔍 调试配置 ====================
+      - ENABLE_PPROF=true                # 开发环境启用 pprof 接口
+      
       # ==================== 🔧 测试工具配置 ====================
       # 测试工具页面配置 - 访问地址: http://localhost:3002/flow/test-tool
       # 开发环境使用本地地址
-      - TEST_TOOL_API_URL=http://localhost:3002                                      # API服务地址
-      - TEST_TOOL_AI_URL=https://qingflow.com/pc-ultron/share/agent/289302286342078465  # 轻翼AI助手链接
-      - TEST_TOOL_HELP_URL=https://exiao.yuque.com/ixwxsb/cqfg2y/or5052bo2dtukro2  # 帮助文档链接
-      - TEST_TOOL_EXAMPLE_URL=https://exiao.yuque.com/rlf3k1/oanb79/tlty7ic7szfr2v7v?singleDoc#  # 代码块示例链接
-      - TEST_TOOL_APPLY_URL=https://qingflow.com/f/9cah24om6402                    # 申请开通服务链接
+      - TEST_TOOL_API_URL=http://localhost:3002                                           # API服务地址
+      - TEST_TOOL_HELP_URL=https://exiao.yuque.com/rlf3k1/oanb79/fa3tqkxk1h2n912q         # Flow CodeBlock 帮助文档
+      - TEST_TOOL_API_DOC_URL=https://exiao.yuque.com/rlf3k1/oanb79/ybd2nfdshmhaihc2      # Flow CodeBlock API 接口文档
+      - TEST_TOOL_GUIDE_URL=https://exiao.yuque.com/rlf3k1/oanb79/olsa9bvc6vm2m26c        # Flow CodeBlock 在线测试工具使用指南
+      - TEST_TOOL_EXAMPLE_URL=https://exiao.yuque.com/rlf3k1/oanb79/tlty7ic7szfr2v7v     # Flow CodeBlock 代码示例
+      - TEST_TOOL_AI_URL=https://wings.qingflow.com/ultron/share/agent/443790716135587842 # 轻翼AI：Flow CodeBlock 代码AI助手
+      - TEST_TOOL_APPLY_URL=https://qingflow.com/f/cabirpa60001                          # 申请开通服务链接
     
     restart: "no"  # 开发环境不自动重启，方便调试
     

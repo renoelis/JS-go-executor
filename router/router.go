@@ -10,8 +10,16 @@ import (
 	"flow-codeblock-go/service"
 	"flow-codeblock-go/utils"
 
+	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
+
+// RouterResources 路由资源（需要优雅关闭的组件）
+type RouterResources struct {
+	SmartIPLimiter  *middleware.SmartIPRateLimiter
+	GlobalIPLimiter *middleware.IPRateLimiter
+}
 
 // SetupRouter 设置路由
 func SetupRouter(
@@ -22,7 +30,7 @@ func SetupRouter(
 	adminToken string,
 	cfg *config.Config,
 	cacheWritePool *service.CacheWritePool, // 🔥 新增：缓存写入池
-) *gin.Engine {
+) (*gin.Engine, *RouterResources) {
 	// 设置Gin模式
 	if os.Getenv("GIN_MODE") == "" {
 		gin.SetMode(gin.ReleaseMode)
@@ -36,13 +44,56 @@ func SetupRouter(
 	router.Use(middleware.RequestIDMiddleware()) // 🆕 请求ID中间件（最先执行）
 	router.Use(corsMiddleware())
 
+	// 🔥 创建限流器实例（需要在关闭时释放）
+	resources := &RouterResources{
+		SmartIPLimiter: middleware.NewSmartIPRateLimiter(
+			cfg.RateLimit.PreAuthIPRate,
+			cfg.RateLimit.PreAuthIPBurst,
+			cfg.RateLimit.PostAuthIPRate,
+			cfg.RateLimit.PostAuthIPBurst,
+		),
+		GlobalIPLimiter: middleware.NewIPRateLimiter(
+			middleware.RateLimit(cfg.RateLimit.GlobalIPRate),
+			cfg.RateLimit.GlobalIPBurst,
+		),
+	}
+
+	utils.Info("限流器已初始化",
+		zap.Int("smart_ip_pre_auth_rate", cfg.RateLimit.PreAuthIPRate),
+		zap.Int("smart_ip_post_auth_rate", cfg.RateLimit.PostAuthIPRate),
+		zap.Int("global_ip_rate", cfg.RateLimit.GlobalIPRate),
+	)
+
+	// 🔥 pprof 调试接口（无需认证，便于性能分析）
+	// 用于 Goroutine 泄漏检测、内存分析等
+	if cfg.Environment == "development" || os.Getenv("ENABLE_PPROF") == "true" {
+		// 注册到 /flow/debug/pprof 路径
+		pprofGroup := router.Group("/flow/debug/pprof")
+		{
+			pprof.RouteRegister(pprofGroup, "")
+		}
+		utils.Info("pprof 调试接口已启用", zap.String("path", "/flow/debug/pprof"))
+	}
+
+	// 全局IP限流中间件工厂函数
+	globalIPRateLimiter := func() gin.HandlerFunc {
+		return func(c *gin.Context) {
+			ip := middleware.GetRealIP(c)
+			if !resources.GlobalIPLimiter.GetLimiter(ip).Allow() {
+				middleware.HandleRateLimitExceeded(c, cfg.RateLimit.GlobalIPRate, cfg.RateLimit.GlobalIPBurst)
+				return
+			}
+			c.Next()
+		}
+	}
+
 	// 健康检查路由（无需认证，但有全局 IP 限流）
 	router.GET("/health",
-		middleware.GlobalIPRateLimiterMiddleware(cfg),
+		globalIPRateLimiter(),
 		executorController.SimpleHealth,
 	)
 	router.GET("/",
-		middleware.GlobalIPRateLimiterMiddleware(cfg),
+		globalIPRateLimiter(),
 		executorController.Root,
 	)
 
@@ -51,13 +102,13 @@ func SetupRouter(
 	{
 		// 测试工具页面（无需认证）
 		flowGroup.GET("/test-tool",
-			middleware.GlobalIPRateLimiterMiddleware(cfg),
+			globalIPRateLimiter(),
 			executorController.TestTool,
 		)
 
 		// 🔍 公开的Token查询接口（供测试工具使用，带全局IP限流）
 		flowGroup.GET("/query-token",
-			middleware.GlobalIPRateLimiterMiddleware(cfg),
+			globalIPRateLimiter(),
 			tokenController.QueryTokenPublic,
 		)
 
@@ -87,7 +138,7 @@ func SetupRouter(
 		//   2. Token 认证 - 验证 Token 有效性，成功后标记IP已认证
 		//   3. Token 限流 - 根据 Token 配置限流
 		flowGroup.POST("/codeblock",
-			middleware.SmartIPRateLimiterMiddleware(cfg),
+			middleware.SmartIPRateLimiterHandlerWithInstance(resources.SmartIPLimiter, cfg),
 			middleware.TokenAuthMiddleware(tokenService),
 			middleware.RateLimiterMiddleware(rateLimiterService),
 			executorController.Execute,
@@ -122,7 +173,7 @@ func SetupRouter(
 		}
 	}
 
-	return router
+	return router, resources
 }
 
 // corsMiddleware CORS中间件
