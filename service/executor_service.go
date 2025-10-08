@@ -244,6 +244,7 @@ func (e *JSExecutor) registerModules(cfg *config.Config) {
 		cfg.Fetch.MaxBlobFileSize,
 		cfg.Fetch.FormDataBufferSize,
 		cfg.Fetch.MaxFileSize,
+		cfg.Fetch.MaxResponseSize, // 🔥 新增：下载响应体大小限制
 	)
 	e.moduleRegistry.Register(fetchEnhancer)
 

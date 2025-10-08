@@ -1103,6 +1103,103 @@ func (e *JSExecutor) checkSuspiciousStringPatterns(code string) error {
 	return nil
 }
 
+// checkConsoleUsage 检查 console 使用（如果已禁用）
+// 🔥 静态检测：在代码验证阶段就拒绝包含 console 的代码
+// 📝 说明：如果 ALLOW_CONSOLE=false，则禁止代码中出现 console（无论在任何位置）
+func (e *JSExecutor) checkConsoleUsage(originalCode, cleanedCode string) error {
+	// 如果允许 console，直接返回
+	if e.allowConsole {
+		return nil
+	}
+
+	// 检测 cleanedCode 中是否包含 "console"
+	// cleanedCode 已经移除了字符串和注释，所以只检测实际代码
+	if idx := strings.Index(cleanedCode, "console"); idx != -1 {
+		// 🔥 在原始代码中查找实际代码中的 console（跳过注释和字符串）
+		lineNum, colNum, lineContent := e.findConsoleInActualCode(originalCode)
+
+		return &model.ExecutionError{
+			Type: "ConsoleDisabledError",
+			Message: fmt.Sprintf("代码中禁止使用 console\n"+
+				"原因: 生产环境已禁用 console \n"+
+				"位置: 第 %d 行，第 %d 列\n"+
+				"代码: %s\n",
+				lineNum, colNum, lineContent),
+		}
+	}
+
+	return nil
+}
+
+// findConsoleInActualCode 在原始代码中查找实际代码中的 console（跳过注释和字符串）
+// 🔥 解决行号定位问题：确保定位到实际代码中的 console，而不是注释中的
+func (e *JSExecutor) findConsoleInActualCode(code string) (int, int, string) {
+	inString := false
+	inComment := false
+	inMultiComment := false
+	stringChar := byte(0)
+
+	for i := 0; i < len(code); i++ {
+		ch := code[i]
+
+		// 处理多行注释
+		if !inString && !inComment && i+1 < len(code) && ch == '/' && code[i+1] == '*' {
+			inMultiComment = true
+			i++
+			continue
+		}
+		if inMultiComment && i+1 < len(code) && ch == '*' && code[i+1] == '/' {
+			inMultiComment = false
+			i++
+			continue
+		}
+		if inMultiComment {
+			continue
+		}
+
+		// 处理单行注释
+		if !inString && !inComment && i+1 < len(code) && ch == '/' && code[i+1] == '/' {
+			inComment = true
+			i++
+			continue
+		}
+		if inComment && ch == '\n' {
+			inComment = false
+			continue
+		}
+		if inComment {
+			continue
+		}
+
+		// 处理字符串
+		if !inString && (ch == '"' || ch == '\'' || ch == '`') {
+			inString = true
+			stringChar = ch
+			continue
+		}
+		if inString && ch == stringChar {
+			// 检查是否是转义
+			if i > 0 && code[i-1] != '\\' {
+				inString = false
+				stringChar = 0
+			}
+			continue
+		}
+		if inString {
+			continue
+		}
+
+		// 检查是否是 "console" 的开始
+		if ch == 'c' && i+7 <= len(code) && code[i:i+7] == "console" {
+			// 找到了实际代码中的 console
+			return e.findLineAndColumn(code, i)
+		}
+	}
+
+	// 没找到（理论上不会到这里，因为 cleanedCode 已经检测到了）
+	return 1, 1, ""
+}
+
 // checkInfiniteLoops 检查可能的无限循环
 // 注意：需要使用原始代码
 // 🔥 优化：允许带有 break 的 while(true) 循环（流式读取等合法场景）
@@ -1159,6 +1256,11 @@ func (e *JSExecutor) validateCodeSecurityCleaned(code, cleanedCode string) error
 	}
 
 	if err := e.checkSuspiciousStringPatterns(code); err != nil {
+		return err
+	}
+
+	// 🔥 检查 console 使用（如果禁用）
+	if err := e.checkConsoleUsage(code, cleanedCode); err != nil {
 		return err
 	}
 

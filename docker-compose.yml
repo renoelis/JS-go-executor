@@ -98,12 +98,13 @@ services:
       
       # ==================== Fetch API配置 ====================
       - FETCH_TIMEOUT_MS=30000           # 30秒
-      - MAX_FORMDATA_SIZE_MB=15          # 🔧 验证流式后提高：15MB
-      - FORMDATA_STREAMING_THRESHOLD_MB=1
+      - MAX_FORMDATA_SIZE_MB=1          # 🔧 验证流式后提高：15MB
+      - FORMDATA_STREAMING_THRESHOLD_MB=0.5
       - ENABLE_CHUNKED_UPLOAD=1
-      - MAX_BLOB_FILE_SIZE_MB=12         # 🔧 验证流式后提高：12MB
+      - MAX_BLOB_FILE_SIZE_MB=1         # 🔧 验证流式后提高：12MB
       - FORMDATA_BUFFER_SIZE=524288      # 🔧 512KB 缓冲区
-      - MAX_FILE_SIZE_MB=12              # 🔧 验证流式后提高：12MB
+      - MAX_FILE_SIZE_MB=1              # 🔧 验证流式后提高：12MB
+      - MAX_RESPONSE_SIZE_MB=1       # 🔥 Fetch下载响应体最大大小(MB)，开发环境：1MB
       
       # ==================== JavaScript 内存限制 ====================
       - ENABLE_JS_MEMORY_LIMIT=true      # 🔧 启用 JS 侧内存限制

@@ -74,6 +74,7 @@ type FetchConfig struct {
 	MaxBlobFileSize     int64
 	FormDataBufferSize  int
 	MaxFileSize         int64
+	MaxResponseSize     int64 // 🔥 Fetch下载响应体最大大小（字节）
 }
 
 // RuntimeConfig Go运行时配置
@@ -313,6 +314,7 @@ func LoadConfig() *Config {
 		MaxBlobFileSize:     int64(getEnvInt("MAX_BLOB_FILE_SIZE_MB", 100)) * 1024 * 1024,
 		FormDataBufferSize:  getEnvInt("FORMDATA_BUFFER_SIZE", 2*1024*1024),
 		MaxFileSize:         int64(getEnvInt("MAX_FILE_SIZE_MB", 50)) * 1024 * 1024,
+		MaxResponseSize:     int64(getEnvInt("MAX_RESPONSE_SIZE_MB", 100)) * 1024 * 1024, // 🔥 默认100MB
 	}
 
 	// 加载Go运行时配置

@@ -611,6 +611,7 @@ GET /flow/query-token?ws_id=my_workspace&email=user@example.com
 | `FORMDATA_BUFFER_SIZE` | 2097152 | FormData缓冲区大小 |
 | `ENABLE_CHUNKED_UPLOAD` | 1 | 启用分块上传 |
 | `MAX_BLOB_FILE_SIZE_MB` | 100 | Blob/File最大大小(MB) |
+| `MAX_RESPONSE_SIZE_MB` | 100 | 🔥 Fetch下载响应体最大大小(MB) |
 
 ### Go运行时配置
 

@@ -70,12 +70,12 @@ type FetchResult struct {
 
 // NewFetchEnhancer 创建 Fetch 增强器（简化版本）
 func NewFetchEnhancer(timeout time.Duration) *FetchEnhancer {
-	return NewFetchEnhancerWithConfig(timeout, 0, 0, true, 0, 2*1024*1024, 50*1024*1024) // 默认 2MB 缓冲区, 50MB 单文件
+	return NewFetchEnhancerWithConfig(timeout, 0, 0, true, 0, 2*1024*1024, 50*1024*1024, 0) // 默认 2MB 缓冲区, 50MB 单文件, 不限制响应大小
 }
 
 // NewFetchEnhancerWithConfig 创建带配置的 Fetch 增强器
 // 🔥 新增：支持 FormData 流式处理配置和 Blob/File 大小限制
-func NewFetchEnhancerWithConfig(timeout time.Duration, maxFormDataSize, streamingThreshold int64, enableChunked bool, maxBlobFileSize int64, bufferSize int, maxFileSize int64) *FetchEnhancer {
+func NewFetchEnhancerWithConfig(timeout time.Duration, maxFormDataSize, streamingThreshold int64, enableChunked bool, maxBlobFileSize int64, bufferSize int, maxFileSize int64, maxResponseSize int64) *FetchEnhancer {
 	// 🔥 优化：配置高性能且安全的 HTTP Transport
 	transport := &http.Transport{
 		// 连接池配置
@@ -138,7 +138,7 @@ func NewFetchEnhancerWithConfig(timeout time.Duration, maxFormDataSize, streamin
 		},
 		// 不限制域名，允许所有域名
 		allowedDomains:  []string{},
-		maxRespSize:     0, // 不限制响应大小
+		maxRespSize:     maxResponseSize, // 🔥 使用配置的响应大小限制
 		defaultTimeout:  timeout,
 		formDataConfig:  formDataConfig,
 		maxBlobFileSize: maxBlobFileSize,
@@ -501,6 +501,11 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 		isStreamingRequest = true
 	}
 
+	// 🔥 新增：用户可以通过 streaming 选项启用流式模式
+	if streaming, ok := req.options["streaming"].(bool); ok && streaming {
+		isStreamingRequest = true
+	}
+
 	var ctx context.Context
 	var cancel context.CancelFunc
 
@@ -610,15 +615,47 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 			// 非流式模式：读取全部响应体
 			var respBody []byte
 			if fe.maxRespSize > 0 {
+				// 🔥 检查 Content-Length（如果有的话）
+				if resp.ContentLength > 0 && resp.ContentLength > fe.maxRespSize {
+					sizeMB := float64(resp.ContentLength) / 1024 / 1024
+					limitMB := float64(fe.maxRespSize) / 1024 / 1024
+					req.resultCh <- FetchResult{
+						nil,
+						fmt.Errorf("response size exceeds limit: %.2fMB > %.2fMB (%d bytes > %d bytes)",
+							sizeMB, limitMB, resp.ContentLength, fe.maxRespSize),
+					}
+					return
+				}
+
 				bodyReader := io.LimitReader(resp.Body, fe.maxRespSize)
 				respBody, err = io.ReadAll(bodyReader)
+
+				if err != nil {
+					req.resultCh <- FetchResult{nil, fmt.Errorf("failed to read response body: %w", err)}
+					return
+				}
+
+				// 🔥 检查是否被截断（读取了最大限制的数据）
+				if int64(len(respBody)) >= fe.maxRespSize {
+					// 尝试再读一个字节，确认是否还有数据
+					oneByte := make([]byte, 1)
+					n, _ := resp.Body.Read(oneByte)
+					if n > 0 {
+						// 确实还有数据，说明响应体被截断了
+						sizeMB := float64(fe.maxRespSize) / 1024 / 1024
+						req.resultCh <- FetchResult{
+							nil,
+							fmt.Errorf("response body truncated: exceeds %.2fMB limit", sizeMB),
+						}
+						return
+					}
+				}
 			} else {
 				respBody, err = io.ReadAll(resp.Body)
-			}
-			if err != nil {
-				// defer 会清理 resp.Body
-				req.resultCh <- FetchResult{nil, fmt.Errorf("failed to read response body: %w", err)}
-				return
+				if err != nil {
+					req.resultCh <- FetchResult{nil, fmt.Errorf("failed to read response body: %w", err)}
+					return
+				}
 			}
 
 			// 返回响应数据
@@ -1984,7 +2021,9 @@ func startNodeStreamReading(runtime *goja.Runtime, streamReader *StreamReader, l
 
 				// 如果有数据，触发 data 事件
 				if len(data) > 0 {
-					// 转换为 Buffer
+					var dataValue goja.Value
+
+					// 🔥 尝试转换为 Buffer（Node.js 标准）
 					bufferConstructor := runtime.Get("Buffer")
 					if !goja.IsUndefined(bufferConstructor) && !goja.IsNull(bufferConstructor) {
 						bufferObj := bufferConstructor.ToObject(runtime)
@@ -1994,14 +2033,29 @@ func startNodeStreamReading(runtime *goja.Runtime, streamReader *StreamReader, l
 								arrayBuffer := runtime.NewArrayBuffer(data)
 								buffer, err := fromFunc(bufferObj, runtime.ToValue(arrayBuffer))
 								if err == nil {
-									// 触发 data 事件
-									if callbacks, exists := listeners["data"]; exists {
-										for _, cb := range callbacks {
-											cb(goja.Undefined(), buffer)
-										}
-									}
+									dataValue = buffer
 								}
 							}
+						}
+					}
+
+					// 🔥 降级方案：如果无法创建 Buffer，创建 Uint8Array
+					if dataValue == nil || goja.IsUndefined(dataValue) {
+						arrayBuffer := runtime.NewArrayBuffer(data)
+						uint8ArrayConstructor := runtime.Get("Uint8Array")
+						uint8Array, err := runtime.New(uint8ArrayConstructor, runtime.ToValue(arrayBuffer))
+						if err == nil {
+							dataValue = uint8Array
+						} else {
+							// 最后降级：直接传递 ArrayBuffer
+							dataValue = runtime.ToValue(arrayBuffer)
+						}
+					}
+
+					// 触发 data 事件
+					if callbacks, exists := listeners["data"]; exists {
+						for _, cb := range callbacks {
+							cb(goja.Undefined(), dataValue)
 						}
 					}
 				}
@@ -2202,9 +2256,19 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 					resultObj.Set("done", runtime.ToValue(done))
 
 					if len(data) > 0 {
-						// 转换为 Uint8Array
+						// 🔥 修复：创建 Uint8Array（而非 ArrayBuffer）
+						// Uint8Array 有 .length 和 .byteLength 属性，符合 Web Streams API 标准
 						arrayBuffer := runtime.NewArrayBuffer(data)
-						resultObj.Set("value", runtime.ToValue(arrayBuffer))
+
+						// 使用 JavaScript 构造函数创建 Uint8Array
+						uint8ArrayConstructor := runtime.Get("Uint8Array")
+						uint8Array, err := runtime.New(uint8ArrayConstructor, runtime.ToValue(arrayBuffer))
+						if err != nil {
+							reject(runtime.NewGoError(fmt.Errorf("failed to create Uint8Array: %w", err)))
+							return goja.Undefined()
+						}
+
+						resultObj.Set("value", uint8Array)
 					} else {
 						resultObj.Set("value", goja.Undefined())
 					}
@@ -2227,13 +2291,22 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 					resultObj.Set("done", runtime.ToValue(done))
 
 					if len(data) > 0 {
+						// 🔥 修复：创建 Uint8Array（而非 ArrayBuffer）
 						arrayBuffer := runtime.NewArrayBuffer(data)
-						resultObj.Set("value", runtime.ToValue(arrayBuffer))
+
+						// 使用 JavaScript 构造函数创建 Uint8Array
+						uint8ArrayConstructor := runtime.Get("Uint8Array")
+						uint8Array, err := runtime.New(uint8ArrayConstructor, runtime.ToValue(arrayBuffer))
+						if err != nil {
+							reject(runtime.NewGoError(fmt.Errorf("failed to create Uint8Array: %w", err)))
+						} else {
+							resultObj.Set("value", uint8Array)
+							resolve(runtime.ToValue(resultObj))
+						}
 					} else {
 						resultObj.Set("value", goja.Undefined())
+						resolve(runtime.ToValue(resultObj))
 					}
-
-					resolve(runtime.ToValue(resultObj))
 				}
 			}
 
