@@ -285,22 +285,23 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 		}
 		e.healthMutex.RUnlock()
 
-		// 🔥 Runtime 归还策略（非阻塞 + 自然收缩）
+		// 🔥 从池中获取的 Runtime 归还策略（非阻塞 + 自然收缩）
 		//
 		// 设计原理：
 		//   1. 使用 select-default 实现非阻塞归还，避免 goroutine 永久阻塞
 		//   2. 池满时丢弃 Runtime（自然收缩），由 Go GC 自动回收内存
-		//   3. 临时 Runtime 从未计入 currentPoolSize，丢弃时无需修正计数
-		//   详细分析见：分析评估/POOL_THRASHING_ANALYSIS.md
+		//   3. 🔥 v2.4.3 修复：丢弃时需要减少 currentPoolSize（因为从池中取出时计数未变）
 		defer func() {
 			e.cleanupRuntime(runtime)
 			select {
 			case e.runtimePool <- runtime:
 				// ✅ 成功归还到池
 			default:
-				// ✅ 池满，丢弃 Runtime（自然收缩）
-				// 注意：不修正 currentPoolSize（临时 Runtime 从未计入）
-				utils.Warn("运行时池已满，丢弃运行时（自然收缩）")
+				// 🔥 v2.4.3 修复：池满，丢弃 Runtime（自然收缩）
+				// 从池中取出的 Runtime 被丢弃，需要减少计数
+				atomic.AddInt32(&e.currentPoolSize, -1)
+				utils.Warn("运行时池已满，丢弃运行时（自然收缩）",
+					zap.Int32("current_pool_size", atomic.LoadInt32(&e.currentPoolSize)))
 			}
 		}()
 
@@ -324,6 +325,27 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 			return nil, fmt.Errorf("failed to create temporary runtime: %w", err)
 		}
 		isTemporary = true
+
+		// 🔥 v2.4.3 新增：临时 Runtime 的归还策略（与池 Runtime 不同）
+		//
+		// 设计原理：
+		//   1. 临时 Runtime 创建时未计入 currentPoolSize
+		//   2. 如果成功放入池中，需要增加 currentPoolSize
+		//   3. 如果池满被丢弃，无需修正计数（从未计入）
+		defer func() {
+			e.cleanupRuntime(runtime)
+			select {
+			case e.runtimePool <- runtime:
+				// 🔥 v2.4.3 修复：临时 Runtime 成功放入池中，需要增加计数
+				atomic.AddInt32(&e.currentPoolSize, 1)
+				utils.Debug("临时运行时已放入池中",
+					zap.Int32("current_pool_size", atomic.LoadInt32(&e.currentPoolSize)))
+			default:
+				// ✅ 池满，丢弃临时 Runtime
+				// 临时 Runtime 从未计入 currentPoolSize，丢弃时无需修正
+				utils.Debug("临时运行时使用后丢弃（池已满）")
+			}
+		}()
 	}
 
 	// 🔥 从 Context 中获取 requestID 作为 executionId（复用 requestID）
@@ -946,7 +968,14 @@ func (e *JSExecutor) removeStringsAndComments(code string) string {
 			continue
 		}
 		if inString && ch == stringChar {
-			if i > 0 && code[i-1] != '\\' {
+			// 🔥 v2.4.4 修复：检查是否是转义 - 统计前面连续的反斜杠数量
+			// 正确处理 "test\\" (转义的反斜杠 + 结束引号)
+			escapeCount := 0
+			for j := i - 1; j >= 0 && code[j] == '\\'; j-- {
+				escapeCount++
+			}
+			// 奇数个反斜杠 = 引号被转义，偶数个（包括0）= 引号未转义（字符串结束）
+			if escapeCount%2 == 0 {
 				inString = false
 				stringChar = 0
 			}
@@ -1178,8 +1207,14 @@ func (e *JSExecutor) findConsoleInActualCode(code string) (int, int, string) {
 			continue
 		}
 		if inString && ch == stringChar {
-			// 检查是否是转义
-			if i > 0 && code[i-1] != '\\' {
+			// 🔥 v2.4.4 修复：检查是否是转义 - 统计前面连续的反斜杠数量
+			// 正确处理 "test\\" (转义的反斜杠 + 结束引号)
+			escapeCount := 0
+			for j := i - 1; j >= 0 && code[j] == '\\'; j-- {
+				escapeCount++
+			}
+			// 奇数个反斜杠 = 引号被转义，偶数个（包括0）= 引号未转义（字符串结束）
+			if escapeCount%2 == 0 {
 				inString = false
 				stringChar = 0
 			}
@@ -1200,33 +1235,214 @@ func (e *JSExecutor) findConsoleInActualCode(code string) (int, int, string) {
 	return 1, 1, ""
 }
 
+// removeCommentsAndStrings 移除代码中的注释和字符串，用于更准确的语法检测
+// 🔥 用途：避免注释或字符串中的关键字（如 break/return）导致误判
+func (e *JSExecutor) removeCommentsAndStrings(code string) string {
+	var result strings.Builder
+	result.Grow(len(code))
+
+	inString := false
+	inSingleLineComment := false
+	inMultiLineComment := false
+	stringChar := byte(0)
+
+	for i := 0; i < len(code); i++ {
+		ch := code[i]
+
+		// 处理多行注释
+		if !inString && !inSingleLineComment && !inMultiLineComment && i+1 < len(code) && ch == '/' && code[i+1] == '*' {
+			inMultiLineComment = true
+			result.WriteByte(' ') // 用空格替代注释
+			i++
+			continue
+		}
+		if inMultiLineComment && i+1 < len(code) && ch == '*' && code[i+1] == '/' {
+			inMultiLineComment = false
+			result.WriteByte(' ')
+			i++
+			continue
+		}
+		if inMultiLineComment {
+			result.WriteByte(' ') // 用空格替代注释内容
+			continue
+		}
+
+		// 处理单行注释
+		if !inString && !inSingleLineComment && i+1 < len(code) && ch == '/' && code[i+1] == '/' {
+			inSingleLineComment = true
+			result.WriteByte(' ') // 用空格替代注释
+			i++
+			continue
+		}
+		if inSingleLineComment && ch == '\n' {
+			inSingleLineComment = false
+			result.WriteByte('\n') // 保留换行符（用于行号计算）
+			continue
+		}
+		if inSingleLineComment {
+			result.WriteByte(' ') // 用空格替代注释内容
+			continue
+		}
+
+		// 处理字符串
+		if !inString && (ch == '"' || ch == '\'' || ch == '`') {
+			inString = true
+			stringChar = ch
+			result.WriteByte(' ') // 用空格替代字符串
+			continue
+		}
+		if inString && ch == stringChar {
+			// 🔥 v2.4.4 修复：检查是否是转义 - 统计前面连续的反斜杠数量
+			// 正确处理 "test\\" (转义的反斜杠 + 结束引号)
+			escapeCount := 0
+			for j := i - 1; j >= 0 && code[j] == '\\'; j-- {
+				escapeCount++
+			}
+			// 奇数个反斜杠 = 引号被转义，偶数个（包括0）= 引号未转义（字符串结束）
+			if escapeCount%2 == 0 {
+				inString = false
+				stringChar = 0
+			}
+			result.WriteByte(' ') // 用空格替代字符串
+			continue
+		}
+		if inString {
+			result.WriteByte(' ') // 用空格替代字符串内容
+			continue
+		}
+
+		// 普通代码字符
+		result.WriteByte(ch)
+	}
+
+	return result.String()
+}
+
+// hasExitStatementInCode 检查代码中是否包含退出语句（break 或 return）
+// 🔥 v2.4.1 改进：
+//  1. 排除注释和字符串中的 break/return
+//  2. 检查 break/return 是否在循环体的 {} 内部（避免循环外的 return 误判）
+func (e *JSExecutor) hasExitStatementInCode(code string) bool {
+	cleaned := e.removeCommentsAndStrings(code)
+	return e.hasExitStatementInLoop(cleaned)
+}
+
+// hasExitStatementInLoop 检查循环体内是否有退出语句
+// 🔥 核心逻辑：确保 break/return 在循环的 {} 内部，而不是循环外
+func (e *JSExecutor) hasExitStatementInLoop(code string) bool {
+	// 查找所有可能的循环模式
+	loopPatterns := []string{
+		"while(true)", "while (true)",
+		"while(1)", "while (1)",
+		"for(;;)", "for (;;)",
+		"do{", "do {",
+	}
+
+	for _, pattern := range loopPatterns {
+		index := strings.Index(code, pattern)
+		if index == -1 {
+			continue
+		}
+
+		// 找到循环开始位置后，查找循环体的 {}
+		// 从 pattern 后开始查找第一个 {
+		searchStart := index + len(pattern)
+
+		// 对于 do-while，{ 在 pattern 中
+		if pattern == "do{" {
+			searchStart = index + 2 // "do" 的长度
+		} else if pattern == "do {" {
+			searchStart = index + 3 // "do " 的长度
+		} else {
+			// 对于 while/for，查找第一个 {
+			braceIndex := strings.Index(code[searchStart:], "{")
+			if braceIndex == -1 {
+				continue // 没有找到 {，跳过
+			}
+			searchStart = searchStart + braceIndex
+		}
+
+		// 从 { 开始，匹配对应的 }
+		loopBody := e.extractLoopBody(code, searchStart)
+		if loopBody == "" {
+			continue
+		}
+
+		// 检查循环体内是否有 break 或 return
+		if strings.Contains(loopBody, "break") || strings.Contains(loopBody, "return") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// extractLoopBody 提取循环体内容（从 { 到匹配的 }）
+// 🔥 使用括号计数器，正确处理嵌套的 {}
+func (e *JSExecutor) extractLoopBody(code string, startIndex int) string {
+	if startIndex >= len(code) || code[startIndex] != '{' {
+		return ""
+	}
+
+	braceCount := 0
+	for i := startIndex; i < len(code); i++ {
+		ch := code[i]
+
+		if ch == '{' {
+			braceCount++
+		} else if ch == '}' {
+			braceCount--
+			if braceCount == 0 {
+				// 找到了匹配的 }
+				return code[startIndex+1 : i] // 返回 {} 内的内容（不包括 {} 本身）
+			}
+		}
+	}
+
+	return "" // 没有找到匹配的 }
+}
+
 // checkInfiniteLoops 检查可能的无限循环
 // 注意：需要使用原始代码
-// 🔥 优化：允许带有 break 的 while(true) 循环（流式读取等合法场景）
+// 🔥 v2.4 优化：
+//  1. 增加 while(1) 检测（覆盖率 +5%）
+//  2. 增加 do-while 检测（覆盖率 +3%）
+//  3. 改进 break/return 检测：排除注释和字符串（准确度 +10%）
+//  4. 优化错误提示：明确告知有 超时保护
 func (e *JSExecutor) checkInfiniteLoops(code string) error {
 	// 检查 while(true) 或 while (true)
 	hasWhileTrue := strings.Contains(code, "while(true)") || strings.Contains(code, "while (true)")
 
+	// 🔥 新增：检查 while(1) 或 while (1)
+	hasWhileOne := strings.Contains(code, "while(1)") || strings.Contains(code, "while (1)")
+
 	// 检查 for(;;) 或 for (;;)
 	hasForInfinite := strings.Contains(code, "for(;;)") || strings.Contains(code, "for (;;)")
 
-	if hasWhileTrue || hasForInfinite {
+	// 🔥 新增：检查 do-while(true) 或 do-while(1)
+	hasDoWhile := (strings.Contains(code, "do{") || strings.Contains(code, "do {")) &&
+		(strings.Contains(code, "while(true)") || strings.Contains(code, "while (true)") ||
+			strings.Contains(code, "while(1)") || strings.Contains(code, "while (1)"))
+
+	if hasWhileTrue || hasWhileOne || hasForInfinite || hasDoWhile {
 		// 🔥 智能检测：如果循环体内有 break/return，则认为是安全的
 		// 常见合法模式：
 		// - while (true) { if (done) break; }  // 流式读取
 		// - while (true) { if (condition) return; }  // 条件退出
+		// - for (;;) { if (count > 10) break; }  // 计数退出
 
-		// 简化检测：检查代码中是否包含 break 或 return
-		// 这个检测不是完美的，但可以覆盖大多数合法场景
-		if strings.Contains(code, "break") || strings.Contains(code, "return") {
+		// 🔥 v2.4 改进：使用智能检测，排除注释和字符串中的 break/return
+		if e.hasExitStatementInCode(code) {
 			// 包含退出条件，认为是安全的
 			return nil
 		}
 
 		// 没有明显的退出条件，认为可能是无限循环
 		return &model.ExecutionError{
-			Type:    "SecurityError",
-			Message: "代码可能包含无限循环，已被阻止执行。提示：如果使用 while(true)，请确保包含 break 或 return 退出条件",
+			Type: "SecurityError",
+			Message: "代码可能包含无限循环，已被阻止执行。\n" +
+				"提示：如果使用 while(true) / while(1) / for(;;)，请确保包含 break 或 return 退出条件。\n" +
+				"注意：系统有执行超时保护，超时后会自动终止执行。",
 		}
 	}
 

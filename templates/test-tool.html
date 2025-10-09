@@ -215,6 +215,26 @@
             transform: none !important;
         }
 
+        .btn-cancel {
+            background: #ff6b6b;
+            color: white;
+            animation: pulse-cancel 1.5s ease-in-out infinite;
+        }
+
+        .btn-cancel:hover {
+            background: #ee5a52;
+            transform: translateY(-2px);
+        }
+
+        @keyframes pulse-cancel {
+            0%, 100% {
+                box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.7);
+            }
+            50% {
+                box-shadow: 0 0 0 8px rgba(255, 107, 107, 0);
+            }
+        }
+
         /* 复制结果按钮样式 */
         .copy-result-btn {
             padding: 8px 16px;
@@ -726,6 +746,196 @@
         .fullscreen-ace-editor {
             font-size: 16px !important;
         }
+
+        /* ==================== 移动端响应式适配 ==================== */
+        @media screen and (max-width: 768px) {
+            /* 移动端：整体布局调整 */
+            body {
+                padding: 10px;
+            }
+
+            .container {
+                border-radius: 12px;
+            }
+
+            /* 头部适配 */
+            .header {
+                padding: 20px 15px;
+            }
+
+            .header h1 {
+                font-size: 20px;
+                margin-bottom: 8px;
+            }
+
+            .header p {
+                font-size: 12px;
+            }
+
+            /* 主内容区：从两栏改为单栏 */
+            .main-content {
+                grid-template-columns: 1fr;
+                gap: 15px;
+                padding: 15px;
+            }
+
+            /* 分区间距调整 */
+            .section {
+                padding: 15px;
+            }
+
+            .section-title {
+                font-size: 16px;
+                margin-bottom: 12px;
+            }
+
+            /* 表单元素适配 */
+            .form-input {
+                padding: 10px;
+                font-size: 13px;
+            }
+
+            /* 按钮组适配 */
+            .button-group {
+                flex-direction: column;
+                gap: 8px;
+            }
+
+            .btn {
+                width: 100%;
+                padding: 12px;
+                font-size: 13px;
+            }
+
+            /* 代码编辑器高度调整 */
+            #codeEditorContainer {
+                min-height: 300px;
+                height: 300px;
+                font-size: 13px;
+            }
+
+            /* 结果展示区适配 */
+            .result-box {
+                max-height: 400px;
+                font-size: 12px;
+            }
+
+            /* 统计信息适配 */
+            .stats-box {
+                font-size: 11px;
+                padding: 10px;
+            }
+
+            /* Token 查询卡片适配 */
+            .token-card {
+                padding: 10px;
+                font-size: 12px;
+            }
+
+            /* 示例按钮适配 */
+            .example-buttons {
+                grid-template-columns: 1fr;
+                gap: 8px;
+            }
+
+            .example-btn {
+                font-size: 12px;
+                padding: 10px;
+            }
+
+            /* 提示信息适配 */
+            .info-box {
+                padding: 10px;
+                font-size: 12px;
+            }
+
+            /* 复制结果按钮适配 */
+            .copy-result-btn {
+                font-size: 12px;
+                padding: 6px 12px;
+            }
+
+            /* 全屏编辑器适配 */
+            .fullscreen-editor {
+                padding: 10px;
+            }
+
+            .fullscreen-editor-header {
+                flex-direction: column;
+                gap: 10px;
+                align-items: flex-start;
+            }
+
+            .fullscreen-editor-actions {
+                width: 100%;
+                justify-content: space-between;
+            }
+
+            .fullscreen-btn {
+                padding: 8px 15px;
+                font-size: 12px;
+            }
+
+            /* Ace Editor 字体大小 */
+            .ace_editor {
+                font-size: 13px !important;
+            }
+        }
+
+        /* 平板适配 (768px - 1024px) */
+        @media screen and (min-width: 769px) and (max-width: 1024px) {
+            .main-content {
+                gap: 20px;
+                padding: 20px;
+            }
+
+            #codeEditorContainer {
+                height: 400px;
+            }
+
+            .header h1 {
+                font-size: 24px;
+            }
+        }
+
+        /* 小屏幕手机适配 (< 375px) */
+        @media screen and (max-width: 374px) {
+            body {
+                padding: 5px;
+            }
+
+            .header {
+                padding: 15px 10px;
+            }
+
+            .header h1 {
+                font-size: 18px;
+            }
+
+            .main-content {
+                padding: 10px;
+                gap: 10px;
+            }
+
+            .section {
+                padding: 12px;
+            }
+
+            .btn {
+                font-size: 12px;
+                padding: 10px;
+            }
+
+            #codeEditorContainer {
+                min-height: 250px;
+                height: 250px;
+                font-size: 12px;
+            }
+
+            .ace_editor {
+                font-size: 12px !important;
+            }
+        }
     </style>
 </head>
 <body>
@@ -1015,6 +1225,10 @@ return {
     </div>
 
     <script>
+        // ==================== 全局变量 ====================
+        let currentAbortController = null; // 用于取消请求的 AbortController
+        let isExecuting = false; // 标记是否正在执行代码
+
         // ==================== Base64 编码/解码 ====================
         function encodeToBase64() {
             const code = document.getElementById('jsCode').value;
@@ -1276,6 +1490,14 @@ return {
 
         // ==================== 代码执行 ====================
         async function executeCode() {
+            const runBtn = document.getElementById('runBtn');
+            
+            // 如果正在执行,则点击按钮执行取消操作
+            if (isExecuting) {
+                cancelExecution();
+                return;
+            }
+
             // 验证必填项
             const accessToken = document.getElementById('accessToken').value.trim();
             const jsCode = document.getElementById('jsCode').value.trim();
@@ -1318,13 +1540,21 @@ return {
                 return;
             }
 
-            // 显示加载状态
+            // 创建新的 AbortController
+            currentAbortController = new AbortController();
+            isExecuting = true;
+
+            // 显示加载状态并切换按钮为"取消"状态
             showLoading(true);
             hideAlert();
             document.getElementById('resultBox').style.display = 'none';
             document.getElementById('statsBox').style.display = 'none';
             document.getElementById('copyResultBtn').style.display = 'none';
-            document.getElementById('runBtn').disabled = true;
+            
+            // 修改按钮为取消状态
+            runBtn.className = 'btn btn-cancel';
+            runBtn.innerHTML = '⏹️ 取消执行';
+            runBtn.title = '点击取消正在执行的代码';
 
             try {
                 const response = await fetch(`${apiUrl}/flow/codeblock`, {
@@ -1336,22 +1566,37 @@ return {
                     body: JSON.stringify({
                         input: inputObj,
                         codebase64: base64Code
-                    })
+                    }),
+                    signal: currentAbortController.signal // 添加 abort signal
                 });
 
                 const result = await response.json();
                 
-                showLoading(false);
-                document.getElementById('runBtn').disabled = false;
+                // 执行成功,恢复按钮状态
+                resetExecutionState();
 
                 // 显示结果
                 displayResult(result, response.ok);
 
             } catch (error) {
-                showLoading(false);
-                document.getElementById('runBtn').disabled = false;
+                // 恢复按钮状态
+                resetExecutionState();
                 
                 let errorMessage = '网络请求失败';
+                
+                // 检查是否是用户主动取消
+                if (error.name === 'AbortError') {
+                    errorMessage = '代码执行已被用户取消';
+                    showAlert('⚠️ ' + errorMessage, 'warning');
+                    displayResult({
+                        success: false,
+                        error: '用户取消',
+                        message: errorMessage,
+                        timestamp: new Date().toISOString()
+                    }, false);
+                    return;
+                }
+                
                 if (error.message.includes('Failed to fetch')) {
                     errorMessage = '无法连接到服务器，请检查：\n1. API 服务地址是否正确\n2. 服务是否已启动\n3. 是否存在跨域问题';
                 } else {
@@ -1366,6 +1611,27 @@ return {
                     timestamp: new Date().toISOString()
                 }, false);
             }
+        }
+
+        // 取消执行
+        function cancelExecution() {
+            if (currentAbortController) {
+                currentAbortController.abort();
+                showAlert('⚠️ 正在取消执行...', 'warning');
+            }
+        }
+
+        // 重置执行状态
+        function resetExecutionState() {
+            const runBtn = document.getElementById('runBtn');
+            isExecuting = false;
+            currentAbortController = null;
+            showLoading(false);
+            
+            // 恢复按钮为运行状态
+            runBtn.className = 'btn btn-success';
+            runBtn.innerHTML = '▶️ 运行代码';
+            runBtn.title = '';
         }
 
         function displayResult(result, isSuccess) {

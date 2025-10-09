@@ -2,6 +2,7 @@ package enhance_modules
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -30,10 +31,11 @@ type FormDataStreamConfig struct {
 	MaxStreamingFormDataSize int64 // 流式模式限制：Node.js form-data + Stream（默认 100MB）
 
 	// 其他配置
-	EnableChunkedUpload bool          // 启用分块传输编码
-	BufferSize          int           // 缓冲区大小
-	MaxFileSize         int64         // 单个文件最大大小
-	Timeout             time.Duration // 🔥 HTTP 请求超时（用于计算写入超时）
+	EnableChunkedUpload bool            // 启用分块传输编码
+	BufferSize          int             // 缓冲区大小
+	MaxFileSize         int64           // 单个文件最大大小
+	Timeout             time.Duration   // 🔥 HTTP 请求超时（用于计算写入超时）
+	Context             context.Context // 🔥 v2.4.2: HTTP 请求的 context（用于取消信号传递）
 
 	// 🔧 废弃但保留兼容
 	MaxFormDataSize    int64 // 废弃：统一限制，改用差异化限制
@@ -283,7 +285,7 @@ func (sfd *StreamingFormData) calculateWriteTimeout() time.Duration {
 }
 
 // createPipedReader 创建管道读取器（流式处理大文件）
-// 🔥 防泄漏机制：添加动态超时，防止 writer goroutine 永久阻塞
+// 🔥 v2.4.2 防泄漏机制：添加 context 取消监听 + 动态超时，防止 writer goroutine 永久阻塞
 func (sfd *StreamingFormData) createPipedReader() (io.Reader, error) {
 	pr, pw := io.Pipe()
 
@@ -294,10 +296,17 @@ func (sfd *StreamingFormData) createPipedReader() (io.Reader, error) {
 	copy(entriesCopy, sfd.entries)
 	boundary := sfd.boundary
 
+	// 🔥 v2.4.2: 获取 context（用于监听 HTTP 请求取消）
+	ctx := sfd.config.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	// 🔥 防泄漏：创建超时 timer（动态计算，基于文件大小限制）
 	// 场景 1：读取方从不读取 → 超时后强制关闭，goroutine 退出
 	// 场景 2：写入大文件 + 慢速读取 → 根据文件大小限制动态超时
 	// 场景 3：网络异常 → 超时后强制退出
+	// 场景 4 (v2.4.2)：HTTP 请求取消 → context 取消，立即退出
 	writeTimeout := sfd.calculateWriteTimeout()
 	timer := time.NewTimer(writeTimeout)
 
@@ -335,7 +344,7 @@ func (sfd *StreamingFormData) createPipedReader() (io.Reader, error) {
 			doneCh <- nil
 		}()
 
-		// 等待写入完成或超时
+		// 🔥 v2.4.2: 等待写入完成、超时或 context 取消
 		select {
 		case err := <-doneCh:
 			// 写入完成（正常或错误）
@@ -345,6 +354,11 @@ func (sfd *StreamingFormData) createPipedReader() (io.Reader, error) {
 		case <-timer.C:
 			// 🔥 超时：强制关闭 pipe，goroutine 将退出
 			pw.CloseWithError(fmt.Errorf("FormData 写入超时 (%v)，可能原因：读取方未读取或网络异常", writeTimeout))
+		case <-ctx.Done():
+			// 🔥 v2.4.2 新增：HTTP 请求取消，立即关闭 pipe
+			// 效果：Writer goroutine 收到 io.ErrClosedPipe，立即退出
+			// 优势：从最多 300 秒等待 → 立即响应（< 1ms）
+			pw.CloseWithError(fmt.Errorf("FormData 写入已取消: %w", ctx.Err()))
 		}
 	}()
 

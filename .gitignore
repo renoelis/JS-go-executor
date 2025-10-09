@@ -110,3 +110,6 @@ DATE.js
 test_datefns_fix.go
 test_error_in_timeout.js
 test_eventloop_simple.js
+stress_test_results_20251009_234031
+stress_test_results_20251009_234933
+stress_test_results_20251009_235844

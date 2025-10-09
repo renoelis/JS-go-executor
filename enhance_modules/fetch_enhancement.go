@@ -247,6 +247,8 @@ func (fe *FetchEnhancer) fetch(runtime *goja.Runtime, call goja.FunctionCall) go
 						}
 						options["__formDataBody"] = reader
 						options["__formDataBoundary"] = streamingFormData.boundary
+						// 🔥 v2.4.2: 保存 StreamingFormData 对象，以便在 doFetch 中注入 context
+						options["__streamingFormData"] = streamingFormData
 
 						// 自动设置 Content-Type (如果用户没有手动设置)
 						if headers, ok := options["headers"].(map[string]interface{}); ok {
@@ -520,6 +522,22 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 			cancel() // 如果没有被 bodyWrapper 接管，这里清理
 		}
 	}()
+
+	// 🔥 v2.4.2: 如果 body 是 FormData，将 context 传递给它
+	// 这样当 HTTP 请求取消时，FormData 的 Writer goroutine 也会立即退出
+	if formDataBody, ok := req.options["__formDataBody"]; ok {
+		if streamingFormData, ok := req.options["__streamingFormData"].(*StreamingFormData); ok {
+			// 注入 context 到 FormData 配置
+			if streamingFormData.config != nil {
+				streamingFormData.config.Context = ctx
+			}
+		}
+		// 对于已经创建的 Reader，我们无法修改其 context
+		// 但好消息是：HTTP 客户端在 context 取消时会关闭 request.Body
+		// 这会导致 io.Pipe 的 Reader 端关闭，进而触发 Writer 端退出
+		// 所以即使没有 context，也能正常清理（只是稍慢一点）
+		_ = formDataBody // 避免未使用警告
+	}
 
 	// 4. 创建 HTTP 请求
 	httpReq, err := http.NewRequestWithContext(ctx, method, req.url, body)
