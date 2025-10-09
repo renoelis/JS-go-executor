@@ -21,6 +21,9 @@ services:
       - PORT=3002
       - GIN_MODE=debug                   # 开发环境使用debug模式
       
+      # 🔒 CORS 跨域配置
+      - ALLOWED_ORIGINS=                 # 为空则只允许服务端和同域调用
+      
       # ==================== 数据库配置 ====================
       - DB_HOST=mysql
       - DB_PORT=3306
@@ -98,13 +101,20 @@ services:
       
       # ==================== Fetch API配置 ====================
       - FETCH_TIMEOUT_MS=30000           # 30秒
-      - MAX_FORMDATA_SIZE_MB=1          # 🔧 验证流式后提高：15MB
-      - FORMDATA_STREAMING_THRESHOLD_MB=0.5
-      - ENABLE_CHUNKED_UPLOAD=1
-      - MAX_BLOB_FILE_SIZE_MB=1         # 🔧 验证流式后提高：12MB
-      - FORMDATA_BUFFER_SIZE=524288      # 🔧 512KB 缓冲区
-      - MAX_FILE_SIZE_MB=1              # 🔧 验证流式后提高：12MB
-      - MAX_RESPONSE_SIZE_MB=1       # 🔥 Fetch下载响应体最大大小(MB)，开发环境：1MB
+      
+      # 🔥 下载限制（新方案）
+      - MAX_RESPONSE_SIZE_MB=5           # 缓冲读取限制(arrayBuffer/blob/text/json) - 默认1MB
+      - MAX_STREAMING_SIZE_MB=5        # 流式读取限制(getReader) - 默认100MB
+      
+      # 🔥 上传限制（新方案）
+      - MAX_BUFFERED_FORMDATA_MB=5       # 缓冲上传限制(Web FormData + Blob、Node.js form-data + Buffer) - 默认1MB
+      - MAX_STREAMING_FORMDATA_MB=5    # 流式上传限制(Node.js form-data + Stream) - 默认100MB
+      
+      # 其他配置
+      - ENABLE_CHUNKED_UPLOAD=1          # 启用分块传输编码
+      - MAX_BLOB_FILE_SIZE_MB=1          # Blob/File最大大小(MB)
+      - FORMDATA_BUFFER_SIZE=524288      # FormData缓冲区大小(字节) - 512KB
+      - MAX_FILE_SIZE_MB=1               # 单文件最大大小(MB)
       
       # ==================== JavaScript 内存限制 ====================
       - ENABLE_JS_MEMORY_LIMIT=true      # 🔧 启用 JS 侧内存限制

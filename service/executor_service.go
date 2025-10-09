@@ -238,13 +238,14 @@ func (e *JSExecutor) registerModules(cfg *config.Config) {
 	// 注册 Fetch 模块
 	fetchEnhancer := enhance_modules.NewFetchEnhancerWithConfig(
 		cfg.Fetch.Timeout,
-		cfg.Fetch.MaxFormDataSize,
-		cfg.Fetch.StreamingThreshold,
+		cfg.Fetch.MaxBufferedFormDataSize,  // 🔥 缓冲模式 FormData 限制（Blob/Buffer）
+		cfg.Fetch.MaxStreamingFormDataSize, // 🔥 流式模式 FormData 限制（Stream）
 		cfg.Fetch.EnableChunkedUpload,
 		cfg.Fetch.MaxBlobFileSize,
 		cfg.Fetch.FormDataBufferSize,
 		cfg.Fetch.MaxFileSize,
-		cfg.Fetch.MaxResponseSize, // 🔥 新增：下载响应体大小限制
+		cfg.Fetch.MaxResponseSize,  // 🔥 缓冲读取限制（arrayBuffer/blob/text/json）
+		cfg.Fetch.MaxStreamingSize, // 🔥 流式读取限制（getReader）
 	)
 	e.moduleRegistry.Register(fetchEnhancer)
 

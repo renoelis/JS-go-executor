@@ -33,6 +33,8 @@ type ServerConfig struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	GinMode      string
+	// 🔒 CORS 配置
+	AllowedOrigins []string // 允许的前端域名列表（为空则只允许服务端和同域调用）
 }
 
 // ExecutorConfig JavaScript执行器配置
@@ -67,14 +69,23 @@ type ExecutorConfig struct {
 
 // FetchConfig Fetch API配置
 type FetchConfig struct {
-	Timeout             time.Duration
-	MaxFormDataSize     int64
-	StreamingThreshold  int64
-	EnableChunkedUpload bool
-	MaxBlobFileSize     int64
-	FormDataBufferSize  int
-	MaxFileSize         int64
-	MaxResponseSize     int64 // 🔥 Fetch下载响应体最大大小（字节）
+	Timeout            time.Duration
+	MaxBlobFileSize    int64
+	FormDataBufferSize int
+	MaxFileSize        int64
+
+	// 🔥 下载限制（新）
+	MaxResponseSize  int64 // response.arrayBuffer/blob/text/json() 缓冲读取限制（默认 1MB）
+	MaxStreamingSize int64 // response.body.getReader() 流式读取累计限制（默认 100MB）
+
+	// 🔥 上传限制（新）
+	MaxBufferedFormDataSize  int64 // FormData 缓冲上传限制：Web FormData + Blob、Node.js form-data + Buffer（默认 1MB）
+	MaxStreamingFormDataSize int64 // FormData 流式上传限制：Node.js form-data + Stream（默认 100MB）
+
+	// 🔧 废弃但保留兼容（优先使用新字段）
+	MaxFormDataSize     int64 // 废弃：统一 FormData 限制，改用 MaxBufferedFormDataSize 和 MaxStreamingFormDataSize
+	StreamingThreshold  int64 // 废弃：自动切换阈值，现由用户代码控制
+	EnableChunkedUpload bool  // 保留：是否启用分块传输编码
 }
 
 // RuntimeConfig Go运行时配置
@@ -188,11 +199,25 @@ func LoadConfig() *Config {
 	// - WriteTimeout: 必须比执行超时更长，留出响应时间
 	//   推荐：executionTimeout + 5秒（足够返回超时错误）
 	executionTimeoutMS := getEnvInt("EXECUTION_TIMEOUT_MS", 300000)
+
+	// 🔒 CORS 配置：解析允许的前端域名列表
+	allowedOriginsStr := getEnvString("ALLOWED_ORIGINS", "")
+	var allowedOrigins []string
+	if allowedOriginsStr != "" {
+		for _, origin := range strings.Split(allowedOriginsStr, ",") {
+			trimmed := strings.TrimSpace(origin)
+			if trimmed != "" {
+				allowedOrigins = append(allowedOrigins, trimmed)
+			}
+		}
+	}
+
 	cfg.Server = ServerConfig{
-		Port:         getEnvString("PORT", "3002"),
-		GinMode:      getEnvString("GIN_MODE", "release"),
-		ReadTimeout:  time.Duration(executionTimeoutMS) * time.Millisecond,
-		WriteTimeout: time.Duration(executionTimeoutMS+5000) * time.Millisecond, // ✅ 比执行超时多5秒
+		Port:           getEnvString("PORT", "3002"),
+		GinMode:        getEnvString("GIN_MODE", "release"),
+		ReadTimeout:    time.Duration(executionTimeoutMS) * time.Millisecond,
+		WriteTimeout:   time.Duration(executionTimeoutMS+5000) * time.Millisecond, // ✅ 比执行超时多5秒
+		AllowedOrigins: allowedOrigins,                                            // 🔒 允许的前端域名列表
 	}
 
 	// 加载执行器配置
@@ -307,14 +332,23 @@ func LoadConfig() *Config {
 
 	// 加载Fetch配置
 	cfg.Fetch = FetchConfig{
-		Timeout:             time.Duration(getEnvInt("FETCH_TIMEOUT_MS", 300000)) * time.Millisecond,
-		MaxFormDataSize:     int64(getEnvInt("MAX_FORMDATA_SIZE_MB", 100)) * 1024 * 1024,
-		StreamingThreshold:  int64(getEnvInt("FORMDATA_STREAMING_THRESHOLD_MB", 1)) * 1024 * 1024,
-		EnableChunkedUpload: getEnvInt("ENABLE_CHUNKED_UPLOAD", 1) == 1,
-		MaxBlobFileSize:     int64(getEnvInt("MAX_BLOB_FILE_SIZE_MB", 100)) * 1024 * 1024,
-		FormDataBufferSize:  getEnvInt("FORMDATA_BUFFER_SIZE", 2*1024*1024),
-		MaxFileSize:         int64(getEnvInt("MAX_FILE_SIZE_MB", 50)) * 1024 * 1024,
-		MaxResponseSize:     int64(getEnvInt("MAX_RESPONSE_SIZE_MB", 100)) * 1024 * 1024, // 🔥 默认100MB
+		Timeout:            time.Duration(getEnvInt("FETCH_TIMEOUT_MS", 300000)) * time.Millisecond,
+		MaxBlobFileSize:    int64(getEnvInt("MAX_BLOB_FILE_SIZE_MB", 100)) * 1024 * 1024,
+		FormDataBufferSize: getEnvInt("FORMDATA_BUFFER_SIZE", 2*1024*1024),
+		MaxFileSize:        int64(getEnvInt("MAX_FILE_SIZE_MB", 50)) * 1024 * 1024,
+
+		// 🔥 下载限制（新方案）
+		MaxResponseSize:  int64(getEnvInt("MAX_RESPONSE_SIZE_MB", 1)) * 1024 * 1024,    // 默认 1MB - 缓冲读取（arrayBuffer/blob/text/json）
+		MaxStreamingSize: int64(getEnvInt("MAX_STREAMING_SIZE_MB", 100)) * 1024 * 1024, // 默认 100MB - 流式读取（getReader）
+
+		// 🔥 上传限制（新方案）
+		MaxBufferedFormDataSize:  int64(getEnvInt("MAX_BUFFERED_FORMDATA_MB", 1)) * 1024 * 1024,    // 默认 1MB - 缓冲上传（Blob/Buffer）
+		MaxStreamingFormDataSize: int64(getEnvInt("MAX_STREAMING_FORMDATA_MB", 100)) * 1024 * 1024, // 默认 100MB - 流式上传（Stream）
+
+		// 🔧 废弃但保留兼容（优先使用新字段）
+		MaxFormDataSize:     int64(getEnvInt("MAX_FORMDATA_SIZE_MB", 100)) * 1024 * 1024,          // 废弃
+		StreamingThreshold:  int64(getEnvInt("FORMDATA_STREAMING_THRESHOLD_MB", 1)) * 1024 * 1024, // 废弃
+		EnableChunkedUpload: getEnvInt("ENABLE_CHUNKED_UPLOAD", 1) == 1,                           // 保留
 	}
 
 	// 加载Go运行时配置

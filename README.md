@@ -37,6 +37,34 @@
 - **降级保护**: Redis故障自动降级，连续错误自动禁用
 - **完善监控**: 缓存统计、限流统计、命中率分析
 
+### 🔒 CORS 跨域控制 (v2.3+)
+- **智能识别**: 自动识别服务端调用（无Origin头）vs 前端调用（有Origin头）
+- **多层策略**: 
+  - 🔓 **服务端调用**：始终允许（无 Origin 头）
+  - 🔓 **同域前端**：始终允许（无论是否配置白名单）
+  - 🔓 **白名单域名**：允许配置额外的可信域名
+  - 🔒 **其他跨域**：一律拒绝
+- **白名单机制**: 通过 `ALLOWED_ORIGINS` 环境变量配置额外可信域名
+- **灵活配置**: 支持逗号分隔多个域名，适配开发、测试、生产等不同环境
+- **安全审计**: 拒绝跨域请求时自动记录日志，便于安全审计
+
+**配置示例**：
+```bash
+# 生产环境（推荐）：只允许服务端和同域调用
+ALLOWED_ORIGINS=
+
+# 开发环境：额外允许本地前端调用（服务端和同域仍然允许）
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
+
+# 生产环境（有独立前端域名）：额外允许可信域名（服务端和同域仍然允许）
+ALLOWED_ORIGINS=https://your-frontend.com,https://admin.your-company.com
+```
+
+**重要说明**：
+- ✅ **服务端调用和同域前端始终可以访问**，无论 `ALLOWED_ORIGINS` 如何配置
+- ✅ `ALLOWED_ORIGINS` 用于**额外**允许其他可信域名的跨域访问
+- ❌ 未在白名单中的跨域请求会被拒绝（403）
+
 ### 📦 丰富的模块生态
 
 #### 核心模块
@@ -605,13 +633,17 @@ GET /flow/query-token?ws_id=my_workspace&email=user@example.com
 | 环境变量 | 默认值 | 说明 |
 |----------|--------|------|
 | `FETCH_TIMEOUT_MS` | 30000 | Fetch请求超时(30秒) |
-| `MAX_FORMDATA_SIZE_MB` | 100 | FormData最大大小(MB) |
+| **下载限制（新方案）** | | |
+| `MAX_RESPONSE_SIZE_MB` | 1 | 🔥 缓冲读取限制(arrayBuffer/blob/text/json) |
+| `MAX_STREAMING_SIZE_MB` | 100 | 🔥 流式读取限制(getReader) |
+| **上传限制（新方案）** | | |
+| `MAX_BUFFERED_FORMDATA_MB` | 1 | 🔥 缓冲上传限制(Web FormData+Blob、Node.js form-data+Buffer) |
+| `MAX_STREAMING_FORMDATA_MB` | 100 | 🔥 流式上传限制(Node.js form-data+Stream) |
+| **其他配置** | | |
 | `MAX_FILE_SIZE_MB` | 50 | 单文件最大大小(MB) |
-| `FORMDATA_STREAMING_THRESHOLD_MB` | 1 | 流式处理阈值(MB) |
-| `FORMDATA_BUFFER_SIZE` | 2097152 | FormData缓冲区大小 |
-| `ENABLE_CHUNKED_UPLOAD` | 1 | 启用分块上传 |
+| `FORMDATA_BUFFER_SIZE` | 2097152 | FormData缓冲区大小(字节) |
+| `ENABLE_CHUNKED_UPLOAD` | 1 | 启用分块传输编码 |
 | `MAX_BLOB_FILE_SIZE_MB` | 100 | Blob/File最大大小(MB) |
-| `MAX_RESPONSE_SIZE_MB` | 100 | 🔥 Fetch下载响应体最大大小(MB) |
 
 ### Go运行时配置
 

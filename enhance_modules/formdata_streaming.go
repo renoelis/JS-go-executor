@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"strings"
 	"sync"
+	"time"
 )
 
 // StreamingFormData 流式 FormData 处理器
@@ -18,37 +19,59 @@ type StreamingFormData struct {
 	config           *FormDataStreamConfig // 配置
 	bufferPool       *sync.Pool            // 内存池
 	totalSize        int64                 // 预估总大小
+	isStreamingMode  bool                  // 🔥 缓存检测到的模式（避免重复检测）
+	modeDetected     bool                  // 🔥 模式是否已检测
 }
 
 // FormDataStreamConfig 流式处理配置
 type FormDataStreamConfig struct {
-	MaxFormDataSize     int64 // 最大 FormData 大小（字节）
-	StreamingThreshold  int64 // 启用流式处理的阈值（字节）
-	EnableChunkedUpload bool  // 启用分块上传
-	BufferSize          int   // 缓冲区大小
-	MaxFileSize         int64 // 单个文件最大大小
+	// 🔥 新方案：差异化限制
+	MaxBufferedFormDataSize  int64 // 缓冲模式限制：Web FormData + Blob、Node.js form-data + Buffer（默认 1MB）
+	MaxStreamingFormDataSize int64 // 流式模式限制：Node.js form-data + Stream（默认 100MB）
+
+	// 其他配置
+	EnableChunkedUpload bool          // 启用分块传输编码
+	BufferSize          int           // 缓冲区大小
+	MaxFileSize         int64         // 单个文件最大大小
+	Timeout             time.Duration // 🔥 HTTP 请求超时（用于计算写入超时）
+
+	// 🔧 废弃但保留兼容
+	MaxFormDataSize    int64 // 废弃：统一限制，改用差异化限制
+	StreamingThreshold int64 // 废弃：自动切换阈值，现由用户代码控制
 }
 
 // DefaultFormDataStreamConfigWithBuffer 创建带自定义缓冲区的默认配置
 // bufferSize: 缓冲区大小（字节）
-// maxFormDataSize: FormData 最大大小（字节）
+// maxBufferedSize: 缓冲模式限制（字节）
+// maxStreamingSize: 流式模式限制（字节）
 // maxFileSize: 单文件最大大小（字节）
-func DefaultFormDataStreamConfigWithBuffer(bufferSize int, maxFormDataSize, maxFileSize int64) *FormDataStreamConfig {
+// timeout: HTTP 请求超时
+func DefaultFormDataStreamConfigWithBuffer(bufferSize int, maxBufferedSize, maxStreamingSize, maxFileSize int64, timeout time.Duration) *FormDataStreamConfig {
 	return &FormDataStreamConfig{
-		MaxFormDataSize:     maxFormDataSize, // 🔥 从参数传入
-		StreamingThreshold:  1 * 1024 * 1024, // 1MB
+		// 🔥 新方案：差异化限制
+		MaxBufferedFormDataSize:  maxBufferedSize,  // 缓冲模式限制
+		MaxStreamingFormDataSize: maxStreamingSize, // 流式模式限制
+
+		// 其他配置
 		EnableChunkedUpload: true,
-		BufferSize:          bufferSize,  // 🔥 从参数传入
-		MaxFileSize:         maxFileSize, // 🔥 从参数传入
+		BufferSize:          bufferSize,
+		MaxFileSize:         maxFileSize,
+		Timeout:             timeout, // HTTP 请求超时
+
+		// 🔧 废弃但保留兼容
+		MaxFormDataSize:    maxBufferedSize, // 向后兼容，使用缓冲限制
+		StreamingThreshold: 1 * 1024 * 1024, // 废弃
 	}
 }
 
 // DefaultFormDataStreamConfig 默认配置（兼容旧代码）
 func DefaultFormDataStreamConfig() *FormDataStreamConfig {
 	return DefaultFormDataStreamConfigWithBuffer(
-		2*1024*1024,   // 默认 2MB 缓冲区
-		100*1024*1024, // 默认 100MB FormData 大小
-		50*1024*1024,  // 默认 50MB 单文件大小
+		2*1024*1024,    // 默认 2MB 缓冲区
+		1*1024*1024,    // 默认 1MB 缓冲模式限制
+		100*1024*1024,  // 默认 100MB 流式模式限制
+		50*1024*1024,   // 默认 50MB 单文件大小
+		30*time.Second, // 默认 30 秒超时
 	)
 }
 
@@ -71,31 +94,89 @@ func NewStreamingFormData(config *FormDataStreamConfig) *StreamingFormData {
 	}
 }
 
+// detectStreamingMode 检测是否为流式上传模式（带缓存）
+// 🔥 关键判断：是否包含真正的 Stream（排除 bytes.Reader）
+// - 缓冲模式：所有数据都是 string、[]byte、bytes.Reader
+// - 流式模式：包含至少一个非 bytes.Reader 的 io.Reader
+func (sfd *StreamingFormData) detectStreamingMode() bool {
+	// 如果已经检测过，直接返回缓存结果
+	if sfd.modeDetected {
+		return sfd.isStreamingMode
+	}
+
+	// 检测模式
+	isStreaming := false
+	for _, entry := range sfd.entries {
+		switch v := entry.Value.(type) {
+		case io.Reader:
+			// 🔥 关键：排除 bytes.Reader（这是从 Buffer/[]byte 创建的，算缓冲模式）
+			if _, isBytesReader := v.(*bytes.Reader); !isBytesReader {
+				// 找到真正的流式 Reader（如 StreamReader、PipeReader 等）
+				isStreaming = true
+				break
+			}
+		}
+	}
+
+	// 缓存结果
+	sfd.isStreamingMode = isStreaming
+	sfd.modeDetected = true
+
+	return isStreaming
+}
+
 // CreateReader 创建读取器（核心方法）
-// 根据 StreamingThreshold 自动选择最佳策略
-// - 小文件（< threshold）：缓冲模式，直接读取到内存（性能更好）
-// - 大文件（≥ threshold）：流式模式，使用 io.Pipe（内存友好）
+// 🔥 新方案：根据数据类型检测模式，应用差异化限制
+// - 缓冲模式（Blob/Buffer）：限制 1MB，直接读取到内存
+// - 流式模式（Stream）：限制 100MB，使用 io.Pipe 流式处理
 func (sfd *StreamingFormData) CreateReader() (io.Reader, error) {
 	if sfd == nil || sfd.config == nil {
 		return nil, fmt.Errorf("StreamingFormData or config is nil")
 	}
 
-	// 检查总大小限制
-	if sfd.totalSize > sfd.config.MaxFormDataSize {
-		return nil, fmt.Errorf("FormData 大小超过限制: %d > %d 字节",
-			sfd.totalSize, sfd.config.MaxFormDataSize)
+	// 🔥 检测上传模式
+	isStreaming := sfd.detectStreamingMode()
+
+	// 🔥 根据模式应用不同的限制
+	var maxSize int64
+	var modeName string
+
+	if isStreaming {
+		maxSize = sfd.config.MaxStreamingFormDataSize
+		modeName = "流式模式"
+	} else {
+		maxSize = sfd.config.MaxBufferedFormDataSize
+		modeName = "缓冲模式"
+	}
+
+	// 检查大小限制
+	if maxSize > 0 && sfd.totalSize > maxSize {
+		sizeMB := float64(sfd.totalSize) / 1024 / 1024
+		limitMB := float64(maxSize) / 1024 / 1024
+
+		if isStreaming {
+			return nil, fmt.Errorf(
+				"%s下 FormData 大小超过限制: %.2fMB > %.2fMB",
+				modeName, sizeMB, limitMB,
+			)
+		} else {
+			return nil, fmt.Errorf(
+				"%s下 FormData 大小超过限制: %.2fMB > %.2fMB\n提示: 大文件请使用 require('form-data') 配合 Stream 进行流式上传",
+				modeName, sizeMB, limitMB,
+			)
+		}
 	}
 
 	var reader io.Reader
 	var err error
 
-	// 根据阈值选择处理策略
-	if sfd.totalSize < sfd.config.StreamingThreshold {
-		// 小文件：使用缓冲模式（性能更好）
-		reader, err = sfd.createBufferedReader()
-	} else {
-		// 大文件：使用流式处理（内存友好）
+	// 🔥 根据模式选择处理策略
+	if isStreaming {
+		// 流式模式：使用 io.Pipe（内存友好）
 		reader, err = sfd.createPipedReader()
+	} else {
+		// 缓冲模式：直接读取到内存（性能更好）
+		reader, err = sfd.createBufferedReader()
 	}
 
 	if err != nil {
@@ -187,7 +268,22 @@ func (sfd *StreamingFormData) writeFileDataBuffered(writer *multipart.Writer, na
 	return nil
 }
 
+// calculateWriteTimeout 根据 HTTP 请求超时计算写入超时
+// 🔥 核心思路：FormData 写入是 HTTP 请求的一部分，不应该比请求超时还长
+func (sfd *StreamingFormData) calculateWriteTimeout() time.Duration {
+	// 使用配置的 HTTP 请求超时
+	if sfd.config.Timeout > 0 {
+		// FormData 写入超时 = HTTP 请求超时
+		// 理由：写入是请求的一部分，不应该超过请求总时间
+		return sfd.config.Timeout
+	}
+
+	// 降级：如果没有配置，使用默认值 30 秒
+	return 30 * time.Second
+}
+
 // createPipedReader 创建管道读取器（流式处理大文件）
+// 🔥 防泄漏机制：添加动态超时，防止 writer goroutine 永久阻塞
 func (sfd *StreamingFormData) createPipedReader() (io.Reader, error) {
 	pr, pw := io.Pipe()
 
@@ -198,28 +294,57 @@ func (sfd *StreamingFormData) createPipedReader() (io.Reader, error) {
 	copy(entriesCopy, sfd.entries)
 	boundary := sfd.boundary
 
+	// 🔥 防泄漏：创建超时 timer（动态计算，基于文件大小限制）
+	// 场景 1：读取方从不读取 → 超时后强制关闭，goroutine 退出
+	// 场景 2：写入大文件 + 慢速读取 → 根据文件大小限制动态超时
+	// 场景 3：网络异常 → 超时后强制退出
+	writeTimeout := sfd.calculateWriteTimeout()
+	timer := time.NewTimer(writeTimeout)
+
 	// 在后台 goroutine 中写入数据
 	go func() {
 		defer pw.Close()
+		defer timer.Stop() // 正常完成时停止 timer
 
-		writer := multipart.NewWriter(pw)
-		writer.SetBoundary(boundary)
+		// 创建完成通道
+		doneCh := make(chan error, 1)
 
-		var writeErr error
-		for i := range entriesCopy {
-			if err := sfd.writeEntryStreaming(writer, &entriesCopy[i]); err != nil {
-				writeErr = fmt.Errorf("流式写入字段失败: %w", err)
-				break
+		// 写入操作在另一个 goroutine 中（可被中断）
+		go func() {
+			writer := multipart.NewWriter(pw)
+			writer.SetBoundary(boundary)
+
+			var writeErr error
+			for i := range entriesCopy {
+				if err := sfd.writeEntryStreaming(writer, &entriesCopy[i]); err != nil {
+					writeErr = fmt.Errorf("流式写入字段失败: %w", err)
+					break
+				}
 			}
-		}
 
-		if writeErr != nil {
-			pw.CloseWithError(writeErr)
-			return
-		}
+			if writeErr != nil {
+				doneCh <- writeErr
+				return
+			}
 
-		if err := writer.Close(); err != nil {
-			pw.CloseWithError(fmt.Errorf("关闭 writer 失败: %w", err))
+			if err := writer.Close(); err != nil {
+				doneCh <- fmt.Errorf("关闭 writer 失败: %w", err)
+				return
+			}
+
+			doneCh <- nil
+		}()
+
+		// 等待写入完成或超时
+		select {
+		case err := <-doneCh:
+			// 写入完成（正常或错误）
+			if err != nil {
+				pw.CloseWithError(err)
+			}
+		case <-timer.C:
+			// 🔥 超时：强制关闭 pipe，goroutine 将退出
+			pw.CloseWithError(fmt.Errorf("FormData 写入超时 (%v)，可能原因：读取方未读取或网络异常", writeTimeout))
 		}
 	}()
 
@@ -279,6 +404,7 @@ func (sfd *StreamingFormData) writeFileDataStreaming(writer *multipart.Writer, n
 }
 
 // copyStreaming 流式复制数据
+// 🔥 新增：在流式写入过程中检查累计大小限制
 func (sfd *StreamingFormData) copyStreaming(dst io.Writer, src io.Reader) (int64, error) {
 	if sfd == nil || sfd.config == nil {
 		return 0, fmt.Errorf("StreamingFormData or config is nil")
@@ -288,9 +414,33 @@ func (sfd *StreamingFormData) copyStreaming(dst io.Writer, src io.Reader) (int64
 	buffer := make([]byte, sfd.config.BufferSize)
 
 	written := int64(0)
+
+	// 🔥 获取流式模式限制（用于传输中检查）
+	isStreaming := sfd.detectStreamingMode()
+	var maxSize int64
+	if isStreaming {
+		maxSize = sfd.config.MaxStreamingFormDataSize
+	} else {
+		maxSize = sfd.config.MaxBufferedFormDataSize
+	}
+
 	for {
 		nr, err := src.Read(buffer)
 		if nr > 0 {
+			// 🔥 关键：在写入前检查累计大小
+			if maxSize > 0 && written+int64(nr) > maxSize {
+				sizeMB := float64(written+int64(nr)) / 1024 / 1024
+				limitMB := float64(maxSize) / 1024 / 1024
+				modeName := "流式模式"
+				if !isStreaming {
+					modeName = "缓冲模式"
+				}
+				return written, fmt.Errorf(
+					"%s文件上传累计大小超过限制: %.2fMB > %.2fMB",
+					modeName, sizeMB, limitMB,
+				)
+			}
+
 			nw, ew := dst.Write(buffer[:nr])
 			if nw > 0 {
 				written += int64(nw)

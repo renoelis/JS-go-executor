@@ -41,8 +41,8 @@ func SetupRouter(
 	// 基础中间件
 	router.Use(gin.Logger())
 	router.Use(gin.Recovery())
-	router.Use(middleware.RequestIDMiddleware()) // 🆕 请求ID中间件（最先执行）
-	router.Use(corsMiddleware())
+	router.Use(middleware.RequestIDMiddleware())          // 🆕 请求ID中间件（最先执行）
+	router.Use(corsMiddleware(cfg.Server.AllowedOrigins)) // 🔒 智能 CORS 控制
 
 	// 🔥 创建限流器实例（需要在关闭时释放）
 	resources := &RouterResources{
@@ -176,18 +176,65 @@ func SetupRouter(
 	return router, resources
 }
 
-// corsMiddleware CORS中间件
-func corsMiddleware() gin.HandlerFunc {
+// corsMiddleware 智能 CORS 中间件
+// 🔒 安全策略（优先级从高到低）：
+// 1. 无 Origin 头（服务端调用）：✅ 始终允许
+// 2. 同域请求（Origin 与服务器域名相同）：✅ 始终允许
+// 3. 白名单域名（Origin 在 ALLOWED_ORIGINS 中）：✅ 允许
+// 4. 其他跨域请求：❌ 拒绝
+func corsMiddleware(allowedOrigins []string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accessToken")
+		origin := c.Request.Header.Get("Origin")
 
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(204)
+		// 1. 服务端调用（无 Origin 头）：直接允许
+		if origin == "" {
+			c.Next()
 			return
 		}
 
-		c.Next()
+		// 2. 判断是否允许该 Origin
+		allowed := false
+
+		// 2.1 检查是否为同域请求（始终允许，无论是否有白名单）
+		requestHost := c.Request.Host
+		if origin == "http://"+requestHost || origin == "https://"+requestHost {
+			allowed = true
+		}
+
+		// 2.2 如果不是同域，检查白名单
+		if !allowed && len(allowedOrigins) > 0 {
+			for _, allowedOrigin := range allowedOrigins {
+				if origin == allowedOrigin {
+					allowed = true
+					break
+				}
+			}
+		}
+
+		if allowed {
+			// ✅ 允许的 Origin：设置 CORS 响应头
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accessToken")
+			c.Header("Access-Control-Allow-Credentials", "true")
+
+			if c.Request.Method == "OPTIONS" {
+				c.AbortWithStatus(204)
+				return
+			}
+			c.Next()
+		} else {
+			// ❌ 不允许的跨域请求：拒绝
+			utils.Warn("拒绝跨域请求",
+				zap.String("origin", origin),
+				zap.String("host", c.Request.Host),
+				zap.String("method", c.Request.Method),
+				zap.String("path", c.Request.URL.Path),
+			)
+			c.AbortWithStatusJSON(403, gin.H{
+				"error":   "跨域请求被拒绝",
+				"message": "此服务仅允许服务端调用或同域前端访问",
+			})
+		}
 	}
 }

@@ -43,7 +43,8 @@ func (b *bodyWithCancel) Close() error {
 type FetchEnhancer struct {
 	client         *http.Client
 	allowedDomains []string      // 白名单域名 (安全功能)
-	maxRespSize    int64         // 最大响应大小
+	maxRespSize    int64         // 最大响应大小（非流式）
+	maxStreamSize  int64         // 🔥 最大流式响应大小（0表示不限制）
 	defaultTimeout time.Duration // 默认超时
 
 	// 🔥 新增：FormData 流式处理配置
@@ -70,12 +71,21 @@ type FetchResult struct {
 
 // NewFetchEnhancer 创建 Fetch 增强器（简化版本）
 func NewFetchEnhancer(timeout time.Duration) *FetchEnhancer {
-	return NewFetchEnhancerWithConfig(timeout, 0, 0, true, 0, 2*1024*1024, 50*1024*1024, 0) // 默认 2MB 缓冲区, 50MB 单文件, 不限制响应大小
+	return NewFetchEnhancerWithConfig(timeout, 1*1024*1024, 100*1024*1024, true, 0, 2*1024*1024, 50*1024*1024, 1*1024*1024, 100*1024*1024)
 }
 
 // NewFetchEnhancerWithConfig 创建带配置的 Fetch 增强器
-// 🔥 新增：支持 FormData 流式处理配置和 Blob/File 大小限制
-func NewFetchEnhancerWithConfig(timeout time.Duration, maxFormDataSize, streamingThreshold int64, enableChunked bool, maxBlobFileSize int64, bufferSize int, maxFileSize int64, maxResponseSize int64) *FetchEnhancer {
+// 🔥 新方案：支持差异化的 FormData 限制和流式下载限制
+func NewFetchEnhancerWithConfig(
+	timeout time.Duration,
+	maxBufferedFormDataSize, maxStreamingFormDataSize int64, // FormData 差异化限制
+	enableChunked bool,
+	maxBlobFileSize int64,
+	bufferSize int,
+	maxFileSize int64,
+	maxResponseSize int64, // 缓冲读取限制（arrayBuffer/blob/text/json）
+	maxStreamingSize int64, // 流式读取限制（getReader）
+) *FetchEnhancer {
 	// 🔥 优化：配置高性能且安全的 HTTP Transport
 	transport := &http.Transport{
 		// 连接池配置
@@ -104,20 +114,21 @@ func NewFetchEnhancerWithConfig(timeout time.Duration, maxFormDataSize, streamin
 	}
 
 	// FormData 流式处理配置
-	var formDataConfig *FormDataStreamConfig
+	// 🔥 新方案：使用差异化限制
+	formDataConfig := &FormDataStreamConfig{
+		// 新方案：差异化限制
+		MaxBufferedFormDataSize:  maxBufferedFormDataSize,  // 缓冲模式
+		MaxStreamingFormDataSize: maxStreamingFormDataSize, // 流式模式
 
-	// 使用默认配置或自定义配置
-	if maxFormDataSize == 0 {
-		// 使用默认配置，但应用自定义缓冲区大小和文件大小限制
-		formDataConfig = DefaultFormDataStreamConfigWithBuffer(bufferSize, 100*1024*1024, maxFileSize)
-	} else {
-		formDataConfig = &FormDataStreamConfig{
-			MaxFormDataSize:     maxFormDataSize,
-			StreamingThreshold:  streamingThreshold,
-			EnableChunkedUpload: enableChunked,
-			BufferSize:          bufferSize,  // 🔥 从参数传入（统一在 executor.go 中读取）
-			MaxFileSize:         maxFileSize, // 🔥 从参数传入（统一在 executor.go 中读取）
-		}
+		// 其他配置
+		EnableChunkedUpload: enableChunked,
+		BufferSize:          bufferSize,
+		MaxFileSize:         maxFileSize,
+		Timeout:             timeout, // 🔥 HTTP 请求超时（用于 FormData 写入超时）
+
+		// 🔧 废弃但保留兼容
+		MaxFormDataSize:    maxBufferedFormDataSize, // 向后兼容
+		StreamingThreshold: 1 * 1024 * 1024,         // 废弃
 	}
 
 	// Blob/File 大小限制
@@ -138,7 +149,8 @@ func NewFetchEnhancerWithConfig(timeout time.Duration, maxFormDataSize, streamin
 		},
 		// 不限制域名，允许所有域名
 		allowedDomains:  []string{},
-		maxRespSize:     maxResponseSize, // 🔥 使用配置的响应大小限制
+		maxRespSize:     maxResponseSize,  // 🔥 使用配置的响应大小限制（非流式）
+		maxStreamSize:   maxStreamingSize, // 🔥 流式下载大小限制（0表示不限制）
 		defaultTimeout:  timeout,
 		formDataConfig:  formDataConfig,
 		maxBlobFileSize: maxBlobFileSize,
@@ -495,33 +507,24 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 	}
 
 	// 3. 创建上下文 (带超时)
-	// 🔥 流式模式下需要特殊处理：不能在函数返回后取消 context
-	isStreamingRequest := false
-	if streaming, ok := req.options["__streaming"].(bool); ok && streaming {
-		isStreamingRequest = true
-	}
-
-	// 🔥 新增：用户可以通过 streaming 选项启用流式模式
-	if streaming, ok := req.options["streaming"].(bool); ok && streaming {
-		isStreamingRequest = true
-	}
-
+	// 🔥 新方案：fetch 默认返回流式响应（符合标准 Fetch API）
+	// StreamReader 负责生命周期管理，context 不会自动超时
 	var ctx context.Context
 	var cancel context.CancelFunc
+	var cancelHandled bool // 标记 cancel 是否已被处理
 
-	if isStreamingRequest {
-		// 流式模式：使用不会超时的 context（由 StreamReader 管理生命周期）
-		ctx, cancel = context.WithCancel(context.Background())
-		// 不在这里 defer cancel()，由 StreamReader.Close() 负责
-	} else {
-		// 非流式模式：正常超时
-		ctx, cancel = context.WithTimeout(context.Background(), fe.defaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel = context.WithCancel(context.Background())
+	// 🔥 防御性 defer：确保异常路径上 cancel 被调用
+	defer func() {
+		if !cancelHandled {
+			cancel() // 如果没有被 bodyWrapper 接管，这里清理
+		}
+	}()
 
 	// 4. 创建 HTTP 请求
 	httpReq, err := http.NewRequestWithContext(ctx, method, req.url, body)
 	if err != nil {
+		cancel() // 🔥 修复：确保 cancel 被调用，防止 context 泄漏
 		req.resultCh <- FetchResult{nil, fmt.Errorf("failed to create request: %w", err)}
 		return
 	}
@@ -548,11 +551,17 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 
 	// 6. 协议安全检查
 	if err := fe.checkProtocol(httpReq.URL.Scheme); err != nil {
+		cancel() // 🔥 修复：确保 cancel 被调用，防止 context 泄漏
 		req.resultCh <- FetchResult{nil, err}
 		return
 	}
 
 	// 7. 启动请求 (在独立的 goroutine 中)
+	// 🔥 Goroutine 生命周期保证：
+	//   - http.NewRequestWithContext 确保 Context 取消时中断请求
+	//   - ResponseHeaderTimeout 防止无限期等待响应头
+	//   - Abort/Timeout 场景都会 <-done 等待 goroutine 退出
+	//   - 无 goroutine 泄漏风险
 	done := make(chan struct{})
 	var resp *http.Response
 	var reqErr error
@@ -564,8 +573,8 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 
 	// 🔥 资源泄漏修复: 使用 defer 确保 resp.Body 总是被关闭
 	// 无论是正常完成、取消还是超时，都会清理资源
-	// 但流式模式下除外（由 StreamReader 管理）
-	shouldCloseBody := true
+	// 🔥 新方案：总是流式模式，由 StreamReader 管理生命周期
+	shouldCloseBody := false // 总是由 StreamReader 负责关闭
 	defer func() {
 		if shouldCloseBody && resp != nil && resp.Body != nil {
 			// 清空 Body 以帮助连接复用 (性能提升 ~100x)
@@ -579,6 +588,8 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 	case <-done:
 		// 请求完成
 		if reqErr != nil {
+			// 🔥 修复：确保 cancel 被调用，防止 context 泄漏
+			cancel()
 			// defer 会清理 resp.Body
 			if ctx.Err() == context.Canceled {
 				req.resultCh <- FetchResult{nil, fmt.Errorf("request aborted")}
@@ -590,88 +601,45 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 			return
 		}
 
-		if isStreamingRequest {
-			// 🔥 流式模式：不读取全部数据，直接返回 Body Stream
-			// 创建一个包装器，在关闭时也取消 context
-			bodyWrapper := &bodyWithCancel{
-				ReadCloser: resp.Body,
-				cancel:     cancel,
-			}
+		// 🔥 优化：提前检查 Content-Length（节省带宽）
+		// 如果服务器明确告知文件大小，且超过限制，立即失败（0下载）
+		if resp.ContentLength > 0 && fe.maxStreamSize > 0 && resp.ContentLength > fe.maxStreamSize {
+			sizeMB := float64(resp.ContentLength) / 1024 / 1024
+			limitMB := float64(fe.maxStreamSize) / 1024 / 1024
 
+			cancel() // 取消请求
 			req.resultCh <- FetchResult{
-				response: &ResponseData{
-					StatusCode:  resp.StatusCode,
-					Status:      resp.Status,
-					Headers:     resp.Header,
-					BodyStream:  bodyWrapper, // 传递包装后的 Body
-					IsStreaming: true,
-					FinalURL:    resp.Request.URL.String(),
-				},
-				err: nil,
+				nil,
+				fmt.Errorf(
+					"文件大小超过流式下载限制: %.2fMB > %.2fMB (Content-Length: %d 字节) - 提示: 请调整 MAX_STREAMING_SIZE_MB 配置",
+					sizeMB, limitMB, resp.ContentLength,
+				),
 			}
-			// ⚠️ 流式模式下，不在这里关闭 Body，由 StreamReader 负责
-			shouldCloseBody = false // 🔥 关键：防止 defer 关闭 Body
-		} else {
-			// 非流式模式：读取全部响应体
-			var respBody []byte
-			if fe.maxRespSize > 0 {
-				// 🔥 检查 Content-Length（如果有的话）
-				if resp.ContentLength > 0 && resp.ContentLength > fe.maxRespSize {
-					sizeMB := float64(resp.ContentLength) / 1024 / 1024
-					limitMB := float64(fe.maxRespSize) / 1024 / 1024
-					req.resultCh <- FetchResult{
-						nil,
-						fmt.Errorf("response size exceeds limit: %.2fMB > %.2fMB (%d bytes > %d bytes)",
-							sizeMB, limitMB, resp.ContentLength, fe.maxRespSize),
-					}
-					return
-				}
-
-				bodyReader := io.LimitReader(resp.Body, fe.maxRespSize)
-				respBody, err = io.ReadAll(bodyReader)
-
-				if err != nil {
-					req.resultCh <- FetchResult{nil, fmt.Errorf("failed to read response body: %w", err)}
-					return
-				}
-
-				// 🔥 检查是否被截断（读取了最大限制的数据）
-				if int64(len(respBody)) >= fe.maxRespSize {
-					// 尝试再读一个字节，确认是否还有数据
-					oneByte := make([]byte, 1)
-					n, _ := resp.Body.Read(oneByte)
-					if n > 0 {
-						// 确实还有数据，说明响应体被截断了
-						sizeMB := float64(fe.maxRespSize) / 1024 / 1024
-						req.resultCh <- FetchResult{
-							nil,
-							fmt.Errorf("response body truncated: exceeds %.2fMB limit", sizeMB),
-						}
-						return
-					}
-				}
-			} else {
-				respBody, err = io.ReadAll(resp.Body)
-				if err != nil {
-					req.resultCh <- FetchResult{nil, fmt.Errorf("failed to read response body: %w", err)}
-					return
-				}
-			}
-
-			// 返回响应数据
-			req.resultCh <- FetchResult{
-				response: &ResponseData{
-					StatusCode:  resp.StatusCode,
-					Status:      resp.Status,
-					Headers:     resp.Header,
-					Body:        respBody,
-					IsStreaming: false,
-					FinalURL:    resp.Request.URL.String(),
-				},
-				err: nil,
-			}
-			// defer 会清理 resp.Body
+			return
 		}
+
+		// 🔥 新方案：总是返回流式响应（符合标准 Fetch API）
+		// 创建一个包装器，在关闭时也取消 context
+		bodyWrapper := &bodyWithCancel{
+			ReadCloser: resp.Body,
+			cancel:     cancel,
+		}
+
+		req.resultCh <- FetchResult{
+			response: &ResponseData{
+				StatusCode:    resp.StatusCode,
+				Status:        resp.Status,
+				Headers:       resp.Header,
+				BodyStream:    bodyWrapper, // 传递包装后的 Body
+				IsStreaming:   true,        // 总是流式
+				FinalURL:      resp.Request.URL.String(),
+				ContentLength: resp.ContentLength, // 🔥 保存 Content-Length（用于智能预分配）
+			},
+			err: nil,
+		}
+		// ⚠️ 不在这里关闭 Body，由 StreamReader 负责
+		shouldCloseBody = false // 🔥 关键：防止 defer 关闭 Body
+		cancelHandled = true    // 🔥 标记 cancel 已被 bodyWrapper 接管
 
 	case <-req.abortCh:
 		// 🔥 请求被取消 (用户调用了 controller.abort())
@@ -1868,30 +1836,37 @@ func (fe *FetchEnhancer) extractBufferBytes(bufferObj *goja.Object) ([]byte, err
 
 // ResponseData 用于在 goroutine 之间传递响应数据
 type ResponseData struct {
-	StatusCode  int
-	Status      string
-	Headers     http.Header
-	Body        []byte        // 非流式模式使用
-	BodyStream  io.ReadCloser // 流式模式使用
-	IsStreaming bool          // 是否为流式模式
-	FinalURL    string
+	StatusCode    int
+	Status        string
+	Headers       http.Header
+	Body          []byte        // 非流式模式使用
+	BodyStream    io.ReadCloser // 流式模式使用
+	IsStreaming   bool          // 是否为流式模式
+	FinalURL      string
+	ContentLength int64 // 🔥 响应的 Content-Length（用于智能预分配）
 }
 
 // StreamReader 流式读取器（JavaScript 层面使用）
 type StreamReader struct {
-	reader     io.ReadCloser
-	runtime    *goja.Runtime
-	mutex      sync.Mutex
-	closed     bool
-	reachedEOF bool // 🔥 标记是否已到达 EOF（符合 Web Streams API 标准）
+	reader        io.ReadCloser
+	runtime       *goja.Runtime
+	mutex         sync.Mutex
+	closed        bool
+	reachedEOF    bool  // 🔥 标记是否已到达 EOF（符合 Web Streams API 标准）
+	totalRead     int64 // 🔥 累计读取的字节数
+	maxSize       int64 // 🔥 最大允许大小（0表示不限制）
+	contentLength int64 // 🔥 HTTP 响应的 Content-Length（用于智能预分配，-1表示未知）
 }
 
 // NewStreamReader 创建流式读取器
-func NewStreamReader(reader io.ReadCloser, runtime *goja.Runtime) *StreamReader {
+func NewStreamReader(reader io.ReadCloser, runtime *goja.Runtime, maxSize int64, contentLength int64) *StreamReader {
 	return &StreamReader{
-		reader:  reader,
-		runtime: runtime,
-		closed:  false,
+		reader:        reader,
+		runtime:       runtime,
+		closed:        false,
+		totalRead:     0,             // 🔥 初始化计数器
+		maxSize:       maxSize,       // 🔥 设置限制（0表示不限制）
+		contentLength: contentLength, // 🔥 保存 Content-Length（-1表示未知）
 	}
 }
 
@@ -1915,13 +1890,38 @@ func (sr *StreamReader) Read(size int) ([]byte, bool, error) {
 		return nil, true, nil
 	}
 
+	// 🔥 新增：检查是否已超过大小限制
+	if sr.maxSize > 0 && sr.totalRead >= sr.maxSize {
+		sr.closed = true
+		sr.reader.Close()
+		sizeMB := float64(sr.maxSize) / 1024 / 1024
+		return nil, true, fmt.Errorf("流式下载已超过限制: %.2fMB", sizeMB)
+	}
+
 	// 默认读取 64KB
 	if size <= 0 {
 		size = 64 * 1024
 	}
 
+	// 🔥 新增：如果设置了限制，调整本次读取大小
+	if sr.maxSize > 0 {
+		remaining := sr.maxSize - sr.totalRead
+		if remaining < int64(size) {
+			size = int(remaining)
+			if size <= 0 {
+				sr.closed = true
+				sr.reader.Close()
+				sizeMB := float64(sr.maxSize) / 1024 / 1024
+				return nil, true, fmt.Errorf("流式下载已超过限制: %.2fMB", sizeMB)
+			}
+		}
+	}
+
 	buffer := make([]byte, size)
 	n, err := sr.reader.Read(buffer)
+
+	// 🔥 新增：更新累计读取字节数
+	sr.totalRead += int64(n)
 
 	if err == io.EOF {
 		// 🔥 关键修复：遇到 EOF 时
@@ -2074,10 +2074,62 @@ func startNodeStreamReading(runtime *goja.Runtime, streamReader *StreamReader, l
 	readNext()
 }
 
+// readAllDataWithLimit 统一的缓冲读取函数（智能预分配 + 限制检查）
+// 🔥 用于 arrayBuffer(), text(), json(), blob() 等方法
+func readAllDataWithLimit(streamReader *StreamReader, maxBufferSize int64) ([]byte, error) {
+	// 🔥 智能预分配策略：基于 Content-Length
+	var initialCapacity int
+	if streamReader.contentLength > 0 {
+		// 场景1：有 Content-Length（最优情况）
+		if streamReader.contentLength <= maxBufferSize {
+			initialCapacity = int(streamReader.contentLength) // 🔥 精确预分配
+		} else {
+			initialCapacity = int(maxBufferSize) // 🔥 预分配到限制值
+		}
+	} else if maxBufferSize < 64*1024 {
+		// 场景2：限制很小（< 64KB）
+		initialCapacity = int(maxBufferSize) // 预分配限制值
+	} else {
+		// 场景3：未知大小
+		initialCapacity = 64 * 1024 // 🔥 预分配 64KB（避免小文件浪费）
+	}
+
+	allData := make([]byte, 0, initialCapacity)
+	var totalRead int64
+
+	for {
+		data, done, err := streamReader.Read(64 * 1024)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(data) > 0 {
+			// 🔥 先检查，后追加（避免无效的内存分配）
+			if maxBufferSize > 0 && totalRead+int64(len(data)) > maxBufferSize {
+				sizeMB := float64(totalRead+int64(len(data))) / 1024 / 1024
+				limitMB := float64(maxBufferSize) / 1024 / 1024
+				return nil, fmt.Errorf(
+					"缓冲读取超过限制: %.2fMB > %.2fMB\n提示: 大文件请使用 response.body.getReader() 进行流式读取",
+					sizeMB, limitMB,
+				)
+			}
+
+			allData = append(allData, data...)
+			totalRead += int64(len(data))
+		}
+
+		if done {
+			break
+		}
+	}
+
+	return allData, nil
+}
+
 // createStreamingResponse 创建流式响应对象
 func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response *goja.Object, data *ResponseData) *goja.Object {
-	// 创建 StreamReader
-	streamReader := NewStreamReader(data.BodyStream, runtime)
+	// 创建 StreamReader，传入大小限制和 Content-Length
+	streamReader := NewStreamReader(data.BodyStream, runtime, fe.maxStreamSize, data.ContentLength)
 
 	// 设置 bodyUsed 为 false（流式可以多次读取）
 	response.Set("bodyUsed", runtime.ToValue(false))
@@ -2337,6 +2389,7 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 	response.Set("body", bodyObj)
 
 	// 添加便捷方法：直接读取全部数据（与非流式模式兼容）
+	// 🔥 新方案：缓冲读取方法应用 1MB 限制
 	response.Set("arrayBuffer", func(call goja.FunctionCall) goja.Value {
 		promise, resolve, reject := runtime.NewPromise()
 
@@ -2344,22 +2397,11 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 		setImmediate := runtime.Get("setImmediate")
 		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
 			callback := func(call goja.FunctionCall) goja.Value {
-				// 读取全部数据
-				var allData []byte
-				for {
-					data, done, err := streamReader.Read(64 * 1024)
-					if err != nil {
-						reject(runtime.NewGoError(err))
-						return goja.Undefined()
-					}
-
-					if len(data) > 0 {
-						allData = append(allData, data...)
-					}
-
-					if done {
-						break
-					}
+				// 🔥 使用统一的缓冲读取函数（智能预分配 + 限制检查）
+				allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+				if err != nil {
+					reject(runtime.NewGoError(err))
+					return goja.Undefined()
 				}
 
 				arrayBuffer := runtime.NewArrayBuffer(allData)
@@ -2369,19 +2411,10 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
 		} else {
 			// 降级：同步执行
-			var allData []byte
-			for {
-				data, done, err := streamReader.Read(64 * 1024)
-				if err != nil {
-					reject(runtime.NewGoError(err))
-					return runtime.ToValue(promise)
-				}
-				if len(data) > 0 {
-					allData = append(allData, data...)
-				}
-				if done {
-					break
-				}
+			allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+			if err != nil {
+				reject(runtime.NewGoError(err))
+				return runtime.ToValue(promise)
 			}
 			arrayBuffer := runtime.NewArrayBuffer(allData)
 			resolve(runtime.ToValue(arrayBuffer))
@@ -2396,38 +2429,22 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 		setImmediate := runtime.Get("setImmediate")
 		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
 			callback := func(call goja.FunctionCall) goja.Value {
-				var allData []byte
-				for {
-					data, done, err := streamReader.Read(64 * 1024)
-					if err != nil {
-						reject(runtime.NewGoError(err))
-						return goja.Undefined()
-					}
-					if len(data) > 0 {
-						allData = append(allData, data...)
-					}
-					if done {
-						break
-					}
+				// 🔥 使用统一的缓冲读取函数（智能预分配 + 限制检查）
+				allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+				if err != nil {
+					reject(runtime.NewGoError(err))
+					return goja.Undefined()
 				}
 				resolve(runtime.ToValue(string(allData)))
 				return goja.Undefined()
 			}
 			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
 		} else {
-			var allData []byte
-			for {
-				data, done, err := streamReader.Read(64 * 1024)
-				if err != nil {
-					reject(runtime.NewGoError(err))
-					return runtime.ToValue(promise)
-				}
-				if len(data) > 0 {
-					allData = append(allData, data...)
-				}
-				if done {
-					break
-				}
+			// 降级：同步执行
+			allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+			if err != nil {
+				reject(runtime.NewGoError(err))
+				return runtime.ToValue(promise)
 			}
 			resolve(runtime.ToValue(string(allData)))
 		}
@@ -2441,23 +2458,15 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 		setImmediate := runtime.Get("setImmediate")
 		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
 			callback := func(call goja.FunctionCall) goja.Value {
-				var allData []byte
-				for {
-					data, done, err := streamReader.Read(64 * 1024)
-					if err != nil {
-						reject(runtime.NewGoError(err))
-						return goja.Undefined()
-					}
-					if len(data) > 0 {
-						allData = append(allData, data...)
-					}
-					if done {
-						break
-					}
+				// 🔥 使用统一的缓冲读取函数（智能预分配 + 限制检查）
+				allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+				if err != nil {
+					reject(runtime.NewGoError(err))
+					return goja.Undefined()
 				}
 
 				var jsonData interface{}
-				err := json.Unmarshal(allData, &jsonData)
+				err = json.Unmarshal(allData, &jsonData)
 				if err != nil {
 					reject(runtime.NewTypeError(fmt.Sprintf("Invalid JSON: %v", err)))
 				} else {
@@ -2467,28 +2476,78 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 			}
 			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
 		} else {
-			var allData []byte
-			for {
-				data, done, err := streamReader.Read(64 * 1024)
-				if err != nil {
-					reject(runtime.NewGoError(err))
-					return runtime.ToValue(promise)
-				}
-				if len(data) > 0 {
-					allData = append(allData, data...)
-				}
-				if done {
-					break
-				}
+			// 降级：同步执行
+			allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+			if err != nil {
+				reject(runtime.NewGoError(err))
+				return runtime.ToValue(promise)
 			}
 
 			var jsonData interface{}
-			err := json.Unmarshal(allData, &jsonData)
+			err = json.Unmarshal(allData, &jsonData)
 			if err != nil {
 				reject(runtime.NewTypeError(fmt.Sprintf("Invalid JSON: %v", err)))
 			} else {
 				resolve(runtime.ToValue(jsonData))
 			}
+		}
+
+		return runtime.ToValue(promise)
+	})
+
+	// blob() 方法 - 读取全部数据并返回 Blob 对象
+	response.Set("blob", func(call goja.FunctionCall) goja.Value {
+		promise, resolve, reject := runtime.NewPromise()
+
+		setImmediate := runtime.Get("setImmediate")
+		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
+			callback := func(call goja.FunctionCall) goja.Value {
+				// 🔥 使用统一的缓冲读取函数（智能预分配 + 限制检查）
+				allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+				if err != nil {
+					reject(runtime.NewGoError(err))
+					return goja.Undefined()
+				}
+
+				// 从响应头获取 Content-Type
+				contentType := "application/octet-stream"
+				if ct := data.Headers.Get("Content-Type"); ct != "" {
+					contentType = ct
+				}
+
+				// 创建 Blob 对象
+				blob := &JSBlob{
+					data: allData,
+					typ:  contentType,
+				}
+
+				blobObj := fe.createBlobObject(runtime, blob)
+				resolve(blobObj)
+				return goja.Undefined()
+			}
+			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
+		} else {
+			// 降级：同步执行
+			allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+			if err != nil {
+				reject(runtime.NewGoError(err))
+				return runtime.ToValue(promise)
+			}
+
+			// 从响应头获取 Content-Type
+			contentType := "application/octet-stream"
+			if ct := data.Headers.Get("Content-Type"); ct != "" {
+				contentType = ct
+			}
+
+			// 创建 Blob 对象
+			blob := &JSBlob{
+				data: allData,
+				typ:  contentType,
+			}
+
+			blobObj := fe.createBlobObject(runtime, blob)
+			resolve(blobObj)
 		}
 
 		return runtime.ToValue(promise)
@@ -2511,10 +2570,13 @@ func (fe *FetchEnhancer) recreateResponse(runtime *goja.Runtime, data *ResponseD
 	headersObj := fe.createResponseHeaders(runtime, data.Headers)
 	response.Set("headers", headersObj)
 
-	// 🔥 流式响应处理
+	// 🔥 新方案：总是返回流式响应（符合标准 Fetch API）
+	// data.IsStreaming 现在总是 true
 	if data.IsStreaming {
 		return fe.createStreamingResponse(runtime, response, data)
 	}
+
+	// 🔧 向后兼容：如果 IsStreaming=false（旧数据），仍然支持
 
 	// Body methods
 	bodyUsed := false
