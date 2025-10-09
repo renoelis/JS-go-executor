@@ -638,7 +638,7 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 			if err != nil {
 				// 🔥 使用 categorizeError 处理编译/运行时错误，并调整行号
 				categorizedErr := e.categorizeError(err)
-				finalError = adjustErrorLineNumber(categorizedErr, 5) // EventLoop 包装增加了 5 行
+				finalError = adjustErrorLineNumber(categorizedErr, 9) // EventLoop 包装增加了 9 行
 			}
 		})
 
@@ -657,7 +657,7 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 					Stack:   errStack, // ✅ 新增：包含stack信息
 				}
 				// 🔥 调整行号（如果错误消息中包含行号）
-				finalError = adjustErrorLineNumber(rawError, 5) // EventLoop 包装增加了 5 行
+				finalError = adjustErrorLineNumber(rawError, 9) // EventLoop 包装增加了 9 行
 			} else {
 				finalRes := vm.Get("__finalResult")
 				if goja.IsUndefined(finalRes) {
