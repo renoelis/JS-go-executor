@@ -32,7 +32,7 @@ func (pe *PinyinEnhancer) RegisterPinyinModule(registry *require.Registry) {
 	registry.RegisterNativeModule("pinyin", func(runtime *goja.Runtime, module *goja.Object) {
 		// 确保 pinyin 已加载
 		if err := pe.loadPinyin(runtime); err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("failed to load pinyin: %w", err)))
+			panic(runtime.NewGoError(fmt.Errorf("加载 pinyin 模块失败: %w", err)))
 		}
 
 		// 获取 pinyin 导出对象

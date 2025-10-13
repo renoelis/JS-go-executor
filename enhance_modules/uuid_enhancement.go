@@ -32,7 +32,7 @@ func (ue *UuidEnhancer) RegisterUuidModule(registry *require.Registry) {
 	registry.RegisterNativeModule("uuid", func(runtime *goja.Runtime, module *goja.Object) {
 		// 确保 uuid 已加载
 		if err := ue.loadUuid(runtime); err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("failed to load uuid: %w", err)))
+			panic(runtime.NewGoError(fmt.Errorf("加载 uuid 模块失败: %w", err)))
 		}
 
 		// 获取 uuid 导出对象

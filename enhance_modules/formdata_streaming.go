@@ -3,6 +3,7 @@ package enhance_modules
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -96,6 +97,30 @@ func NewStreamingFormData(config *FormDataStreamConfig) *StreamingFormData {
 	}
 }
 
+// NewStreamingFormDataWithContext 创建带 context 的流式 FormData 处理器
+// 🔥 优化：立即注入 context，避免取消响应延迟
+//
+// 优势：
+//   - 立即响应取消：< 1ms vs 可能的几毫秒延迟
+//   - 用户体验更好：取消请求立即停止 FormData 处理
+//   - 代码更清晰：context 生命周期明确
+//
+// 使用场景：
+//   - fetch() 调用时立即传入 HTTP 请求的 context
+//   - 确保 FormData 的 goroutine 能立即感知请求取消
+func NewStreamingFormDataWithContext(ctx context.Context, config *FormDataStreamConfig) *StreamingFormData {
+	if config == nil {
+		config = DefaultFormDataStreamConfig()
+	}
+
+	// 🔥 立即注入 context（关键优化）
+	if config.Context == nil {
+		config.Context = ctx
+	}
+
+	return NewStreamingFormData(config)
+}
+
 // detectStreamingMode 检测是否为流式上传模式（带缓存）
 // 🔥 关键判断：是否包含真正的 Stream（排除 bytes.Reader）
 // - 缓冲模式：所有数据都是 string、[]byte、bytes.Reader
@@ -133,7 +158,7 @@ func (sfd *StreamingFormData) detectStreamingMode() bool {
 // - 流式模式（Stream）：限制 100MB，使用 io.Pipe 流式处理
 func (sfd *StreamingFormData) CreateReader() (io.Reader, error) {
 	if sfd == nil || sfd.config == nil {
-		return nil, fmt.Errorf("StreamingFormData or config is nil")
+		return nil, fmt.Errorf("StreamingFormData 或 config 为 nil")
 	}
 
 	// 🔥 检测上传模式
@@ -220,7 +245,7 @@ func (sfd *StreamingFormData) createBufferedReader() (io.Reader, error) {
 // writeEntryBuffered 写入单个字段（缓冲模式）
 func (sfd *StreamingFormData) writeEntryBuffered(writer *multipart.Writer, entry *FormDataEntry) error {
 	if entry == nil || writer == nil {
-		return fmt.Errorf("entry or writer is nil")
+		return fmt.Errorf("entry 或 writer 为 nil")
 	}
 
 	switch v := entry.Value.(type) {
@@ -247,7 +272,7 @@ func (sfd *StreamingFormData) writeEntryBuffered(writer *multipart.Writer, entry
 func (sfd *StreamingFormData) writeFileDataBuffered(writer *multipart.Writer, name, filename, contentType string, data []byte) error {
 	// 安全检查
 	if sfd == nil || sfd.config == nil {
-		return fmt.Errorf("StreamingFormData or config is nil")
+		return fmt.Errorf("StreamingFormData 或 config 为 nil")
 	}
 
 	// 检查文件大小限制
@@ -303,10 +328,6 @@ func (sfd *StreamingFormData) createPipedReader() (io.Reader, error) {
 	}
 
 	// 🔥 防泄漏：创建超时 timer（动态计算，基于文件大小限制）
-	// 场景 1：读取方从不读取 → 超时后强制关闭，goroutine 退出
-	// 场景 2：写入大文件 + 慢速读取 → 根据文件大小限制动态超时
-	// 场景 3：网络异常 → 超时后强制退出
-	// 场景 4 (v2.4.2)：HTTP 请求取消 → context 取消，立即退出
 	writeTimeout := sfd.calculateWriteTimeout()
 	timer := time.NewTimer(writeTimeout)
 
@@ -325,7 +346,23 @@ func (sfd *StreamingFormData) createPipedReader() (io.Reader, error) {
 
 			var writeErr error
 			for i := range entriesCopy {
+				// 🔥 P0-1 修复：在每次写入前检查 context 是否已取消
+				select {
+				case <-ctx.Done():
+					// Context 已取消，立即停止
+					doneCh <- fmt.Errorf("写入已取消: %w", ctx.Err())
+					return
+				default:
+					// Context 未取消，继续写入
+				}
+
 				if err := sfd.writeEntryStreaming(writer, &entriesCopy[i]); err != nil {
+					// 🔥 检查是否是因为 pipe 关闭导致的错误
+					if err == io.ErrClosedPipe || strings.Contains(err.Error(), "closed pipe") {
+						// Pipe 已关闭（外层 goroutine 已取消），正常退出
+						doneCh <- nil
+						return
+					}
 					writeErr = fmt.Errorf("流式写入字段失败: %w", err)
 					break
 				}
@@ -356,8 +393,6 @@ func (sfd *StreamingFormData) createPipedReader() (io.Reader, error) {
 			pw.CloseWithError(fmt.Errorf("FormData 写入超时 (%v)，可能原因：读取方未读取或网络异常", writeTimeout))
 		case <-ctx.Done():
 			// 🔥 v2.4.2 新增：HTTP 请求取消，立即关闭 pipe
-			// 效果：Writer goroutine 收到 io.ErrClosedPipe，立即退出
-			// 优势：从最多 300 秒等待 → 立即响应（< 1ms）
 			pw.CloseWithError(fmt.Errorf("FormData 写入已取消: %w", ctx.Err()))
 		}
 	}()
@@ -392,7 +427,7 @@ func (sfd *StreamingFormData) writeEntryStreaming(writer *multipart.Writer, entr
 func (sfd *StreamingFormData) writeFileDataStreaming(writer *multipart.Writer, name, filename, contentType string, reader io.Reader, size int64) error {
 	// 安全检查
 	if sfd == nil || sfd.config == nil {
-		return fmt.Errorf("StreamingFormData or config is nil")
+		return fmt.Errorf("StreamingFormData 或 config 为 nil")
 	}
 
 	// 检查文件大小限制（如果已知大小）
@@ -421,7 +456,7 @@ func (sfd *StreamingFormData) writeFileDataStreaming(writer *multipart.Writer, n
 // 🔥 新增：在流式写入过程中检查累计大小限制
 func (sfd *StreamingFormData) copyStreaming(dst io.Writer, src io.Reader) (int64, error) {
 	if sfd == nil || sfd.config == nil {
-		return 0, fmt.Errorf("StreamingFormData or config is nil")
+		return 0, fmt.Errorf("StreamingFormData 或 config 为 nil")
 	}
 
 	// 使用固定大小的缓冲区进行流式复制
@@ -558,7 +593,7 @@ func (sfd *StreamingFormData) ShouldUseStreaming() bool {
 func randomBoundary() string {
 	// 生成 12 字节的随机数据（12 * 2 = 24 个十六进制字符）
 	b := make([]byte, 12)
-	_, _ = io.ReadFull(randReader, b)
+	_, _ = io.ReadFull(rand.Reader, b)
 
 	// 转换为十六进制字符串
 	hexStr := fmt.Sprintf("%x", b)

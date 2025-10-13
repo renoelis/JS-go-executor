@@ -1,7 +1,6 @@
 package enhance_modules
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -18,75 +17,89 @@ import (
 )
 
 // BodyTypeHandler 处理各种 Body 类型
-type BodyTypeHandler struct{}
-
-// NewBodyTypeHandler 创建 Body 类型处理器
-func NewBodyTypeHandler() *BodyTypeHandler {
-	return &BodyTypeHandler{}
+type BodyTypeHandler struct {
+	maxBlobFileSize int64 // Blob/File/TypedArray 最大大小（字节）
 }
 
-// ProcessBody 处理各种类型的 body，返回 io.Reader, contentType, contentLength
-func (h *BodyTypeHandler) ProcessBody(runtime *goja.Runtime, body interface{}) (io.Reader, string, int64, error) {
+// NewBodyTypeHandler 创建 Body 类型处理器
+func NewBodyTypeHandler(maxBlobFileSize int64) *BodyTypeHandler {
+	if maxBlobFileSize <= 0 {
+		maxBlobFileSize = 100 * 1024 * 1024 // 默认 100MB
+	}
+	return &BodyTypeHandler{
+		maxBlobFileSize: maxBlobFileSize,
+	}
+}
+
+// ProcessBody 处理各种类型的 body，返回数据或 Reader，以及 contentType
+// 🔥 重构优化：直接返回 []byte 避免不必要的 Reader 包装
+//
+// 返回值：
+//   - data: 已知大小的数据（[]byte）
+//   - reader: 流式数据（io.Reader，用于真正的流）
+//   - contentType: Content-Type
+//   - 只有 data 和 reader 中的一个非 nil
+func (h *BodyTypeHandler) ProcessBody(runtime *goja.Runtime, body interface{}) (data []byte, reader io.Reader, contentType string, err error) {
 	if body == nil {
-		return nil, "", 0, nil
+		return nil, nil, "", nil
 	}
 
-	// 1. 字符串
+	// 1. 字符串 - 直接转换为 []byte
 	if str, ok := body.(string); ok {
-		return strings.NewReader(str), "", int64(len(str)), nil
+		return []byte(str), nil, "", nil
 	}
 
-	// 2. 字节数组
-	if data, ok := body.([]byte); ok {
-		return bytes.NewReader(data), "", int64(len(data)), nil
+	// 2. 字节数组 - 直接返回
+	if bytes, ok := body.([]byte); ok {
+		return bytes, nil, "", nil
 	}
 
-	// 3. io.Reader
-	if reader, ok := body.(io.Reader); ok {
-		return reader, "", -1, nil // chunked transfer
+	// 3. io.Reader - 保持流式（真正的流）
+	if r, ok := body.(io.Reader); ok {
+		return nil, r, "", nil // chunked transfer
 	}
 
 	// 4. goja.Object - 需要进一步判断类型
 	if obj, ok := body.(*goja.Object); ok {
 		// 4.1 检查是否是 TypedArray (Uint8Array, Int8Array等)
 		if h.isTypedArray(obj) {
-			data, err := h.typedArrayToBytes(obj)
+			bytes, err := h.typedArrayToBytes(obj)
 			if err != nil {
-				return nil, "", 0, fmt.Errorf("failed to convert TypedArray: %w", err)
+				return nil, nil, "", fmt.Errorf("转换 TypedArray 失败: %w", err)
 			}
-			return bytes.NewReader(data), "application/octet-stream", int64(len(data)), nil
+			return bytes, nil, "application/octet-stream", nil
 		}
 
 		// 4.2 检查是否是 ArrayBuffer
 		if h.isArrayBuffer(obj) {
-			data, err := h.arrayBufferToBytes(obj)
+			bytes, err := h.arrayBufferToBytes(obj)
 			if err != nil {
-				return nil, "", 0, fmt.Errorf("failed to convert ArrayBuffer: %w", err)
+				return nil, nil, "", fmt.Errorf("转换 ArrayBuffer 失败: %w", err)
 			}
-			return bytes.NewReader(data), "application/octet-stream", int64(len(data)), nil
+			return bytes, nil, "application/octet-stream", nil
 		}
 
 		// 4.3 检查是否是 URLSearchParams
 		if h.isURLSearchParams(obj) {
-			data, err := h.urlSearchParamsToString(obj)
+			str, err := h.urlSearchParamsToString(obj)
 			if err != nil {
-				return nil, "", 0, fmt.Errorf("failed to convert URLSearchParams: %w", err)
+				return nil, nil, "", fmt.Errorf("转换 URLSearchParams 失败: %w", err)
 			}
-			return strings.NewReader(data), "application/x-www-form-urlencoded", int64(len(data)), nil
+			return []byte(str), nil, "application/x-www-form-urlencoded", nil
 		}
 
 		// 4.4 检查是否是 Blob 或 File
 		if h.isBlobOrFile(obj) {
-			data, contentType, err := h.blobToBytes(obj)
+			bytes, ct, err := h.blobToBytes(obj)
 			if err != nil {
-				return nil, "", 0, fmt.Errorf("failed to convert Blob/File: %w", err)
+				return nil, nil, "", fmt.Errorf("转换 Blob/File 失败: %w", err)
 			}
-			return bytes.NewReader(data), contentType, int64(len(data)), nil
+			return bytes, nil, ct, nil
 		}
 	}
 
-	// 5. 默认：尝试 JSON 序列化
-	return nil, "", 0, nil // 返回 nil 表示需要 JSON 序列化
+	// 5. 默认：返回 nil 表示需要 JSON 序列化
+	return nil, nil, "", nil
 }
 
 // isTypedArray 检查对象是否是 TypedArray
@@ -158,15 +171,23 @@ func (h *BodyTypeHandler) isURLSearchParams(obj *goja.Object) bool {
 func (h *BodyTypeHandler) typedArrayToBytes(obj *goja.Object) ([]byte, error) {
 	// 安全检查
 	if obj == nil {
-		return nil, fmt.Errorf("TypedArray object is nil")
+		return nil, fmt.Errorf("TypedArray 对象为 nil")
 	}
 
 	// 获取数组长度
 	lengthVal := obj.Get("length")
 	if goja.IsUndefined(lengthVal) || lengthVal == nil {
-		return nil, fmt.Errorf("TypedArray missing length property")
+		return nil, fmt.Errorf("TypedArray 缺少 length 属性")
 	}
 	length := int(lengthVal.ToInteger())
+
+	// 🔥 检查 length 合法性
+	if length < 0 {
+		return nil, fmt.Errorf("TypedArray length 不能为负数: %d", length)
+	}
+	if length == 0 {
+		return []byte{}, nil // 空数组，直接返回
+	}
 
 	// 获取数组类型
 	var bytesPerElement int = 1
@@ -190,8 +211,24 @@ func (h *BodyTypeHandler) typedArrayToBytes(obj *goja.Object) ([]byte, error) {
 		bytesPerElement = 8
 	}
 
-	// 创建字节数组
-	totalBytes := length * bytesPerElement
+	// 🔥 防护：整数溢出 + 内存耗尽（DoS 防护）
+	// 使用 int64 计算避免 32 位系统溢出
+	totalBytes64 := int64(length) * int64(bytesPerElement)
+
+	// 🔥 检查是否超过配置的限制（MAX_BLOB_FILE_SIZE）
+	if totalBytes64 > h.maxBlobFileSize {
+		sizeMB := float64(totalBytes64) / (1024 * 1024)
+		limitMB := float64(h.maxBlobFileSize) / (1024 * 1024)
+		return nil, fmt.Errorf("TypedArray 过大: %.2fMB > %.2fMB 限制 (类型: %s, 长度: %d, 每元素字节数: %d)",
+			sizeMB, limitMB, typeName, length, bytesPerElement)
+	}
+
+	// 检查是否会在 32 位系统上溢出（兼容性检查）
+	if totalBytes64 > math.MaxInt32 {
+		return nil, fmt.Errorf("TypedArray 超过 32 位系统支持的最大大小")
+	}
+
+	totalBytes := int(totalBytes64)
 	data := make([]byte, totalBytes)
 
 	// 读取数据
@@ -244,7 +281,7 @@ func (h *BodyTypeHandler) arrayBufferToBytes(obj *goja.Object) ([]byte, error) {
 
 	// 如果类型断言失败，说明对象不是真正的 ArrayBuffer
 	// 这通常不应该发生，因为我们已经通过 isArrayBuffer() 检查过了
-	return nil, fmt.Errorf("failed to export ArrayBuffer: type assertion failed")
+	return nil, fmt.Errorf("导出 ArrayBuffer 失败: 类型断言失败")
 }
 
 // blobToBytes 将 Blob/File 转换为字节数组
@@ -252,7 +289,7 @@ func (h *BodyTypeHandler) blobToBytes(obj *goja.Object) ([]byte, string, error) 
 	// 获取 __blobData
 	blobDataVal := obj.Get("__blobData")
 	if goja.IsUndefined(blobDataVal) || blobDataVal == nil {
-		return nil, "", fmt.Errorf("Blob/File missing __blobData")
+		return nil, "", fmt.Errorf("Blob/File 缺少 __blobData")
 	}
 
 	// 尝试类型断言获取 JSBlob（在同一包内可以访问私有类型）
@@ -266,7 +303,7 @@ func (h *BodyTypeHandler) blobToBytes(obj *goja.Object) ([]byte, string, error) 
 		return file.data, file.typ, nil
 	}
 
-	return nil, "", fmt.Errorf("unable to extract Blob/File data: invalid type")
+	return nil, "", fmt.Errorf("无法提取 Blob/File 数据: 无效类型")
 }
 
 // urlSearchParamsToString 将 URLSearchParams 转换为字符串
@@ -274,19 +311,19 @@ func (h *BodyTypeHandler) urlSearchParamsToString(obj *goja.Object) (string, err
 	// URLSearchParams 有 toString() 方法
 	toStringMethod := obj.Get("toString")
 	if goja.IsUndefined(toStringMethod) {
-		return "", fmt.Errorf("URLSearchParams missing toString method")
+		return "", fmt.Errorf("URLSearchParams 缺少 toString 方法")
 	}
 
 	// 调用 toString()
 	if callable, ok := goja.AssertFunction(toStringMethod); ok {
 		result, err := callable(obj)
 		if err != nil {
-			return "", fmt.Errorf("failed to call URLSearchParams.toString(): %w", err)
+			return "", fmt.Errorf("调用 URLSearchParams.toString() 失败: %w", err)
 		}
 		return result.String(), nil
 	}
 
-	return "", fmt.Errorf("URLSearchParams.toString is not callable")
+	return "", fmt.Errorf("URLSearchParams.toString 不可调用")
 }
 
 // RegisterURLSearchParams 在 runtime 中注册 URLSearchParams 构造函数
@@ -363,7 +400,7 @@ func RegisterURLSearchParams(runtime *goja.Runtime) error {
 		// append(name, value) 方法
 		obj.Set("append", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) < 2 {
-				panic(runtime.NewTypeError("URLSearchParams.append requires 2 arguments"))
+				panic(runtime.NewTypeError("URLSearchParams.append 需要 2 个参数"))
 			}
 			name := call.Arguments[0].String()
 			value := call.Arguments[1].String()
@@ -379,7 +416,7 @@ func RegisterURLSearchParams(runtime *goja.Runtime) error {
 		// delete(name, value) 方法 - Node.js v22 新增支持第二个参数
 		obj.Set("delete", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) < 1 {
-				panic(runtime.NewTypeError("URLSearchParams.delete requires at least 1 argument"))
+				panic(runtime.NewTypeError("URLSearchParams.delete 需要至少 1 个参数"))
 			}
 			name := call.Arguments[0].String()
 
@@ -410,7 +447,7 @@ func RegisterURLSearchParams(runtime *goja.Runtime) error {
 		// get(name) 方法
 		obj.Set("get", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) < 1 {
-				panic(runtime.NewTypeError("URLSearchParams.get requires 1 argument"))
+				panic(runtime.NewTypeError("URLSearchParams.get 需要 1 个参数"))
 			}
 			name := call.Arguments[0].String()
 			if values, ok := params[name]; ok && len(values) > 0 {
@@ -422,7 +459,7 @@ func RegisterURLSearchParams(runtime *goja.Runtime) error {
 		// getAll(name) 方法
 		obj.Set("getAll", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) < 1 {
-				panic(runtime.NewTypeError("URLSearchParams.getAll requires 1 argument"))
+				panic(runtime.NewTypeError("URLSearchParams.getAll 需要 1 个参数"))
 			}
 			name := call.Arguments[0].String()
 			if values, ok := params[name]; ok {
@@ -434,7 +471,7 @@ func RegisterURLSearchParams(runtime *goja.Runtime) error {
 		// has(name, value) 方法 - Node.js v22 新增支持第二个参数
 		obj.Set("has", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) < 1 {
-				panic(runtime.NewTypeError("URLSearchParams.has requires at least 1 argument"))
+				panic(runtime.NewTypeError("URLSearchParams.has 需要至少 1 个参数"))
 			}
 			name := call.Arguments[0].String()
 
@@ -459,7 +496,7 @@ func RegisterURLSearchParams(runtime *goja.Runtime) error {
 		// set(name, value) 方法
 		obj.Set("set", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) < 2 {
-				panic(runtime.NewTypeError("URLSearchParams.set requires 2 arguments"))
+				panic(runtime.NewTypeError("URLSearchParams.set 需要 2 个参数"))
 			}
 			name := call.Arguments[0].String()
 			value := call.Arguments[1].String()
@@ -507,12 +544,12 @@ func RegisterURLSearchParams(runtime *goja.Runtime) error {
 		// forEach(callback) 方法
 		obj.Set("forEach", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) < 1 {
-				panic(runtime.NewTypeError("URLSearchParams.forEach requires 1 argument"))
+				panic(runtime.NewTypeError("URLSearchParams.forEach 需要 1 个参数"))
 			}
 
 			callback, ok := goja.AssertFunction(call.Arguments[0])
 			if !ok {
-				panic(runtime.NewTypeError("URLSearchParams.forEach callback must be a function"))
+				panic(runtime.NewTypeError("URLSearchParams.forEach 回调函数必须是一个函数"))
 			}
 
 			for name, values := range params {

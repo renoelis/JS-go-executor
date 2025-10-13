@@ -650,6 +650,20 @@ GET /flow/query-token?ws_id=my_workspace&email=user@example.com
 | `ENABLE_CHUNKED_UPLOAD` | 1 | 启用分块传输编码 |
 | `MAX_BLOB_FILE_SIZE_MB` | 100 | Blob/File最大大小(MB) |
 
+### XLSX 模块配置
+
+| 环境变量 | 默认值 | 说明 | 推荐值 |
+|----------|--------|------|--------|
+| `XLSX_MAX_SNAPSHOT_SIZE_MB` | 5 | Copy-on-Read模式的最大文件大小 | 2MB (低内存) / 5MB (标准) / 10MB (高内存) |
+| `XLSX_MAX_ROWS` | 100000 | 🔥 最大行数限制 | 50000 (低内存) / 100000 (标准) / 200000 (高内存) |
+| `XLSX_MAX_COLS` | 100 | 🔥 最大列数限制 | 50-200 |
+
+**说明**：
+- **文件大小限制**：`xlsx.read()` 会将整个文件加载到内存，超过限制将拒绝并提示使用流式API
+- **行数限制**：防止处理超大行数的Excel文件导致内存溢出，流式API也受此限制
+- **列数限制**：防止处理超多列的Excel文件导致内存溢出，主要防止恶意构造的文件
+- **内存优化**：大文件（> 10MB）或大数据量建议使用 `xlsx.readStream()` 流式处理
+
 ### Go运行时配置
 
 | 环境变量 | 默认值 | 说明 |

@@ -21,6 +21,9 @@ services:
       - PORT=3002
       - GIN_MODE=debug                   # 开发环境使用debug模式
       
+      # 🔥 DoS 防护配置
+      - MAX_REQUEST_BODY_MB=10           # HTTP 请求体大小限制（MB）
+      
       # 🔒 CORS 跨域配置
       - ALLOWED_ORIGINS=                 # 为空则只允许服务端和同域调用
       
@@ -90,7 +93,17 @@ services:
       - MAX_CODE_LENGTH=65535            # 64KB
       - MAX_INPUT_SIZE=2097152           # 2MB
       - MAX_RESULT_SIZE=5242880          # 5MB
-      - EXECUTION_TIMEOUT_MS=30000       # 🔧 开发环境30秒超时
+      - EXECUTION_TIMEOUT_MS=300000       # 🔧 开发环境30秒超时
+
+       # ==================== 🔥 并发控制超时配置 ====================
+      # 说明：控制系统繁忙时的等待行为
+      - CONCURRENCY_WAIT_TIMEOUT_SEC=10  # 并发槽位等待超时(秒) - 默认 10 秒
+      - RUNTIME_POOL_ACQUIRE_TIMEOUT_SEC=5  # Runtime 池获取超时(秒) - 默认 5 秒
+      
+      # ==================== 🔍 慢执行检测配置 ====================
+      # SLOW_EXECUTION_THRESHOLD_MS: 慢执行检测阈值（毫秒）
+      # 说明：超过此时间的代码执行会记录 WARN 日志，帮助定位性能问题
+      - SLOW_EXECUTION_THRESHOLD_MS=3000  # 配置为 3 秒，
       
       # ==================== 🔥 熔断器配置 ====================
       - CIRCUIT_BREAKER_ENABLED=true
@@ -99,12 +112,14 @@ services:
       - CIRCUIT_BREAKER_TIMEOUT_SEC=10
       - CIRCUIT_BREAKER_MAX_REQUESTS=50
       
-      # ==================== Fetch API配置 ====================
-      - FETCH_TIMEOUT_MS=30000           # 30秒
+      # ==================== Fetch API 超时配置 ====================
+      # 🔥 拆分为两个独立参数（v2.5.3 新增）
+      - FETCH_TIMEOUT_MS=30000                      # HTTP 请求超时（连接+发送+响应头，30秒）
+      - FETCH_RESPONSE_READ_TIMEOUT_MS=600000       # 🔥 响应读取总时长超时（10分钟，开发环境宽松）
       
       # 🔥 下载限制（新方案）
       - MAX_RESPONSE_SIZE_MB=5           # 缓冲读取限制(arrayBuffer/blob/text/json) - 默认1MB
-      - MAX_STREAMING_SIZE_MB=5        # 流式读取限制(getReader) - 默认100MB
+      - MAX_STREAMING_SIZE_MB=1        # 流式读取限制(getReader) - 默认100MB
       
       # 🔥 上传限制（新方案）
       - MAX_BUFFERED_FORMDATA_MB=5       # 缓冲上传限制(Web FormData + Blob、Node.js form-data + Buffer) - 默认1MB
@@ -116,13 +131,60 @@ services:
       - FORMDATA_BUFFER_SIZE=524288      # FormData缓冲区大小(字节) - 512KB
       - MAX_FILE_SIZE_MB=1               # 单文件最大大小(MB)
       
+      # 🔥 XLSX 模块配置（开发环境）
+      - XLSX_MAX_SNAPSHOT_SIZE_MB=5      # Copy-on-Read 模式的最大文件大小（默认5MB，开发环境可适当调整）
+      - XLSX_MAX_ROWS=50000              # 🔥 最大行数限制（默认100000，开发环境设为50000）
+      - XLSX_MAX_COLS=100                # 🔥 最大列数限制（默认100）
+      
+      # 🔥 HTTP Transport 配置（开发环境：较小值，便于调试）
+      - HTTP_MAX_IDLE_CONNS=30                   # 全局最大空闲连接数
+      - HTTP_MAX_IDLE_CONNS_PER_HOST=5           # 每个 host 的最大空闲连接数
+      - HTTP_MAX_CONNS_PER_HOST=50               # 每个 host 的最大连接数
+      - HTTP_IDLE_CONN_TIMEOUT_SEC=60            # 空闲连接超时（秒）
+      - HTTP_DIAL_TIMEOUT_SEC=10                 # 连接建立超时（秒）
+      - HTTP_KEEP_ALIVE_SEC=30                   # Keep-Alive 间隔（秒）
+      - HTTP_TLS_HANDSHAKE_TIMEOUT_SEC=10        # TLS 握手超时（秒）
+      - HTTP_EXPECT_CONTINUE_TIMEOUT_SEC=1       # 期望继续超时（秒）
+      - HTTP_FORCE_HTTP2=true                    # 启用 HTTP/2
+      - HTTP_RESPONSE_BODY_IDLE_TIMEOUT_MIN=5    # 🔥 响应体空闲超时（分钟，防止资源泄漏）
+      
       # ==================== JavaScript 内存限制 ====================
-      - ENABLE_JS_MEMORY_LIMIT=true      # 🔧 启用 JS 侧内存限制
-      - JS_MEMORY_LIMIT_MB=0              # 🔧 限制大小（0=使用 MAX_BLOB_FILE_SIZE_MB）
+      # 说明：拦截 JavaScript 侧的大内存分配（Array、TypedArray、ArrayBuffer、Array.push）
+      # 
+      # ENABLE_JS_MEMORY_LIMIT: 是否启用 JS 侧内存限制
+      #   - true: 启用（默认）
+      #   - false: 禁用（允许无限制创建数组，⚠️ 可能导致内存溢出）
+      # 
+      # JS_MEMORY_LIMIT_MB: JavaScript 单次分配的最大内存大小（MB）
+      #   - 0: 使用 MAX_BLOB_FILE_SIZE_MB 的值（默认，自动跟随）
+      #   - >0: 指定具体限制（如 10 = 10MB）
+      #   
+      # 🔍 Array.push 限制计算：
+      #   最大元素数 = (JS_MEMORY_LIMIT_MB * 1024 * 1024) / 8
+      #   示例：
+      #     - 1MB  → 131,072 个元素（开发环境当前值）
+      #     - 10MB → 1,310,720 个元素
+      #     - 12MB → 1,572,864 个元素（生产环境推荐）
+      # 
+      # ⚠️ 注意：
+      #   - Array.push 超限时会抛出中文错误："Array.push 操作会导致数组长度超过限制..."
+      #   - 其他限制包括：new Array(n)、new Uint8Array(n)、new ArrayBuffer(n)
+      - ENABLE_JS_MEMORY_LIMIT=true      # 🔧 启用 JS 侧内存限制（默认：true）
+      - JS_MEMORY_LIMIT_MB=0              # 🔧 限制大小（0=使用 MAX_BLOB_FILE_SIZE_MB，当前为1MB → 131K元素）
+      
+      # ==================== 🔥 健康检查和池管理配置 ====================
+      # 开发环境：较宽松的阈值，便于调试
+      - MIN_ERROR_COUNT_FOR_CHECK=5              # 最小错误次数阈值（开发环境：5，便于快速发现问题）
+      - MAX_ERROR_RATE_THRESHOLD=0.15            # 最大错误率阈值（开发环境：0.15 即 15%，容忍调试错误）
+      - MIN_EXECUTION_COUNT_FOR_STATS=500        # 统计长期运行的最小执行次数（开发环境：500，快速进入统计）
+      - LONG_RUNNING_THRESHOLD_MINUTES=30        # 长期运行时间阈值（开发环境：30分钟）
+      - POOL_EXPANSION_THRESHOLD_PERCENT=0.2     # 池扩展阈值（开发环境：0.2 即 20%，避免频繁扩展）
+      - HEALTH_CHECK_INTERVAL_SECONDS=60         # 健康检查间隔（开发环境：60秒，减少日志输出）
       
       # ==================== Go运行时配置 ====================
       - GOMAXPROCS=0                     # 使用所有CPU
       - GOGC=100
+      - GOMEMLIMIT=2048MiB
       
       # ==================== 🔍 调试配置 ====================
       - ENABLE_PPROF=true                # 开发环境启用 pprof 接口
@@ -151,7 +213,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G          # 🔧 2GB足够开发测试
+          memory: 2.5G          # 🔧 2GB足够开发测试
           cpus: '4.0'         # 🔧 4核CPU
         reservations:
           memory: 512M

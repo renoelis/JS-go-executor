@@ -104,71 +104,37 @@ func (ca *CodeAnalyzer) AnalyzeCode(code string) *CodeFeatures {
 }
 
 // removeStringsAndComments 移除字符串和注释（避免误判）
+// 🔥 v2.5.3 优化：复用 service.CodeLexer，消除代码重复并修复转义字符 bug
+//   - Bug: 旧实现无法正确处理 "test\\" (转义的反斜杠 + 结束引号)
+//   - 修复: 复用 service.CodeLexer（已包含 v2.4.4 转义字符修复）
+//   - 收益: 零代码重复，自动获得所有词法分析修复和优化
+//   - 代码减少: 70 行 → 20 行（减少 71%）
 func (ca *CodeAnalyzer) removeStringsAndComments(code string) string {
+	// 🔥 复用 CodeLexer 统一词法分析（现已在 utils 包中）
+	lexer := NewCodeLexer(code)
 	var result strings.Builder
-	inString := false
-	inComment := false
-	inMultiComment := false
-	stringChar := byte(0)
 
-	for i := 0; i < len(code); i++ {
-		ch := code[i]
+	codeBytes := lexer.GetCode()
 
-		// 处理多行注释
-		if !inString && !inComment && i+1 < len(code) && ch == '/' && code[i+1] == '*' {
-			inMultiComment = true
-			i++
-			continue
-		}
-		if inMultiComment && i+1 < len(code) && ch == '*' && code[i+1] == '/' {
-			inMultiComment = false
-			i++
-			continue
-		}
-		if inMultiComment {
-			result.WriteByte(' ')
-			continue
+	for {
+		token := lexer.NextToken()
+		if token.Type == TokenEOF {
+			break
 		}
 
-		// 处理单行注释
-		if !inString && !inComment && i+1 < len(code) && ch == '/' && code[i+1] == '/' {
-			inComment = true
-			i++
-			continue
-		}
-		if inComment && ch == '\n' {
-			inComment = false
-			result.WriteByte('\n')
-			continue
-		}
-		if inComment {
-			result.WriteByte(' ')
-			continue
-		}
-
-		// 处理字符串
-		if !inString && (ch == '"' || ch == '\'' || ch == '`') {
-			inString = true
-			stringChar = ch
-			result.WriteByte(' ')
-			continue
-		}
-		if inString && ch == stringChar {
-			// 检查是否是转义
-			if i > 0 && code[i-1] != '\\' {
-				inString = false
-				stringChar = 0
+		if token.Type == TokenCode {
+			// 保留代码字符
+			result.Write(codeBytes[token.Start:token.End])
+		} else {
+			// 字符串或注释：替换为空格（保持长度和换行）
+			for i := token.Start; i < token.End; i++ {
+				if codeBytes[i] == '\n' {
+					result.WriteByte('\n')
+				} else {
+					result.WriteByte(' ')
+				}
 			}
-			result.WriteByte(' ')
-			continue
 		}
-		if inString {
-			result.WriteByte(' ')
-			continue
-		}
-
-		// 正常字符
-		result.WriteByte(ch)
 	}
 
 	return result.String()

@@ -109,3 +109,4 @@ DATE.js
 test_datefns_fix.go
 test_error_in_timeout.js
 test_eventloop_simple.js
+.cursor/

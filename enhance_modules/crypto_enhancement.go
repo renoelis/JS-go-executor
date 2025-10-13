@@ -109,19 +109,19 @@ func NewCryptoEnhancerWithEmbedded(embeddedCode string) *CryptoEnhancer {
 func createRandomBytesFunc(runtime *goja.Runtime) func(goja.FunctionCall) goja.Value {
 	return func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("randomBytes requires size parameter"))
+			panic(runtime.NewTypeError("randomBytes 需要 size 参数"))
 		}
 
 		size := int(call.Arguments[0].ToInteger())
 		if size <= 0 || size > MaxRandomBytesSize {
 			panic(runtime.NewTypeError(fmt.Sprintf(
-				"randomBytes size must be between 1 and %d bytes", MaxRandomBytesSize)))
+				"randomBytes 大小必须在 1 到 %d 字节之间", MaxRandomBytesSize)))
 		}
 
 		bytes := make([]byte, size)
 		_, err := rand.Read(bytes)
 		if err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("failed to generate random bytes: %w", err)))
+			panic(runtime.NewGoError(fmt.Errorf("生成随机字节失败: %w", err)))
 		}
 
 		// 创建类似Buffer的对象
@@ -148,7 +148,7 @@ func createRandomBytesFunc(runtime *goja.Runtime) func(goja.FunctionCall) goja.V
 			case "base64":
 				return runtime.ToValue(base64.StdEncoding.EncodeToString(bytes))
 			default:
-				panic(runtime.NewTypeError(fmt.Sprintf("Unsupported encoding: %s", encoding)))
+				panic(runtime.NewTypeError(fmt.Sprintf("不支持的编码: %s", encoding)))
 			}
 		})
 
@@ -220,7 +220,7 @@ func (ce *CryptoEnhancer) RegisterCryptoJSModule(registry *require.Registry) {
 	registry.RegisterNativeModule("crypto-js", func(runtime *goja.Runtime, module *goja.Object) {
 		// 确保crypto-js已加载
 		if err := ce.loadCryptoJS(runtime); err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("failed to load crypto-js: %w", err)))
+			panic(runtime.NewGoError(fmt.Errorf("加载 crypto-js 模块失败: %w", err)))
 		}
 
 		// 获取CryptoJS对象
@@ -228,7 +228,7 @@ func (ce *CryptoEnhancer) RegisterCryptoJSModule(registry *require.Registry) {
 		if cryptoJSVal != nil && !goja.IsUndefined(cryptoJSVal) {
 			module.Set("exports", cryptoJSVal)
 		} else {
-			panic(runtime.NewGoError(fmt.Errorf("CryptoJS not available")))
+			panic(runtime.NewGoError(fmt.Errorf("CryptoJS 不可用")))
 		}
 	})
 }
@@ -237,7 +237,7 @@ func (ce *CryptoEnhancer) RegisterCryptoJSModule(registry *require.Registry) {
 func (ce *CryptoEnhancer) addCreateHashMethod(runtime *goja.Runtime, cryptoObj *goja.Object) error {
 	createHash := func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("createHash requires an algorithm parameter"))
+			panic(runtime.NewTypeError("createHash 需要一个 algorithm 参数"))
 		}
 
 		algorithm := strings.ToLower(call.Arguments[0].String())
@@ -253,7 +253,7 @@ func (ce *CryptoEnhancer) addCreateHashMethod(runtime *goja.Runtime, cryptoObj *
 		case "sha512":
 			hasher = sha512.New()
 		default:
-			panic(runtime.NewTypeError(fmt.Sprintf("Unsupported hash algorithm: %s", algorithm)))
+			panic(runtime.NewTypeError(fmt.Sprintf("不支持的哈希算法: %s", algorithm)))
 		}
 
 		// 创建Hash对象
@@ -262,7 +262,7 @@ func (ce *CryptoEnhancer) addCreateHashMethod(runtime *goja.Runtime, cryptoObj *
 		// update方法
 		hashObj.Set("update", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
-				panic(runtime.NewTypeError("update requires data parameter"))
+				panic(runtime.NewTypeError("update 需要 data 参数"))
 			}
 
 			data := call.Arguments[0].String()
@@ -287,7 +287,7 @@ func (ce *CryptoEnhancer) addCreateHashMethod(runtime *goja.Runtime, cryptoObj *
 			case "base64":
 				return runtime.ToValue(base64.StdEncoding.EncodeToString(sum))
 			default:
-				panic(runtime.NewTypeError(fmt.Sprintf("Unsupported encoding: %s", encoding)))
+				panic(runtime.NewTypeError(fmt.Sprintf("不支持的编码: %s", encoding)))
 			}
 		})
 
@@ -302,7 +302,7 @@ func (ce *CryptoEnhancer) addCreateHashMethod(runtime *goja.Runtime, cryptoObj *
 func (ce *CryptoEnhancer) addCreateHmacMethod(runtime *goja.Runtime, cryptoObj *goja.Object) error {
 	createHmac := func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) < 2 {
-			panic(runtime.NewTypeError("createHmac requires algorithm and key parameters"))
+			panic(runtime.NewTypeError("createHmac 需要 algorithm 和 key 参数"))
 		}
 
 		algorithm := strings.ToLower(call.Arguments[0].String())
@@ -319,7 +319,7 @@ func (ce *CryptoEnhancer) addCreateHmacMethod(runtime *goja.Runtime, cryptoObj *
 		case "sha512":
 			hasher = hmac.New(sha512.New, []byte(key))
 		default:
-			panic(runtime.NewTypeError(fmt.Sprintf("Unsupported HMAC algorithm: %s", algorithm)))
+			panic(runtime.NewTypeError(fmt.Sprintf("不支持的 HMAC 算法: %s", algorithm)))
 		}
 
 		// 创建Hmac对象
@@ -328,7 +328,7 @@ func (ce *CryptoEnhancer) addCreateHmacMethod(runtime *goja.Runtime, cryptoObj *
 		// update方法
 		hmacObj.Set("update", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
-				panic(runtime.NewTypeError("update requires data parameter"))
+				panic(runtime.NewTypeError("update 需要 data 参数"))
 			}
 
 			data := call.Arguments[0].String()
@@ -353,7 +353,7 @@ func (ce *CryptoEnhancer) addCreateHmacMethod(runtime *goja.Runtime, cryptoObj *
 			case "base64":
 				return runtime.ToValue(base64.StdEncoding.EncodeToString(sum))
 			default:
-				panic(runtime.NewTypeError(fmt.Sprintf("Unsupported encoding: %s", encoding)))
+				panic(runtime.NewTypeError(fmt.Sprintf("不支持的编码: %s", encoding)))
 			}
 		})
 
@@ -375,7 +375,7 @@ func (ce *CryptoEnhancer) addRandomMethods(runtime *goja.Runtime, cryptoObj *goj
 	// getRandomValues方法 (Web Crypto API兼容)
 	getRandomValues := func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("getRandomValues requires a typed array"))
+			panic(runtime.NewTypeError("getRandomValues 需要一个类型化数组参数"))
 		}
 
 		arg := call.Arguments[0]
@@ -466,19 +466,19 @@ func (ce *CryptoEnhancer) SetupCryptoEnvironment(runtime *goja.Runtime) error {
 	// 添加 randomBytes 方法 - crypto-js 会检查这个方法
 	randomBytes := func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("randomBytes requires size parameter"))
+			panic(runtime.NewTypeError("randomBytes 需要 size 参数"))
 		}
 
 		size := int(call.Arguments[0].ToInteger())
 		if size <= 0 || size > MaxRandomBytesSize {
 			panic(runtime.NewTypeError(fmt.Sprintf(
-				"randomBytes size must be between 1 and %d bytes", MaxRandomBytesSize)))
+				"randomBytes 大小必须在 1 到 %d 字节之间", MaxRandomBytesSize)))
 		}
 
 		bytes := make([]byte, size)
 		_, err := rand.Read(bytes)
 		if err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("failed to generate random bytes: %w", err)))
+			panic(runtime.NewGoError(fmt.Errorf("生成随机字节失败: %w", err)))
 		}
 
 		// 创建类似Node.js Buffer的对象，包含readInt32LE方法
@@ -498,7 +498,7 @@ func (ce *CryptoEnhancer) SetupCryptoEnvironment(runtime *goja.Runtime) error {
 			}
 
 			if offset < 0 || offset+4 > len(bytes) {
-				panic(runtime.NewTypeError("readInt32LE offset out of range"))
+				panic(runtime.NewTypeError("readInt32LE 偏移量超出范围"))
 			}
 
 			// 读取小端序32位整数
@@ -523,7 +523,7 @@ func (ce *CryptoEnhancer) SetupCryptoEnvironment(runtime *goja.Runtime) error {
 			case "base64":
 				return runtime.ToValue(base64.StdEncoding.EncodeToString(bytes))
 			default:
-				panic(runtime.NewTypeError(fmt.Sprintf("Unsupported encoding: %s", encoding)))
+				panic(runtime.NewTypeError(fmt.Sprintf("不支持的编码: %s", encoding)))
 			}
 		})
 
@@ -533,7 +533,7 @@ func (ce *CryptoEnhancer) SetupCryptoEnvironment(runtime *goja.Runtime) error {
 	// 添加 getRandomValues 方法 - crypto-js 也会检查这个方法（浏览器兼容）
 	getRandomValues := func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("getRandomValues requires a typed array"))
+			panic(runtime.NewTypeError("getRandomValues 需要一个类型化数组参数"))
 		}
 
 		arg := call.Arguments[0]
@@ -792,7 +792,7 @@ func (ce *CryptoEnhancer) addNativeRandomUUID(runtime *goja.Runtime, cryptoObj *
 func (ce *CryptoEnhancer) addNativeGetRandomValues(runtime *goja.Runtime, cryptoObj *goja.Object) error {
 	getRandomValues := func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("getRandomValues requires a typed array"))
+			panic(runtime.NewTypeError("getRandomValues 需要一个类型化数组参数"))
 		}
 
 		arg := call.Arguments[0]
@@ -881,12 +881,12 @@ func (ce *CryptoEnhancer) addRSAMethods(runtime *goja.Runtime, cryptoObj *goja.O
 // generateKeyPairSync 生成RSA密钥对
 func (ce *CryptoEnhancer) generateKeyPairSync(runtime *goja.Runtime, call goja.FunctionCall) goja.Value {
 	if len(call.Arguments) < 2 {
-		panic(runtime.NewTypeError("generateKeyPairSync requires type and options parameters"))
+		panic(runtime.NewTypeError("generateKeyPairSync 需要 type 和 options 参数"))
 	}
 
 	keyType := call.Arguments[0].String()
 	if keyType != "rsa" {
-		panic(runtime.NewTypeError("Only 'rsa' key type is supported"))
+		panic(runtime.NewTypeError("仅支持 'rsa' 密钥类型"))
 	}
 
 	// 解析选项
@@ -899,19 +899,19 @@ func (ce *CryptoEnhancer) generateKeyPairSync(runtime *goja.Runtime, call goja.F
 
 	// 验证密钥长度
 	if modulusLength != 1024 && modulusLength != 2048 && modulusLength != 4096 {
-		panic(runtime.NewTypeError("modulusLength must be 1024, 2048, or 4096"))
+		panic(runtime.NewTypeError("modulusLength 必须是 1024、2048 或 4096"))
 	}
 
 	// 生成密钥对
 	privateKey, err := rsa.GenerateKey(rand.Reader, modulusLength)
 	if err != nil {
-		panic(runtime.NewGoError(fmt.Errorf("failed to generate RSA key: %w", err)))
+		panic(runtime.NewGoError(fmt.Errorf("生成 RSA 密钥失败: %w", err)))
 	}
 
 	// 导出公钥为PEM格式
 	publicKeyBytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
 	if err != nil {
-		panic(runtime.NewGoError(fmt.Errorf("failed to marshal public key: %w", err)))
+		panic(runtime.NewGoError(fmt.Errorf("序列化公钥失败: %w", err)))
 	}
 
 	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
@@ -946,7 +946,7 @@ func getHashFunction(hashName string) (hash.Hash, error) {
 	case "sha512":
 		return sha512.New(), nil
 	default:
-		return nil, fmt.Errorf("unsupported hash algorithm: %s", hashName)
+		return nil, fmt.Errorf("不支持的哈希算法: %s", hashName)
 	}
 }
 
@@ -954,7 +954,7 @@ func getHashFunction(hashName string) (hash.Hash, error) {
 func parsePrivateKey(keyPEM string) (*rsa.PrivateKey, error) {
 	block, _ := pem.Decode([]byte(keyPEM))
 	if block == nil {
-		return nil, fmt.Errorf("failed to decode PEM block containing private key")
+		return nil, fmt.Errorf("解码包含私钥的 PEM 块失败")
 	}
 
 	return parsePrivateKeyFromBlock(block)
@@ -971,12 +971,12 @@ func parsePrivateKeyFromBlock(block *pem.Block) (*rsa.PrivateKey, error) {
 	// 尝试 PKCS#8 格式 (-----BEGIN PRIVATE KEY-----)
 	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse private key: %w", err)
+		return nil, fmt.Errorf("解析私钥失败: %w", err)
 	}
 
 	rsaKey, ok := key.(*rsa.PrivateKey)
 	if !ok {
-		return nil, fmt.Errorf("not an RSA private key")
+		return nil, fmt.Errorf("不是 RSA 私钥")
 	}
 
 	return rsaKey, nil
@@ -985,7 +985,7 @@ func parsePrivateKeyFromBlock(block *pem.Block) (*rsa.PrivateKey, error) {
 // publicEncrypt RSA公钥加密
 func (ce *CryptoEnhancer) publicEncrypt(runtime *goja.Runtime, call goja.FunctionCall) goja.Value {
 	if len(call.Arguments) < 2 {
-		panic(runtime.NewTypeError("publicEncrypt requires key and data parameters"))
+		panic(runtime.NewTypeError("publicEncrypt 需要 key 和 data 参数"))
 	}
 
 	// 解析参数
@@ -1036,17 +1036,17 @@ func (ce *CryptoEnhancer) publicEncrypt(runtime *goja.Runtime, call goja.Functio
 	// 解析公钥
 	block, _ := pem.Decode([]byte(keyPEM))
 	if block == nil {
-		panic(runtime.NewTypeError("failed to decode PEM block containing public key"))
+		panic(runtime.NewTypeError("解码包含公钥的 PEM 块失败"))
 	}
 
 	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
-		panic(runtime.NewGoError(fmt.Errorf("failed to parse public key: %w", err)))
+		panic(runtime.NewGoError(fmt.Errorf("解析公钥失败: %w", err)))
 	}
 
 	publicKey, ok := pub.(*rsa.PublicKey)
 	if !ok {
-		panic(runtime.NewTypeError("not an RSA public key"))
+		panic(runtime.NewTypeError("不是 RSA 公钥"))
 	}
 
 	// 执行加密
@@ -1058,12 +1058,12 @@ func (ce *CryptoEnhancer) publicEncrypt(runtime *goja.Runtime, call goja.Functio
 		}
 		encrypted, err = rsa.EncryptOAEP(hashFunc, rand.Reader, publicKey, data, nil)
 		if err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("encryption failed: %w", err)))
+			panic(runtime.NewGoError(fmt.Errorf("加密失败: %w", err)))
 		}
 	} else { // RSA_PKCS1_PADDING
 		encrypted, err = rsa.EncryptPKCS1v15(rand.Reader, publicKey, data)
 		if err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("encryption failed: %w", err)))
+			panic(runtime.NewGoError(fmt.Errorf("加密失败: %w", err)))
 		}
 	}
 
@@ -1074,7 +1074,7 @@ func (ce *CryptoEnhancer) publicEncrypt(runtime *goja.Runtime, call goja.Functio
 // privateDecrypt RSA私钥解密
 func (ce *CryptoEnhancer) privateDecrypt(runtime *goja.Runtime, call goja.FunctionCall) goja.Value {
 	if len(call.Arguments) < 2 {
-		panic(runtime.NewTypeError("privateDecrypt requires key and data parameters"))
+		panic(runtime.NewTypeError("privateDecrypt 需要 key 和 data 参数"))
 	}
 
 	// 解析参数
@@ -1133,12 +1133,12 @@ func (ce *CryptoEnhancer) privateDecrypt(runtime *goja.Runtime, call goja.Functi
 		}
 		decrypted, err = rsa.DecryptOAEP(hashFunc, rand.Reader, privateKey, data, nil)
 		if err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("decryption failed: %w", err)))
+			panic(runtime.NewGoError(fmt.Errorf("解密失败: %w", err)))
 		}
 	} else { // RSA_PKCS1_PADDING
 		decrypted, err = rsa.DecryptPKCS1v15(rand.Reader, privateKey, data)
 		if err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("decryption failed: %w", err)))
+			panic(runtime.NewGoError(fmt.Errorf("解密失败: %w", err)))
 		}
 	}
 
@@ -1149,7 +1149,7 @@ func (ce *CryptoEnhancer) privateDecrypt(runtime *goja.Runtime, call goja.Functi
 // createSign 创建签名对象
 func (ce *CryptoEnhancer) createSign(runtime *goja.Runtime, call goja.FunctionCall) goja.Value {
 	if len(call.Arguments) == 0 {
-		panic(runtime.NewTypeError("createSign requires algorithm parameter"))
+		panic(runtime.NewTypeError("createSign 需要 algorithm 参数"))
 	}
 
 	algorithm := call.Arguments[0].String()
@@ -1161,7 +1161,7 @@ func (ce *CryptoEnhancer) createSign(runtime *goja.Runtime, call goja.FunctionCa
 	// update方法
 	signObj.Set("update", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("update requires data parameter"))
+			panic(runtime.NewTypeError("update 需要 data 参数"))
 		}
 
 		data := call.Arguments[0].String()
@@ -1178,7 +1178,7 @@ func (ce *CryptoEnhancer) createSign(runtime *goja.Runtime, call goja.FunctionCa
 	// sign方法
 	signObj.Set("sign", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("sign requires key parameter"))
+			panic(runtime.NewTypeError("sign 需要 key 参数"))
 		}
 
 		// 解析参数
@@ -1213,12 +1213,12 @@ func (ce *CryptoEnhancer) createSign(runtime *goja.Runtime, call goja.FunctionCa
 		// 解析私钥
 		block, _ := pem.Decode([]byte(keyPEM))
 		if block == nil {
-			panic(runtime.NewTypeError("failed to decode PEM block containing private key"))
+			panic(runtime.NewTypeError("解码包含私钥的 PEM 块失败"))
 		}
 
 		privateKey, err := parsePrivateKeyFromBlock(block)
 		if err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("failed to parse private key: %w", err)))
+			panic(runtime.NewGoError(fmt.Errorf("解析私钥失败: %w", err)))
 		}
 
 		// 计算哈希
@@ -1242,7 +1242,7 @@ func (ce *CryptoEnhancer) createSign(runtime *goja.Runtime, call goja.FunctionCa
 		}
 
 		if err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("signing failed: %w", err)))
+			panic(runtime.NewGoError(fmt.Errorf("签名失败: %w", err)))
 		}
 
 		// 如果指定了编码格式，返回编码后的字符串
@@ -1255,7 +1255,7 @@ func (ce *CryptoEnhancer) createSign(runtime *goja.Runtime, call goja.FunctionCa
 			case "utf8", "utf-8":
 				return runtime.ToValue(string(signature))
 			default:
-				panic(runtime.NewTypeError(fmt.Sprintf("Unsupported encoding: %s", outputEncoding)))
+				panic(runtime.NewTypeError(fmt.Sprintf("不支持的编码: %s", outputEncoding)))
 			}
 		}
 
@@ -1269,7 +1269,7 @@ func (ce *CryptoEnhancer) createSign(runtime *goja.Runtime, call goja.FunctionCa
 // createVerify 创建验证对象
 func (ce *CryptoEnhancer) createVerify(runtime *goja.Runtime, call goja.FunctionCall) goja.Value {
 	if len(call.Arguments) == 0 {
-		panic(runtime.NewTypeError("createVerify requires algorithm parameter"))
+		panic(runtime.NewTypeError("createVerify 需要 algorithm 参数"))
 	}
 
 	algorithm := call.Arguments[0].String()
@@ -1281,7 +1281,7 @@ func (ce *CryptoEnhancer) createVerify(runtime *goja.Runtime, call goja.Function
 	// update方法
 	verifyObj.Set("update", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("update requires data parameter"))
+			panic(runtime.NewTypeError("update 需要 data 参数"))
 		}
 
 		data := call.Arguments[0].String()
@@ -1298,7 +1298,7 @@ func (ce *CryptoEnhancer) createVerify(runtime *goja.Runtime, call goja.Function
 	// verify方法
 	verifyObj.Set("verify", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) < 2 {
-			panic(runtime.NewTypeError("verify requires key and signature parameters"))
+			panic(runtime.NewTypeError("verify 需要 key 和 signature 参数"))
 		}
 
 		// 解析参数
@@ -1343,17 +1343,17 @@ func (ce *CryptoEnhancer) createVerify(runtime *goja.Runtime, call goja.Function
 		// 解析公钥
 		block, _ := pem.Decode([]byte(keyPEM))
 		if block == nil {
-			panic(runtime.NewTypeError("failed to decode PEM block containing public key"))
+			panic(runtime.NewTypeError("解码包含公钥的 PEM 块失败"))
 		}
 
 		pub, err := x509.ParsePKIXPublicKey(block.Bytes)
 		if err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("failed to parse public key: %w", err)))
+			panic(runtime.NewGoError(fmt.Errorf("解析公钥失败: %w", err)))
 		}
 
 		publicKey, ok := pub.(*rsa.PublicKey)
 		if !ok {
-			panic(runtime.NewTypeError("not an RSA public key"))
+			panic(runtime.NewTypeError("不是 RSA 公钥"))
 		}
 
 		// 计算哈希
@@ -1434,7 +1434,7 @@ func (ce *CryptoEnhancer) createBuffer(runtime *goja.Runtime, data []byte) goja.
 // sign 简化的签名API (crypto.sign)
 func (ce *CryptoEnhancer) sign(runtime *goja.Runtime, call goja.FunctionCall) goja.Value {
 	if len(call.Arguments) < 3 {
-		panic(runtime.NewTypeError("sign requires algorithm, data, and key parameters"))
+		panic(runtime.NewTypeError("sign 需要 algorithm、data 和 key 参数"))
 	}
 
 	algorithm := call.Arguments[0].String()
@@ -1482,12 +1482,12 @@ func (ce *CryptoEnhancer) sign(runtime *goja.Runtime, call goja.FunctionCall) go
 	// 解析私钥
 	block, _ := pem.Decode([]byte(keyPEM))
 	if block == nil {
-		panic(runtime.NewTypeError("failed to decode PEM block containing private key"))
+		panic(runtime.NewTypeError("解码包含私钥的 PEM 块失败"))
 	}
 
 	privateKey, err := parsePrivateKeyFromBlock(block)
 	if err != nil {
-		panic(runtime.NewGoError(fmt.Errorf("failed to parse private key: %w", err)))
+		panic(runtime.NewGoError(fmt.Errorf("解析私钥失败: %w", err)))
 	}
 
 	// 计算哈希
@@ -1511,7 +1511,7 @@ func (ce *CryptoEnhancer) sign(runtime *goja.Runtime, call goja.FunctionCall) go
 	}
 
 	if err != nil {
-		panic(runtime.NewGoError(fmt.Errorf("signing failed: %w", err)))
+		panic(runtime.NewGoError(fmt.Errorf("签名失败: %w", err)))
 	}
 
 	return ce.createBuffer(runtime, signature)
@@ -1520,7 +1520,7 @@ func (ce *CryptoEnhancer) sign(runtime *goja.Runtime, call goja.FunctionCall) go
 // verify 简化的验签API (crypto.verify)
 func (ce *CryptoEnhancer) verify(runtime *goja.Runtime, call goja.FunctionCall) goja.Value {
 	if len(call.Arguments) < 4 {
-		panic(runtime.NewTypeError("verify requires algorithm, data, key, and signature parameters"))
+		panic(runtime.NewTypeError("verify 需要 algorithm、data、key 和 signature 参数"))
 	}
 
 	algorithm := call.Arguments[0].String()
@@ -1584,17 +1584,17 @@ func (ce *CryptoEnhancer) verify(runtime *goja.Runtime, call goja.FunctionCall) 
 	// 解析公钥
 	block, _ := pem.Decode([]byte(keyPEM))
 	if block == nil {
-		panic(runtime.NewTypeError("failed to decode PEM block containing public key"))
+		panic(runtime.NewTypeError("解码包含公钥的 PEM 块失败"))
 	}
 
 	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
-		panic(runtime.NewGoError(fmt.Errorf("failed to parse public key: %w", err)))
+		panic(runtime.NewGoError(fmt.Errorf("解析公钥失败: %w", err)))
 	}
 
 	publicKey, ok := pub.(*rsa.PublicKey)
 	if !ok {
-		panic(runtime.NewTypeError("not an RSA public key"))
+		panic(runtime.NewTypeError("不是 RSA 公钥"))
 	}
 
 	// 计算哈希

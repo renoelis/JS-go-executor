@@ -5,8 +5,7 @@ FROM golang:1.24-alpine AS builder
 WORKDIR /app
 
 # 安装必要的包
-RUN apk add --no-cache git ca-certificates tzdata
-
+RUN apk add --no-cache git ca-certificates tzdata curl
 # 复制go.mod和go.sum文件
 COPY go.mod go.sum ./
 
@@ -23,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o flow-codeblock-go
 FROM alpine:latest
 
 # 安装ca-certificates和tzdata
-RUN apk --no-cache add ca-certificates tzdata
+RUN apk --no-cache add ca-certificates tzdata curl
 
 # 创建非root用户
 RUN addgroup -g 1000 appuser && \

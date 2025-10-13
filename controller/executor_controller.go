@@ -68,6 +68,36 @@ func (c *ExecutorController) Execute(ctx *gin.Context) {
 		return
 	}
 
+	// 🔥 Base64 长度预检查（DoS 防护）
+	// 说明：Base64 编码后的长度约为原始长度的 4/3
+	// 在解码前检查可以避免浪费 CPU 和内存资源
+	maxBase64Length := c.executor.GetMaxCodeLength()*4/3 + 4 // +4 用于 padding
+	if len(req.CodeBase64) > maxBase64Length {
+		utils.Warn("拒绝超大 Base64 代码",
+			zap.String("request_id", requestID),
+			zap.Int("base64_length", len(req.CodeBase64)),
+			zap.Int("max_allowed", maxBase64Length),
+			zap.Int("max_code_length", c.executor.GetMaxCodeLength()),
+			zap.String("ip", ctx.ClientIP()))
+
+		ctx.JSON(400, model.ExecuteResponse{
+			Success: false,
+			Error: &model.ExecuteError{
+				Type: "ValidationError",
+				Message: fmt.Sprintf("代码 Base64 编码后过长: %d > %d 字节 (预计解码后将超过 %d 字节限制)",
+					len(req.CodeBase64),
+					maxBase64Length,
+					c.executor.GetMaxCodeLength()),
+			},
+			Timing: &model.ExecuteTiming{
+				TotalTime: time.Since(startTime).Milliseconds(),
+			},
+			Timestamp: utils.FormatTime(utils.Now()),
+			RequestID: requestID,
+		})
+		return
+	}
+
 	// 解码Base64代码
 	codeBytes, err := base64.StdEncoding.DecodeString(req.CodeBase64)
 	if err != nil {

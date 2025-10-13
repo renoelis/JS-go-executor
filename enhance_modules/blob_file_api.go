@@ -22,11 +22,13 @@ type JSFile struct {
 }
 
 // createBlobConstructor 创建 Blob 构造器
+// 🔥 Goja 约定：构造器中使用 panic(runtime.NewTypeError(...)) 抛出 JavaScript 异常
+// 这些 panic 会被上层的 defer recover 捕获，转换为 JavaScript TypeError
 func (fe *FetchEnhancer) createBlobConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) *goja.Object {
 	return func(call goja.ConstructorCall) *goja.Object {
 		// 🔥 安全检查：fe 不能为 nil
 		if fe == nil {
-			panic(runtime.NewTypeError("FetchEnhancer is nil in Blob constructor"))
+			panic(runtime.NewTypeError("Blob 构造函数中 FetchEnhancer 为 nil"))
 		}
 
 		blob := &JSBlob{
@@ -49,7 +51,7 @@ func (fe *FetchEnhancer) createBlobConstructor(runtime *goja.Runtime) func(goja.
 					// 即使数组元素是 undefined，过大的数组长度也会消耗内存
 					arrayLen := int64(len(partsArray))
 					if arrayLen > maxBlobSize {
-						panic(runtime.NewTypeError(fmt.Sprintf("Blob parts array too large: %d elements > %d bytes limit", arrayLen, maxBlobSize)))
+						panic(runtime.NewTypeError(fmt.Sprintf("Blob parts 数组过大：%d 元素 > %d 字节限制", arrayLen, maxBlobSize)))
 					}
 
 					var buffer bytes.Buffer
@@ -63,21 +65,21 @@ func (fe *FetchEnhancer) createBlobConstructor(runtime *goja.Runtime) func(goja.
 							partSize = len(v)
 							// 🔥 检查累积大小（写入前）
 							if accumulatedSize+int64(partSize) > maxBlobSize {
-								panic(runtime.NewTypeError(fmt.Sprintf("Blob size exceeds limit: %d > %d bytes (during construction)", accumulatedSize+int64(partSize), maxBlobSize)))
+								panic(runtime.NewTypeError(fmt.Sprintf("Blob 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+int64(partSize), maxBlobSize)))
 							}
 							buffer.WriteString(v)
 						case []byte:
 							partSize = len(v)
 							// 🔥 检查累积大小（写入前）
 							if accumulatedSize+int64(partSize) > maxBlobSize {
-								panic(runtime.NewTypeError(fmt.Sprintf("Blob size exceeds limit: %d > %d bytes (during construction)", accumulatedSize+int64(partSize), maxBlobSize)))
+								panic(runtime.NewTypeError(fmt.Sprintf("Blob 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+int64(partSize), maxBlobSize)))
 							}
 							buffer.Write(v)
 						case goja.ArrayBuffer:
 							partSize = len(v.Bytes())
 							// 🔥 检查累积大小（写入前）
 							if accumulatedSize+int64(partSize) > maxBlobSize {
-								panic(runtime.NewTypeError(fmt.Sprintf("Blob size exceeds limit: %d > %d bytes (during construction)", accumulatedSize+int64(partSize), maxBlobSize)))
+								panic(runtime.NewTypeError(fmt.Sprintf("Blob 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+int64(partSize), maxBlobSize)))
 							}
 							buffer.Write(v.Bytes())
 						default:
@@ -86,7 +88,7 @@ func (fe *FetchEnhancer) createBlobConstructor(runtime *goja.Runtime) func(goja.
 							partSize = len(str)
 							// 🔥 检查累积大小（写入前）
 							if accumulatedSize+int64(partSize) > maxBlobSize {
-								panic(runtime.NewTypeError(fmt.Sprintf("Blob size exceeds limit: %d > %d bytes (during construction)", accumulatedSize+int64(partSize), maxBlobSize)))
+								panic(runtime.NewTypeError(fmt.Sprintf("Blob 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+int64(partSize), maxBlobSize)))
 							}
 							buffer.WriteString(str)
 						}
@@ -100,7 +102,7 @@ func (fe *FetchEnhancer) createBlobConstructor(runtime *goja.Runtime) func(goja.
 
 		// 🔥 最后再次检查（防御性编程）
 		if len(blob.data) > int(maxBlobSize) {
-			panic(runtime.NewTypeError(fmt.Sprintf("Blob size exceeds limit: %d > %d bytes", len(blob.data), maxBlobSize)))
+			panic(runtime.NewTypeError(fmt.Sprintf("Blob 大小超过限制：%d > %d 字节", len(blob.data), maxBlobSize)))
 		}
 
 		// 第二个参数：options {type: "text/plain"}
@@ -214,11 +216,11 @@ func (fe *FetchEnhancer) createFileConstructor(runtime *goja.Runtime) func(goja.
 	return func(call goja.ConstructorCall) *goja.Object {
 		// 安全检查：fe 不能为 nil
 		if fe == nil {
-			panic(runtime.NewTypeError("FetchEnhancer is nil in File constructor"))
+			panic(runtime.NewTypeError("File 构造函数中 FetchEnhancer 为 nil"))
 		}
 
 		if len(call.Arguments) < 2 {
-			panic(runtime.NewTypeError("File constructor requires at least 2 arguments"))
+			panic(runtime.NewTypeError("File 构造函数需要至少 2 个参数"))
 		}
 
 		file := &JSFile{
@@ -242,7 +244,7 @@ func (fe *FetchEnhancer) createFileConstructor(runtime *goja.Runtime) func(goja.
 				// 即使数组元素是 undefined，过大的数组长度也会消耗内存
 				arrayLen := int64(len(partsArray))
 				if arrayLen > maxFileSize {
-					panic(runtime.NewTypeError(fmt.Sprintf("File parts array too large: %d elements > %d bytes limit", arrayLen, maxFileSize)))
+					panic(runtime.NewTypeError(fmt.Sprintf("File parts 数组过大：%d 元素 > %d 字节限制", arrayLen, maxFileSize)))
 				}
 
 				var buffer bytes.Buffer
@@ -256,21 +258,21 @@ func (fe *FetchEnhancer) createFileConstructor(runtime *goja.Runtime) func(goja.
 						partSize = len(v)
 						// 🔥 检查累积大小（写入前）
 						if accumulatedSize+int64(partSize) > maxFileSize {
-							panic(runtime.NewTypeError(fmt.Sprintf("File size exceeds limit: %d > %d bytes (during construction)", accumulatedSize+int64(partSize), maxFileSize)))
+							panic(runtime.NewTypeError(fmt.Sprintf("File 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+int64(partSize), maxFileSize)))
 						}
 						buffer.WriteString(v)
 					case []byte:
 						partSize = len(v)
 						// 🔥 检查累积大小（写入前）
 						if accumulatedSize+int64(partSize) > maxFileSize {
-							panic(runtime.NewTypeError(fmt.Sprintf("File size exceeds limit: %d > %d bytes (during construction)", accumulatedSize+int64(partSize), maxFileSize)))
+							panic(runtime.NewTypeError(fmt.Sprintf("File 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+int64(partSize), maxFileSize)))
 						}
 						buffer.Write(v)
 					case goja.ArrayBuffer:
 						partSize = len(v.Bytes())
 						// 🔥 检查累积大小（写入前）
 						if accumulatedSize+int64(partSize) > maxFileSize {
-							panic(runtime.NewTypeError(fmt.Sprintf("File size exceeds limit: %d > %d bytes (during construction)", accumulatedSize+int64(partSize), maxFileSize)))
+							panic(runtime.NewTypeError(fmt.Sprintf("File 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+int64(partSize), maxFileSize)))
 						}
 						buffer.Write(v.Bytes())
 					default:
@@ -278,7 +280,7 @@ func (fe *FetchEnhancer) createFileConstructor(runtime *goja.Runtime) func(goja.
 						partSize = len(str)
 						// 🔥 检查累积大小（写入前）
 						if accumulatedSize+int64(partSize) > maxFileSize {
-							panic(runtime.NewTypeError(fmt.Sprintf("File size exceeds limit: %d > %d bytes (during construction)", accumulatedSize+int64(partSize), maxFileSize)))
+							panic(runtime.NewTypeError(fmt.Sprintf("File 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+int64(partSize), maxFileSize)))
 						}
 						buffer.WriteString(str)
 					}
@@ -291,7 +293,7 @@ func (fe *FetchEnhancer) createFileConstructor(runtime *goja.Runtime) func(goja.
 
 		// 🔥 最后再次检查（防御性编程）
 		if len(file.data) > int(maxFileSize) {
-			panic(runtime.NewTypeError(fmt.Sprintf("File size exceeds limit: %d > %d bytes", len(file.data), maxFileSize)))
+			panic(runtime.NewTypeError(fmt.Sprintf("File 大小超过限制：%d > %d 字节", len(file.data), maxFileSize)))
 		}
 
 		// 第二个参数：文件名
@@ -437,24 +439,24 @@ func (fe *FetchEnhancer) RegisterBlobFileAPI(runtime *goja.Runtime) error {
 func (fe *FetchEnhancer) extractBlobData(obj *goja.Object) ([]byte, string, error) {
 	// 检查是否是 Blob 对象
 	if isBlobVal := obj.Get("__isBlob"); goja.IsUndefined(isBlobVal) || !isBlobVal.ToBoolean() {
-		return nil, "", fmt.Errorf("not a Blob object")
+		return nil, "", fmt.Errorf("不是一个 Blob 对象")
 	}
 
 	// 获取数据
 	blobDataVal := obj.Get("__blobData")
 	if goja.IsUndefined(blobDataVal) {
-		return nil, "", fmt.Errorf("invalid Blob object: missing data")
+		return nil, "", fmt.Errorf("无效的 Blob 对象：缺少数据")
 	}
 
 	// 安全的类型断言：先检查 Export() 是否为 nil
 	exported := blobDataVal.Export()
 	if exported == nil {
-		return nil, "", fmt.Errorf("blob data is nil")
+		return nil, "", fmt.Errorf("blob 数据为 nil")
 	}
 
 	blob, ok := exported.(*JSBlob)
 	if !ok {
-		return nil, "", fmt.Errorf("invalid blob data type: got %T", exported)
+		return nil, "", fmt.Errorf("无效的 blob 数据类型：获得 %T", exported)
 	}
 
 	// 检查 Blob 大小限制（安全检查 fe 是否为 nil）
@@ -463,7 +465,7 @@ func (fe *FetchEnhancer) extractBlobData(obj *goja.Object) ([]byte, string, erro
 		maxBlobSize = fe.maxBlobFileSize
 	}
 	if len(blob.data) > int(maxBlobSize) {
-		return nil, "", fmt.Errorf("blob size exceeds limit: %d > %d bytes", len(blob.data), maxBlobSize)
+		return nil, "", fmt.Errorf("blob 大小超过限制：%d > %d 字节", len(blob.data), maxBlobSize)
 	}
 
 	return blob.data, blob.typ, nil
@@ -473,24 +475,24 @@ func (fe *FetchEnhancer) extractBlobData(obj *goja.Object) ([]byte, string, erro
 func (fe *FetchEnhancer) extractFileData(obj *goja.Object) ([]byte, string, string, error) {
 	// 检查是否是 File 对象
 	if isFileVal := obj.Get("__isFile"); goja.IsUndefined(isFileVal) || !isFileVal.ToBoolean() {
-		return nil, "", "", fmt.Errorf("not a File object")
+		return nil, "", "", fmt.Errorf("不是一个 File 对象")
 	}
 
 	// 获取数据
 	fileDataVal := obj.Get("__fileData")
 	if goja.IsUndefined(fileDataVal) {
-		return nil, "", "", fmt.Errorf("invalid File object: missing data")
+		return nil, "", "", fmt.Errorf("无效的 File 对象：缺少数据")
 	}
 
 	// 安全的类型断言：先检查 Export() 是否为 nil
 	exported := fileDataVal.Export()
 	if exported == nil {
-		return nil, "", "", fmt.Errorf("file data is nil")
+		return nil, "", "", fmt.Errorf("file 数据为 nil")
 	}
 
 	file, ok := exported.(*JSFile)
 	if !ok {
-		return nil, "", "", fmt.Errorf("invalid file data type: got %T", exported)
+		return nil, "", "", fmt.Errorf("无效的 file 数据类型：获得 %T", exported)
 	}
 
 	// 检查 File 大小限制（安全检查 fe 是否为 nil）
@@ -499,7 +501,7 @@ func (fe *FetchEnhancer) extractFileData(obj *goja.Object) ([]byte, string, stri
 		maxFileSize = fe.maxBlobFileSize
 	}
 	if len(file.data) > int(maxFileSize) {
-		return nil, "", "", fmt.Errorf("file size exceeds limit: %d > %d bytes", len(file.data), maxFileSize)
+		return nil, "", "", fmt.Errorf("file 大小超过限制：%d > %d 字节", len(file.data), maxFileSize)
 	}
 
 	return file.data, file.typ, file.name, nil

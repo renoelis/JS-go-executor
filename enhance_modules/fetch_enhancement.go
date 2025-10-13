@@ -3,7 +3,6 @@ package enhance_modules
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,30 +21,236 @@ import (
 	"go.uber.org/zap"
 )
 
-// randReader 全局随机数读取器（用于生成边界）
-var randReader = rand.Reader
-
-// bodyWithCancel 包装 io.ReadCloser，在关闭时取消 context
+// bodyWithCancel 包装 io.ReadCloser，提供多层超时保护
+// 🔥 v2.4.3: 增加空闲超时机制，防止资源泄漏
+// 🔥 v2.5.0: 动态超时 - 根据响应大小智能调整超时时间
+// 🔥 v2.5.1: 修复 - 区分"空闲"和"活跃读取"，避免误杀正在使用的 stream
+// 🔥 v2.5.3: 双重超时保护 + 延迟 context 取消（适配 60秒执行超时）
+//   - cancel 在 body.Close() 时调用，确保读取时 context 有效
+//   - 空闲超时：完全不读取时触发（递进式：10-20-30秒，基于文件大小）
+//   - 总时长超时：活跃读取但时间过长时触发（默认 35秒）
+//     ⚠️ 所有超时必须 < EXECUTION_TIMEOUT（60秒），否则会被代码执行超时抢先触发
 type bodyWithCancel struct {
 	io.ReadCloser
-	cancel context.CancelFunc
+	cancel        context.CancelFunc // 🔥 延迟取消：在 Close() 时调用，防止过早取消导致 body 读取失败
+	idleTimer     *time.Timer        // 🔥 空闲超时 timer（第一次读取后停止）
+	totalTimer    *time.Timer        // 🔥 总时长超时 timer（防止慢速读取攻击）
+	mutex         sync.Mutex         // 🔥 保护 closed 状态
+	closed        bool               // 🔥 标记是否已关闭
+	idleTimeout   time.Duration      // 🔥 空闲超时配置
+	totalTimeout  time.Duration      // 🔥 总时长超时配置
+	contentLength int64              // 🔥 响应大小（用于日志）
+	hasRead       bool               // 🔥 标记是否已开始读取
+	createdAt     time.Time          // 🔥 创建时间（用于总时长计算）
 }
 
-func (b *bodyWithCancel) Close() error {
-	err := b.ReadCloser.Close()
-	if b.cancel != nil {
-		b.cancel() // 关闭时取消 context
+// Read 读取数据，管理双重超时
+func (b *bodyWithCancel) Read(p []byte) (n int, err error) {
+	b.mutex.Lock()
+	// 🔥 第一次读取时，停止空闲超时 timer
+	// 原因：一旦开始读取，说明 stream 正在被使用，不应该有空闲超时
+	// 但总时长超时 timer 继续运行（防止慢速读取攻击）
+	if !b.hasRead && b.idleTimer != nil {
+		b.idleTimer.Stop()
+		b.idleTimer = nil // 释放空闲 timer
+		b.hasRead = true
 	}
+	b.mutex.Unlock()
+
+	return b.ReadCloser.Read(p)
+}
+
+// Close 关闭 body 并取消 context
+// 🔥 v2.5.3: 延迟取消 - 在 body 关闭时才取消 context（保证 body 可读）
+func (b *bodyWithCancel) Close() error {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+
+	if b.closed {
+		return nil
+	}
+	b.closed = true
+
+	// 停止所有超时 timer
+	if b.idleTimer != nil {
+		b.idleTimer.Stop()
+	}
+	if b.totalTimer != nil {
+		b.totalTimer.Stop()
+	}
+
+	// 关闭底层 ReadCloser
+	err := b.ReadCloser.Close()
+
+	// 🔥 关键：在 body 关闭后才取消 context
+	// 这样可以确保：
+	//   1. body 读取时 context 仍然有效
+	//   2. body 关闭后立即释放 context（防止泄漏）
+	//   3. 即使 body 被传递给 FormData，只要 FormData 在读取，body 就不会 Close
+	if b.cancel != nil {
+		b.cancel()
+	}
+
 	return err
+}
+
+// calculateIdleTimeout 根据响应大小计算合理的空闲超时时间
+// 🔥 v2.5.0: 动态超时策略
+// 🔥 v2.5.3: 适配执行超时限制（确保 idleTimer < EXECUTION_TIMEOUT）
+//
+// 设计思路：
+// - 小响应 (< 1MB):  最小 10 秒（给用户足够的处理时间）
+// - 中等响应 (< 10MB): 最小 20 秒（更宽松的处理时间）
+// - 大响应 (>= 10MB): 最小 30 秒（充足的准备时间）
+// - 未知大小: 保守策略，最小 20 秒
+//
+// 计算示例（baseTimeout = 30秒）：
+// - 小响应 < 1MB:   30秒 / 18 ≈ 1.6秒 → 最小 10秒 ✅
+// - 中等响应 < 10MB: 30秒 / 6 = 5秒 → 最小 20秒 ✅
+// - 大响应 >= 10MB:  30秒 → 最小 30秒 ✅
+// - 未知大小:        30秒 / 6 = 5秒 → 最小 20秒 ✅
+//
+// 最小值说明（10-20-30 递进）：
+//   - idleTimer 的作用：防止用户"完全不读取" body 导致资源泄漏
+//   - 触发条件："从创建到第一次 Read()" 的时间
+//   - 用户可能的操作：验证 headers、记录日志、条件判断等
+//   - 10-20-30 秒给用户充足的时间，避免误杀正常流程
+//
+// ⚠️ 重要：baseTimeout 应配置为 < EXECUTION_TIMEOUT，否则大文件的 idleTimer 永远不会触发
+func calculateIdleTimeout(contentLength int64, baseTimeout time.Duration) time.Duration {
+	// 兜底检查：如果基础超时无效，使用默认值
+	if baseTimeout <= 0 {
+		baseTimeout = 30 * time.Second // 🔥 默认 30秒（适配 60秒执行超时）
+	}
+
+	// 未知大小（Content-Length <= 0）：使用基础超时的 1/6
+	// 策略：保守处理，给予中等超时
+	if contentLength <= 0 {
+		timeout := baseTimeout / 6
+		if timeout < 20*time.Second {
+			timeout = 20 * time.Second // 🔥 最小 20 秒（未知大小，保守策略）
+		}
+		return timeout
+	}
+
+	// 根据响应大小动态调整
+	switch {
+	case contentLength < 1024*1024: // < 1MB
+		// 小响应：最小 10 秒
+		// 示例：baseTimeout=30秒 → 30/18 ≈ 1.6秒 → 最小 10 秒
+		// 理由：用户可能在读取前有处理逻辑（验证、日志、header 检查等）
+		timeout := baseTimeout / 18
+		if timeout < 10*time.Second {
+			timeout = 10 * time.Second
+		}
+		return timeout
+
+	case contentLength < 10*1024*1024: // < 10MB
+		// 中等响应：最小 20 秒
+		// 示例：baseTimeout=30秒 → 30/6 = 5秒 → 最小 20 秒
+		timeout := baseTimeout / 6
+		if timeout < 20*time.Second {
+			timeout = 20 * time.Second
+		}
+		return timeout
+
+	default: // >= 10MB
+		// 大响应：最小 30 秒
+		// 示例：baseTimeout=30秒 → 30秒 ✅
+		timeout := baseTimeout
+		if timeout < 30*time.Second {
+			timeout = 30 * time.Second
+		}
+		return timeout
+	}
+}
+
+// createBodyWithCancel 创建带双重超时保护的 bodyWithCancel
+// 🔥 v2.4.3: 增加空闲超时机制，防止资源泄漏
+// 🔥 v2.5.0: 动态超时 - 根据响应大小智能调整
+// 🔥 v2.5.3: 双重超时保护 + 延迟 context 取消
+func (fe *FetchEnhancer) createBodyWithCancel(body io.ReadCloser, contentLength int64, totalTimeout time.Duration, cancel context.CancelFunc) *bodyWithCancel {
+	// 🔥 空闲超时：完全不读取时触发（防止忘记 close）
+	baseIdleTimeout := fe.responseBodyIdleTimeout
+	if baseIdleTimeout <= 0 {
+		baseIdleTimeout = 30 * time.Second // 🔥 默认 30秒（适配 60秒执行超时）
+	}
+	idleTimeout := calculateIdleTimeout(contentLength, baseIdleTimeout)
+
+	// 🔥 总时长超时：防止慢速读取攻击
+	// 示例：恶意代码每 10 秒读 1 字节，可以长时间占用连接
+	if totalTimeout <= 0 {
+		totalTimeout = 35 * time.Second // 🔥 默认 35秒（适配 60秒执行超时，留 5 秒缓冲）
+	}
+
+	wrapper := &bodyWithCancel{
+		ReadCloser:    body,
+		cancel:        cancel, // 🔥 保存 cancel，在 Close() 时调用
+		idleTimeout:   idleTimeout,
+		totalTimeout:  totalTimeout,
+		contentLength: contentLength,
+		createdAt:     time.Now(),
+	}
+
+	// 🔥 空闲超时 timer（第一次读取后停止）
+	wrapper.idleTimer = time.AfterFunc(idleTimeout, func() {
+		wrapper.mutex.Lock()
+		if !wrapper.closed {
+			sizeMB := float64(contentLength) / 1024 / 1024
+			utils.Warn("HTTP response body 空闲超时,自动关闭（防止连接泄漏）",
+				zap.Duration("idle_timeout", idleTimeout),
+				zap.Float64("content_length_mb", sizeMB),
+				zap.Duration("base_timeout", totalTimeout),
+				zap.String("提示", "建议使用 response.json()/text() 或 response.body.cancel()"))
+			wrapper.mutex.Unlock()
+			wrapper.Close()
+		} else {
+			wrapper.mutex.Unlock()
+		}
+	})
+
+	// 🔥 总时长超时 timer（始终运行，防止慢速读取攻击）
+	wrapper.totalTimer = time.AfterFunc(totalTimeout, func() {
+		wrapper.mutex.Lock()
+		if !wrapper.closed {
+			elapsed := time.Since(wrapper.createdAt)
+			sizeMB := float64(contentLength) / 1024 / 1024
+			utils.Warn("HTTP response body 读取超时,自动关闭（防止慢速读取攻击）",
+				zap.Duration("total_timeout", totalTimeout),
+				zap.Duration("elapsed", elapsed),
+				zap.Float64("content_length_mb", sizeMB),
+				zap.String("提示", "响应读取时间过长，可能是慢速攻击"))
+			wrapper.mutex.Unlock()
+			wrapper.Close()
+		} else {
+			wrapper.mutex.Unlock()
+		}
+	})
+
+	return wrapper
+}
+
+// HTTPTransportConfig HTTP Transport 配置
+type HTTPTransportConfig struct {
+	MaxIdleConns          int           // 最大空闲连接数
+	MaxIdleConnsPerHost   int           // 每个 host 的最大空闲连接数
+	MaxConnsPerHost       int           // 每个 host 的最大连接数
+	IdleConnTimeout       time.Duration // 空闲连接超时
+	DialTimeout           time.Duration // 连接建立超时
+	KeepAlive             time.Duration // Keep-Alive 间隔
+	TLSHandshakeTimeout   time.Duration // TLS 握手超时
+	ExpectContinueTimeout time.Duration // 期望继续超时
+	ForceHTTP2            bool          // 启用 HTTP/2
 }
 
 // FetchEnhancer Fetch API 增强器
 type FetchEnhancer struct {
-	client         *http.Client
-	allowedDomains []string      // 白名单域名 (安全功能)
-	maxRespSize    int64         // 最大响应大小（非流式）
-	maxStreamSize  int64         // 🔥 最大流式响应大小（0表示不限制）
-	defaultTimeout time.Duration // 默认超时
+	client              *http.Client
+	allowedDomains      []string      // 白名单域名 (安全功能)
+	maxRespSize         int64         // 最大响应大小（非流式）
+	maxStreamSize       int64         // 🔥 最大流式响应大小（0表示不限制）
+	requestTimeout      time.Duration // 🔥 HTTP 请求超时（连接+发送+响应头）
+	responseReadTimeout time.Duration // 🔥 响应读取总时长超时（防止慢速读取攻击）
 
 	// 🔥 新增：FormData 流式处理配置
 	formDataConfig  *FormDataStreamConfig
@@ -53,6 +258,9 @@ type FetchEnhancer struct {
 
 	// 🔥 新增：Body 类型处理器
 	bodyHandler *BodyTypeHandler
+
+	// 🔥 v2.4.3: 响应体空闲超时（防止资源泄漏）
+	responseBodyIdleTimeout time.Duration
 }
 
 // FetchRequest 异步 Fetch 请求结构
@@ -71,13 +279,39 @@ type FetchResult struct {
 
 // NewFetchEnhancer 创建 Fetch 增强器（简化版本）
 func NewFetchEnhancer(timeout time.Duration) *FetchEnhancer {
-	return NewFetchEnhancerWithConfig(timeout, 1*1024*1024, 100*1024*1024, true, 0, 2*1024*1024, 50*1024*1024, 1*1024*1024, 100*1024*1024)
+	// 使用默认 HTTP Transport 配置
+	defaultTransportConfig := &HTTPTransportConfig{
+		MaxIdleConns:          50,
+		MaxIdleConnsPerHost:   10,
+		MaxConnsPerHost:       100,
+		IdleConnTimeout:       90 * time.Second,
+		DialTimeout:           10 * time.Second,
+		KeepAlive:             30 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceHTTP2:            true,
+	}
+	return NewFetchEnhancerWithConfig(
+		timeout,       // 请求超时
+		5*time.Minute, // 响应读取超时（默认 5 分钟）
+		1*1024*1024,
+		100*1024*1024,
+		true,
+		0,
+		2*1024*1024,
+		50*1024*1024,
+		1*1024*1024,
+		100*1024*1024,
+		defaultTransportConfig,
+		5*time.Minute, // 默认 5 分钟空闲超时
+	)
 }
 
 // NewFetchEnhancerWithConfig 创建带配置的 Fetch 增强器
 // 🔥 新方案：支持差异化的 FormData 限制和流式下载限制
 func NewFetchEnhancerWithConfig(
-	timeout time.Duration,
+	requestTimeout time.Duration, // HTTP 请求超时（连接+发送+响应头）
+	responseReadTimeout time.Duration, // 🔥 新增：响应读取总时长超时
 	maxBufferedFormDataSize, maxStreamingFormDataSize int64, // FormData 差异化限制
 	enableChunked bool,
 	maxBlobFileSize int64,
@@ -85,32 +319,34 @@ func NewFetchEnhancerWithConfig(
 	maxFileSize int64,
 	maxResponseSize int64, // 缓冲读取限制（arrayBuffer/blob/text/json）
 	maxStreamingSize int64, // 流式读取限制（getReader）
+	httpTransportConfig *HTTPTransportConfig, // 🔥 HTTP Transport 配置（新增）
+	responseBodyIdleTimeout time.Duration, // 🔥 v2.4.3: 响应体空闲超时（防止资源泄漏）
 ) *FetchEnhancer {
-	// 🔥 优化：配置高性能且安全的 HTTP Transport
+	// 🔥 优化：配置高性能且安全的 HTTP Transport（使用环境变量配置）
 	transport := &http.Transport{
 		// 连接池配置
-		MaxIdleConns:        50,               // 最大空闲连接数（合理值，避免过多占用）
-		MaxIdleConnsPerHost: 10,               // 每个 host 的最大空闲连接数（合理值）
-		MaxConnsPerHost:     100,              // 🚨 安全修复：限制每个 host 的最大连接数，防止慢速攻击
-		IdleConnTimeout:     90 * time.Second, // 空闲连接超时
+		MaxIdleConns:        httpTransportConfig.MaxIdleConns,        // 最大空闲连接数（可配置）
+		MaxIdleConnsPerHost: httpTransportConfig.MaxIdleConnsPerHost, // 每个 host 的最大空闲连接数（可配置）
+		MaxConnsPerHost:     httpTransportConfig.MaxConnsPerHost,     // 🚨 安全修复：限制每个 host 的最大连接数，防止慢速攻击（可配置）
+		IdleConnTimeout:     httpTransportConfig.IdleConnTimeout,     // 空闲连接超时（可配置）
 
 		// 连接超时配置
 		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second, // 连接建立超时
-			KeepAlive: 30 * time.Second, // Keep-Alive 间隔
+			Timeout:   httpTransportConfig.DialTimeout, // 连接建立超时（可配置）
+			KeepAlive: httpTransportConfig.KeepAlive,   // Keep-Alive 间隔（可配置）
 		}).DialContext,
 
 		// TLS 握手超时
-		TLSHandshakeTimeout: 10 * time.Second,
+		TLSHandshakeTimeout: httpTransportConfig.TLSHandshakeTimeout, // TLS 握手超时（可配置）
 
-		// 响应头超时（使用传入的 timeout 参数，支持大文件上传）
-		ResponseHeaderTimeout: timeout,
+		// 响应头超时（使用请求超时）
+		ResponseHeaderTimeout: requestTimeout, // 🔥 修正：使用请求超时
 
 		// 期望继续超时
-		ExpectContinueTimeout: 1 * time.Second,
+		ExpectContinueTimeout: httpTransportConfig.ExpectContinueTimeout, // 期望继续超时（可配置）
 
 		// 启用 HTTP/2
-		ForceAttemptHTTP2: true,
+		ForceAttemptHTTP2: httpTransportConfig.ForceHTTP2, // 启用 HTTP/2（可配置）
 	}
 
 	// FormData 流式处理配置
@@ -124,7 +360,7 @@ func NewFetchEnhancerWithConfig(
 		EnableChunkedUpload: enableChunked,
 		BufferSize:          bufferSize,
 		MaxFileSize:         maxFileSize,
-		Timeout:             timeout, // 🔥 HTTP 请求超时（用于 FormData 写入超时）
+		Timeout:             requestTimeout, // 🔥 HTTP 请求超时（用于 FormData 写入超时）
 
 		// 🔧 废弃但保留兼容
 		MaxFormDataSize:    maxBufferedFormDataSize, // 向后兼容
@@ -138,7 +374,7 @@ func NewFetchEnhancerWithConfig(
 
 	return &FetchEnhancer{
 		client: &http.Client{
-			Timeout:   timeout,
+			Timeout:   requestTimeout, // 🔥 HTTP 请求超时
 			Transport: transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
@@ -148,13 +384,15 @@ func NewFetchEnhancerWithConfig(
 			},
 		},
 		// 不限制域名，允许所有域名
-		allowedDomains:  []string{},
-		maxRespSize:     maxResponseSize,  // 🔥 使用配置的响应大小限制（非流式）
-		maxStreamSize:   maxStreamingSize, // 🔥 流式下载大小限制（0表示不限制）
-		defaultTimeout:  timeout,
-		formDataConfig:  formDataConfig,
-		maxBlobFileSize: maxBlobFileSize,
-		bodyHandler:     NewBodyTypeHandler(), // 🔥 初始化 Body 类型处理器
+		allowedDomains:          []string{},
+		maxRespSize:             maxResponseSize,     // 🔥 使用配置的响应大小限制（非流式）
+		maxStreamSize:           maxStreamingSize,    // 🔥 流式下载大小限制（0表示不限制）
+		requestTimeout:          requestTimeout,      // 🔥 HTTP 请求超时
+		responseReadTimeout:     responseReadTimeout, // 🔥 响应读取超时
+		formDataConfig:          formDataConfig,
+		maxBlobFileSize:         maxBlobFileSize,
+		bodyHandler:             NewBodyTypeHandler(maxBlobFileSize), // 🔥 传递配置的 maxBlobFileSize
+		responseBodyIdleTimeout: responseBodyIdleTimeout,             // 🔥 v2.4.3: 响应体空闲超时
 	}
 }
 
@@ -179,12 +417,12 @@ func (fe *FetchEnhancer) RegisterFetchAPI(runtime *goja.Runtime) error {
 
 	// 🔥 新增：注册 Blob/File API
 	if err := fe.RegisterBlobFileAPI(runtime); err != nil {
-		return fmt.Errorf("failed to register Blob/File API: %w", err)
+		return fmt.Errorf("注册 Blob/File API 失败: %w", err)
 	}
 
 	// 🔥 新增：注册 URLSearchParams API
 	if err := RegisterURLSearchParams(runtime); err != nil {
-		return fmt.Errorf("failed to register URLSearchParams: %w", err)
+		return fmt.Errorf("注册 URLSearchParams 失败: %w", err)
 	}
 
 	return nil
@@ -195,12 +433,12 @@ func (fe *FetchEnhancer) RegisterFetchAPI(runtime *goja.Runtime) error {
 func (fe *FetchEnhancer) fetch(runtime *goja.Runtime, call goja.FunctionCall) goja.Value {
 	// 1. 参数验证
 	if len(call.Arguments) == 0 {
-		panic(runtime.NewTypeError("fetch: At least 1 argument required"))
+		panic(runtime.NewTypeError("fetch: 至少需要 1 个参数"))
 	}
 
 	url := call.Arguments[0].String()
 	if url == "" {
-		panic(runtime.NewTypeError("fetch: URL cannot be empty"))
+		panic(runtime.NewTypeError("fetch: URL 不能为空"))
 	}
 
 	// 2. 解析选项参数
@@ -242,12 +480,12 @@ func (fe *FetchEnhancer) fetch(runtime *goja.Runtime, call goja.FunctionCall) go
 						// 直接使用 StreamingFormData
 						reader, err := streamingFormData.CreateReader()
 						if err != nil {
-							reject(runtime.NewTypeError("Failed to create FormData reader: " + err.Error()))
+							reject(runtime.NewTypeError("创建 FormData reader 失败: " + err.Error()))
 							return runtime.ToValue(promise)
 						}
 						options["__formDataBody"] = reader
 						options["__formDataBoundary"] = streamingFormData.boundary
-						// 🔥 v2.4.2: 保存 StreamingFormData 对象，以便在 doFetch 中注入 context
+						// 🔥 保存 StreamingFormData 对象，以便在 doFetch 中立即注入 context
 						options["__streamingFormData"] = streamingFormData
 
 						// 自动设置 Content-Type (如果用户没有手动设置)
@@ -261,58 +499,58 @@ func (fe *FetchEnhancer) fetch(runtime *goja.Runtime, call goja.FunctionCall) go
 							}
 						}
 					} else {
-						reject(runtime.NewTypeError("Invalid Node.js FormData object"))
+						reject(runtime.NewTypeError("无效的 Node.js FormData 对象"))
 						return runtime.ToValue(promise)
 					}
 				} else {
 					// 方案2: 降级到 getBuffer()
 					getBufferFunc := bodyObj.Get("getBuffer")
 					if goja.IsUndefined(getBufferFunc) {
-						reject(runtime.NewTypeError("Node.js FormData missing getBuffer method"))
+						reject(runtime.NewTypeError("Node.js FormData 缺少 getBuffer 方法"))
 						return runtime.ToValue(promise)
 					}
 
 					getBuffer, ok := goja.AssertFunction(getBufferFunc)
 					if !ok {
-						reject(runtime.NewTypeError("getBuffer is not a function"))
+						reject(runtime.NewTypeError("getBuffer 不是一个函数"))
 						return runtime.ToValue(promise)
 					}
 
 					// 调用 getBuffer() 获取数据
 					bufferVal, err := getBuffer(bodyObj)
 					if err != nil {
-						reject(runtime.NewTypeError("Failed to call getBuffer: " + err.Error()))
+						reject(runtime.NewTypeError("调用 getBuffer 失败: " + err.Error()))
 						return runtime.ToValue(promise)
 					}
 
 					// 提取 Buffer 数据
 					bufferObj := bufferVal.ToObject(runtime)
 					if bufferObj == nil {
-						reject(runtime.NewTypeError("getBuffer did not return a Buffer"))
+						reject(runtime.NewTypeError("getBuffer 没有返回 Buffer"))
 						return runtime.ToValue(promise)
 					}
 
 					// 从 Buffer 提取字节数据
 					data, err := fe.extractBufferBytes(bufferObj)
 					if err != nil {
-						reject(runtime.NewTypeError("Failed to extract buffer data: " + err.Error()))
+						reject(runtime.NewTypeError("提取 buffer 数据失败: " + err.Error()))
 						return runtime.ToValue(promise)
 					}
 
 					// 获取 boundary
 					boundaryVal := bodyObj.Get("getBoundary")
 					if goja.IsUndefined(boundaryVal) {
-						reject(runtime.NewTypeError("Node.js FormData missing getBoundary method"))
+						reject(runtime.NewTypeError("Node.js FormData 缺少 getBoundary 方法"))
 						return runtime.ToValue(promise)
 					}
 					getBoundaryFunc, ok := goja.AssertFunction(boundaryVal)
 					if !ok {
-						reject(runtime.NewTypeError("getBoundary is not a function"))
+						reject(runtime.NewTypeError("getBoundary 不是一个函数"))
 						return runtime.ToValue(promise)
 					}
 					boundaryResult, err := getBoundaryFunc(bodyObj)
 					if err != nil {
-						reject(runtime.NewTypeError("Failed to call getBoundary: " + err.Error()))
+						reject(runtime.NewTypeError("调用 getBoundary 失败: " + err.Error()))
 						return runtime.ToValue(promise)
 					}
 					boundary := boundaryResult.String()
@@ -338,7 +576,7 @@ func (fe *FetchEnhancer) fetch(runtime *goja.Runtime, call goja.FunctionCall) go
 				bodyReaderOrBytes, boundary, err := fe.extractFormDataInCurrentThread(bodyObj)
 				if err != nil {
 					// ✅ 优化: 使用 Promise.reject 替代 panic
-					reject(runtime.NewTypeError("Failed to extract FormData: " + err.Error()))
+					reject(runtime.NewTypeError("提取 FormData 失败: " + err.Error()))
 					return runtime.ToValue(promise)
 				}
 
@@ -352,43 +590,43 @@ func (fe *FetchEnhancer) fetch(runtime *goja.Runtime, call goja.FunctionCall) go
 
 				// 安全检查
 				if fe.bodyHandler == nil {
-					reject(runtime.NewTypeError("bodyHandler is nil"))
+					reject(runtime.NewTypeError("bodyHandler 为 nil"))
 					return runtime.ToValue(promise)
 				}
 
 				if bodyObj == nil {
-					reject(runtime.NewTypeError("bodyObj is nil"))
+					reject(runtime.NewTypeError("bodyObj 为 nil"))
 					return runtime.ToValue(promise)
 				}
 
-				reader, contentType, _, err := fe.bodyHandler.ProcessBody(runtime, bodyObj)
+				// 🔥 重构优化：ProcessBody 直接返回 []byte，避免不必要的 Reader 包装
+				data, reader, ct, err := fe.bodyHandler.ProcessBody(runtime, bodyObj)
 				if err != nil {
-					reject(runtime.NewTypeError("Failed to process body: " + err.Error()))
+					reject(runtime.NewTypeError("处理 body 失败: " + err.Error()))
 					return runtime.ToValue(promise)
 				}
 
-				if reader != nil {
-					// 成功处理，读取为字节数组（因为 io.Reader 不能跨 goroutine）
-					data, err := io.ReadAll(reader)
-					if err != nil {
-						reject(runtime.NewTypeError("Failed to read body: " + err.Error()))
-						return runtime.ToValue(promise)
-					}
-					options["body"] = data // 转换为 []byte
-					if contentType != "" {
+				if data != nil {
+					// 已知大小的数据（TypedArray/ArrayBuffer/Blob/URLSearchParams）
+					options["body"] = data
+					if ct != "" {
 						// 如果没有手动设置 Content-Type，则使用自动检测的
 						if headers, ok := options["headers"].(map[string]interface{}); ok {
 							if _, hasContentType := headers["Content-Type"]; !hasContentType {
-								headers["Content-Type"] = contentType
+								headers["Content-Type"] = ct
 							}
 						} else {
 							options["headers"] = map[string]interface{}{
-								"Content-Type": contentType,
+								"Content-Type": ct,
 							}
 						}
 					}
+				} else if reader != nil {
+					// 真正的流式数据（用户传入的 io.Reader）
+					// 这种情况很少见，通常是高级用法
+					options["body"] = reader
 				}
-				// 如果 reader == nil，表示需要 JSON 序列化，保持原样
+				// 如果 data 和 reader 都为 nil，表示需要 JSON 序列化，保持原样
 			}
 		}
 		// 清理临时字段
@@ -478,7 +716,7 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 				body = bytes.NewReader(v)
 				contentLength = int64(len(v))
 			default:
-				req.resultCh <- FetchResult{nil, fmt.Errorf("invalid FormData body type: %T", formDataBody)}
+				req.resultCh <- FetchResult{nil, fmt.Errorf("无效的 FormData body 类型: %T", formDataBody)}
 				return
 			}
 		}
@@ -499,7 +737,7 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 			// 默认 JSON 序列化
 			jsonData, err := json.Marshal(v)
 			if err != nil {
-				req.resultCh <- FetchResult{nil, fmt.Errorf("invalid body type: cannot serialize to JSON")}
+				req.resultCh <- FetchResult{nil, fmt.Errorf("无效的 body 类型: 无法序列化为 JSON")}
 				return
 			}
 			body = bytes.NewReader(jsonData)
@@ -508,42 +746,52 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 		}
 	}
 
-	// 3. 创建上下文 (带超时)
-	// 🔥 新方案：fetch 默认返回流式响应（符合标准 Fetch API）
-	// StreamReader 负责生命周期管理，context 不会自动超时
-	var ctx context.Context
-	var cancel context.CancelFunc
-	var cancelHandled bool // 标记 cancel 是否已被处理
+	// 3. 创建请求上下文
+	// 🔥 v2.5.3: 延迟 context 取消策略
+	//   - context 用于整个 HTTP 事务（请求+响应读取）
+	//   - cancel 传递给 bodyWithCancel，在 body.Close() 时调用
+	//   - 双重 timer 提供额外保护（idleTimer + totalTimer）
+	//
+	// 生命周期：
+	//   1. 创建 context（带超时）
+	//   2. HTTP 请求使用这个 context
+	//   3. body 持有 cancel，读取时 context 仍有效
+	//   4. body.Close() 时调用 cancel，释放 context ✅
+	//
+	// 为什么不能在请求完成后立即 cancel：
+	//   - resp.Body 底层仍依赖 request context（特别是 HTTP/2）
+	//   - 过早 cancel 会导致 body 读取失败（context canceled 错误）
+	reqCtx, reqCancel := context.WithTimeout(context.Background(), fe.requestTimeout)
 
-	ctx, cancel = context.WithCancel(context.Background())
-	// 🔥 防御性 defer：确保异常路径上 cancel 被调用
-	defer func() {
-		if !cancelHandled {
-			cancel() // 如果没有被 bodyWrapper 接管，这里清理
-		}
-	}()
+	// 🔥 v2.4.2: 为上传 FormData 创建独立的 context
+	// 注意：这是上传阶段的 context，与下载响应的 context 独立
+	var uploadCtx context.Context
+	var uploadCancel context.CancelFunc
 
-	// 🔥 v2.4.2: 如果 body 是 FormData，将 context 传递给它
-	// 这样当 HTTP 请求取消时，FormData 的 Writer goroutine 也会立即退出
 	if formDataBody, ok := req.options["__formDataBody"]; ok {
 		if streamingFormData, ok := req.options["__streamingFormData"].(*StreamingFormData); ok {
-			// 注入 context 到 FormData 配置
+			// 为 FormData 上传创建独立的 context（带超时）
+			uploadCtx, uploadCancel = context.WithTimeout(context.Background(), fe.requestTimeout)
+			// 🔥 注意：uploadCancel 会在请求完成或失败时调用
+
+			// 立即注入到 FormData 配置
 			if streamingFormData.config != nil {
-				streamingFormData.config.Context = ctx
+				streamingFormData.config.Context = uploadCtx
 			}
 		}
-		// 对于已经创建的 Reader，我们无法修改其 context
-		// 但好消息是：HTTP 客户端在 context 取消时会关闭 request.Body
-		// 这会导致 io.Pipe 的 Reader 端关闭，进而触发 Writer 端退出
-		// 所以即使没有 context，也能正常清理（只是稍慢一点）
 		_ = formDataBody // 避免未使用警告
 	}
 
-	// 4. 创建 HTTP 请求
-	httpReq, err := http.NewRequestWithContext(ctx, method, req.url, body)
+	// 4. 创建 HTTP 请求（使用请求阶段 context）
+	httpReq, err := http.NewRequestWithContext(reqCtx, method, req.url, body)
 	if err != nil {
-		cancel() // 🔥 修复：确保 cancel 被调用，防止 context 泄漏
-		req.resultCh <- FetchResult{nil, fmt.Errorf("failed to create request: %w", err)}
+		// 清理上传 context（如果有）
+		if uploadCancel != nil {
+			uploadCancel()
+		}
+		// 🔥 清理请求 context（避免 context 泄漏）
+		reqCancel()
+		req.resultCh <- FetchResult{nil, fmt.Errorf("创建请求失败: %w", err)}
 		return
 	}
 
@@ -569,7 +817,12 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 
 	// 6. 协议安全检查
 	if err := fe.checkProtocol(httpReq.URL.Scheme); err != nil {
-		cancel() // 🔥 修复：确保 cancel 被调用，防止 context 泄漏
+		// 清理上传 context（如果有）
+		if uploadCancel != nil {
+			uploadCancel()
+		}
+		// 🔥 清理请求 context（避免 context 泄漏）
+		reqCancel()
 		req.resultCh <- FetchResult{nil, err}
 		return
 	}
@@ -585,63 +838,76 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 	var reqErr error
 
 	go func() {
+		defer close(done) // 🔥 确保 done 总会关闭（防御异常情况）
 		resp, reqErr = fe.client.Do(httpReq)
-		close(done)
 	}()
 
-	// 🔥 资源泄漏修复: 使用 defer 确保 resp.Body 总是被关闭
-	// 无论是正常完成、取消还是超时，都会清理资源
-	// 🔥 新方案：总是流式模式，由 StreamReader 管理生命周期
-	shouldCloseBody := false // 总是由 StreamReader 负责关闭
+	// 🔥 资源清理策略
+	// shouldCloseBody: 是否需要在 defer 中关闭 resp.Body
+	// shouldCancelContext: 是否需要在 defer 中取消 context
+	shouldCloseBody := true     // 默认需要清理 body
+	shouldCancelContext := true // 默认需要取消 context
+
 	defer func() {
+		// 清理上传 context（如果有）
+		if uploadCancel != nil {
+			uploadCancel()
+		}
+
+		// 清理响应 body
 		if shouldCloseBody && resp != nil && resp.Body != nil {
 			// 清空 Body 以帮助连接复用 (性能提升 ~100x)
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
+		}
+
+		// 🔥 如果 cancel 没有被 bodyWrapper 接管，在这里取消
+		if shouldCancelContext && reqCancel != nil {
+			reqCancel()
 		}
 	}()
 
 	// 8. 等待请求完成、取消或超时
 	select {
 	case <-done:
-		// 请求完成
+		// 请求完成（成功或失败）
 		if reqErr != nil {
-			// 🔥 修复：确保 cancel 被调用，防止 context 泄漏
-			cancel()
-			// defer 会清理 resp.Body
-			if ctx.Err() == context.Canceled {
-				req.resultCh <- FetchResult{nil, fmt.Errorf("request aborted")}
-			} else if ctx.Err() == context.DeadlineExceeded {
-				req.resultCh <- FetchResult{nil, fmt.Errorf("request timeout")}
+			// 请求失败
+			// ✅ reqCancel 会在 defer 中调用
+			// ✅ uploadCancel 会在 defer 中调用
+			// ✅ defer 会清理 resp.Body
+			if reqCtx.Err() == context.Canceled {
+				req.resultCh <- FetchResult{nil, fmt.Errorf("请求已中止")}
+			} else if reqCtx.Err() == context.DeadlineExceeded {
+				req.resultCh <- FetchResult{nil, fmt.Errorf("请求超时")}
 			} else {
-				req.resultCh <- FetchResult{nil, fmt.Errorf("network error: %w", reqErr)}
+				req.resultCh <- FetchResult{nil, fmt.Errorf("网络错误: %w", reqErr)}
 			}
 			return
 		}
 
 		// 🔥 优化：提前检查 Content-Length（节省带宽）
-		// 如果服务器明确告知文件大小，且超过限制，立即失败（0下载）
 		if resp.ContentLength > 0 && fe.maxStreamSize > 0 && resp.ContentLength > fe.maxStreamSize {
 			sizeMB := float64(resp.ContentLength) / 1024 / 1024
 			limitMB := float64(fe.maxStreamSize) / 1024 / 1024
+			excessBytes := resp.ContentLength - fe.maxStreamSize
 
-			cancel() // 取消请求
 			req.resultCh <- FetchResult{
 				nil,
 				fmt.Errorf(
-					"文件大小超过流式下载限制: %.2fMB > %.2fMB (Content-Length: %d 字节) - 提示: 请调整 MAX_STREAMING_SIZE_MB 配置",
-					sizeMB, limitMB, resp.ContentLength,
+					"文件大小超过流式下载限制: %d 字节 (%.3fMB) > %d 字节 (%.2fMB)，超出 %d 字节 ",
+					resp.ContentLength, sizeMB, fe.maxStreamSize, limitMB, excessBytes,
 				),
 			}
+			// shouldCloseBody = true, defer 会清理
 			return
 		}
 
-		// 🔥 新方案：总是返回流式响应（符合标准 Fetch API）
-		// 创建一个包装器，在关闭时也取消 context
-		bodyWrapper := &bodyWithCancel{
-			ReadCloser: resp.Body,
-			cancel:     cancel,
-		}
+		// 🔥 请求成功：创建响应
+		// ✅ uploadCtx 会在 defer 中取消（防止泄漏）
+		// ✅ reqCancel 传递给 bodyWrapper，在 body.Close() 时调用
+		// ✅ resp.Body 的生命周期由 bodyWrapper 和双重 timer 管理
+		bodyWrapper := fe.createBodyWithCancel(resp.Body, resp.ContentLength, fe.responseReadTimeout, reqCancel)
 
 		req.resultCh <- FetchResult{
 			response: &ResponseData{
@@ -651,37 +917,39 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 				BodyStream:    bodyWrapper, // 传递包装后的 Body
 				IsStreaming:   true,        // 总是流式
 				FinalURL:      resp.Request.URL.String(),
-				ContentLength: resp.ContentLength, // 🔥 保存 Content-Length（用于智能预分配）
+				ContentLength: resp.ContentLength,
 			},
 			err: nil,
 		}
-		// ⚠️ 不在这里关闭 Body，由 StreamReader 负责
-		shouldCloseBody = false // 🔥 关键：防止 defer 关闭 Body
-		cancelHandled = true    // 🔥 标记 cancel 已被 bodyWrapper 接管
+
+		// ✅ body 和 cancel 都已被 bodyWrapper 接管
+		shouldCloseBody = false
+		shouldCancelContext = false
 
 	case <-req.abortCh:
 		// 🔥 请求被取消 (用户调用了 controller.abort())
-		cancel() // 取消 context,中断 HTTP 请求
-		// 🔥 修复: 等待请求真正结束
+		// ✅ reqCancel 会在 defer 中调用
+		// 🔥 等待请求真正结束
 		<-done
-		// defer 会清理 resp.Body
+		// defer 会清理资源
 
-		// 🔥 修复: 使用 select 防止 channel 阻塞
 		select {
-		case req.resultCh <- FetchResult{nil, fmt.Errorf("request aborted")}:
+		case req.resultCh <- FetchResult{nil, fmt.Errorf("请求已中止")}:
 		default:
 			// channel 已满或已关闭,忽略
 		}
 
-	case <-ctx.Done():
-		// 🔥 修复: 超时时必须等待 client.Do() 完成
+	case <-reqCtx.Done():
+		// 🔥 请求超时
+		// ✅ reqCancel 会在 defer 中调用
+		// 🔥 等待请求真正结束
 		<-done
-		// defer 会清理 resp.Body
+		// defer 会清理资源
 
-		if ctx.Err() == context.DeadlineExceeded {
-			req.resultCh <- FetchResult{nil, fmt.Errorf("request timeout")}
+		if reqCtx.Err() == context.DeadlineExceeded {
+			req.resultCh <- FetchResult{nil, fmt.Errorf("请求超时")}
 		} else {
-			req.resultCh <- FetchResult{nil, ctx.Err()}
+			req.resultCh <- FetchResult{nil, reqCtx.Err()}
 		}
 	}
 }
@@ -691,7 +959,7 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 func (fe *FetchEnhancer) pollResult(runtime *goja.Runtime, req *FetchRequest, resolve, reject func(goja.Value), setImmediate goja.Value) {
 	fn, ok := goja.AssertFunction(setImmediate)
 	if !ok {
-		reject(fe.createErrorObject(runtime, fmt.Errorf("setImmediate is not a function")))
+		reject(fe.createErrorObject(runtime, fmt.Errorf("setImmediate 不是一个函数")))
 		return
 	}
 
@@ -969,14 +1237,14 @@ func (fe *FetchEnhancer) checkProtocol(scheme string) error {
 	if scheme == "http" || scheme == "https" {
 		return nil
 	}
-	return fmt.Errorf("protocol not allowed: %s (only http/https are supported)", scheme)
+	return fmt.Errorf("不允许的协议: %s (仅支持 http/https)", scheme)
 }
 
 // createRequestConstructor 创建 Request 构造器
 func (fe *FetchEnhancer) createRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) *goja.Object {
 	return func(call goja.ConstructorCall) *goja.Object {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("Request constructor requires at least 1 argument"))
+			panic(runtime.NewTypeError("Request 构造函数需要至少 1 个参数"))
 		}
 
 		url := call.Arguments[0].String()
@@ -1183,7 +1451,7 @@ func (fe *FetchEnhancer) createFormDataConstructor(runtime *goja.Runtime) func(g
 		// append(name, value, filename) - 添加字段
 		formDataObj.Set("append", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) < 2 {
-				panic(runtime.NewTypeError("FormData.append requires at least 2 arguments"))
+				panic(runtime.NewTypeError("FormData.append 需要至少 2 个参数"))
 			}
 
 			name := call.Arguments[0].String()
@@ -1215,7 +1483,7 @@ func (fe *FetchEnhancer) createFormDataConstructor(runtime *goja.Runtime) func(g
 						}
 						handled = true
 					} else {
-						panic(runtime.NewTypeError("Invalid File object: " + err.Error()))
+						panic(runtime.NewTypeError("无效的 File 对象: " + err.Error()))
 					}
 				}
 
@@ -1233,7 +1501,7 @@ func (fe *FetchEnhancer) createFormDataConstructor(runtime *goja.Runtime) func(g
 							}
 							handled = true
 						} else {
-							panic(runtime.NewTypeError("Invalid Blob object: " + err.Error()))
+							panic(runtime.NewTypeError("无效的 Blob 对象: " + err.Error()))
 						}
 					}
 				}
@@ -1286,7 +1554,7 @@ func (fe *FetchEnhancer) createFormDataConstructor(runtime *goja.Runtime) func(g
 		// set(name, value, filename) - 设置字段 (覆盖)
 		formDataObj.Set("set", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) < 2 {
-				panic(runtime.NewTypeError("FormData.set requires at least 2 arguments"))
+				panic(runtime.NewTypeError("FormData.set 需要至少 2 个参数"))
 			}
 
 			name := call.Arguments[0].String()
@@ -1463,7 +1731,7 @@ func (fe *FetchEnhancer) createFormDataConstructor(runtime *goja.Runtime) func(g
 
 			callback, ok := goja.AssertFunction(call.Arguments[0])
 			if !ok {
-				panic(runtime.NewTypeError("FormData.forEach callback must be a function"))
+				panic(runtime.NewTypeError("FormData.forEach 回调函数必须是一个函数"))
 			}
 
 			// 🔥 使用 formDataEntries 切片保持插入顺序
@@ -1715,18 +1983,18 @@ func (fe *FetchEnhancer) extractFormDataInCurrentThread(formDataObj *goja.Object
 	// 获取 FormData 的原始数据
 	getRawDataFunc := formDataObj.Get("__getRawData")
 	if goja.IsUndefined(getRawDataFunc) || goja.IsNull(getRawDataFunc) {
-		return nil, "", fmt.Errorf("FormData object is invalid")
+		return nil, "", fmt.Errorf("FormData 对象无效")
 	}
 
 	fn, ok := goja.AssertFunction(getRawDataFunc)
 	if !ok {
-		return nil, "", fmt.Errorf("__getRawData is not a function")
+		return nil, "", fmt.Errorf("__getRawData 不是一个函数")
 	}
 
 	// 调用 __getRawData() 获取数据
 	result, err := fn(goja.Undefined())
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to get FormData entries: %w", err)
+		return nil, "", fmt.Errorf("获取 FormData 条目失败: %w", err)
 	}
 
 	// 解析条目
@@ -1745,7 +2013,7 @@ func (fe *FetchEnhancer) extractFormDataInCurrentThread(formDataObj *goja.Object
 	case []map[string]interface{}:
 		entries = v
 	default:
-		return nil, "", fmt.Errorf("invalid FormData entries format: got %T", entriesInterface)
+		return nil, "", fmt.Errorf("无效的 FormData 条目格式: 获得 %T", entriesInterface)
 	}
 
 	// ✅ 优化: 允许空 FormData (合法场景,例如条件性添加字段)
@@ -1762,7 +2030,7 @@ func (fe *FetchEnhancer) extractFormDataInCurrentThread(formDataObj *goja.Object
 		// 安全的类型断言
 		name, ok := entryMap["name"].(string)
 		if !ok {
-			return nil, "", fmt.Errorf("invalid FormData entry: name is not a string")
+			return nil, "", fmt.Errorf("无效的 FormData 条目: name 不是字符串")
 		}
 
 		entry := FormDataEntry{
@@ -1792,7 +2060,7 @@ func (fe *FetchEnhancer) extractFormDataInCurrentThread(formDataObj *goja.Object
 	// 创建 Reader
 	reader, err := streamingFormData.CreateReader()
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create streaming FormData reader: %w", err)
+		return nil, "", fmt.Errorf("创建流式 FormData reader 失败: %w", err)
 	}
 
 	// 小文件（< 阈值）：读取全部数据返回字节数组
@@ -1806,7 +2074,7 @@ func (fe *FetchEnhancer) extractFormDataInCurrentThread(formDataObj *goja.Object
 			data = make([]byte, totalSize)
 			n, err := io.ReadFull(reader, data)
 			if err != nil && err != io.ErrUnexpectedEOF {
-				return nil, "", fmt.Errorf("failed to read FormData: %w", err)
+				return nil, "", fmt.Errorf("读取 FormData 失败: %w", err)
 			}
 			// 如果实际读取小于预期，截断到实际大小
 			data = data[:n]
@@ -1814,7 +2082,7 @@ func (fe *FetchEnhancer) extractFormDataInCurrentThread(formDataObj *goja.Object
 			// 大小未知（理论上不应该发生，但保持兼容性）
 			data, err = io.ReadAll(reader)
 			if err != nil {
-				return nil, "", fmt.Errorf("failed to read FormData: %w", err)
+				return nil, "", fmt.Errorf("读取 FormData 失败: %w", err)
 			}
 		}
 
@@ -2095,21 +2363,18 @@ func startNodeStreamReading(runtime *goja.Runtime, streamReader *StreamReader, l
 // readAllDataWithLimit 统一的缓冲读取函数（智能预分配 + 限制检查）
 // 🔥 用于 arrayBuffer(), text(), json(), blob() 等方法
 func readAllDataWithLimit(streamReader *StreamReader, maxBufferSize int64) ([]byte, error) {
-	// 🔥 智能预分配策略：基于 Content-Length
+	// 🔥 智能预分配策略：基于 Content-Length + 分层预分配
 	var initialCapacity int
 	if streamReader.contentLength > 0 {
-		// 场景1：有 Content-Length（最优情况）
+		// 场景1：有 Content-Length（最优情况，90% 场景）
 		if streamReader.contentLength <= maxBufferSize {
 			initialCapacity = int(streamReader.contentLength) // 🔥 精确预分配
 		} else {
 			initialCapacity = int(maxBufferSize) // 🔥 预分配到限制值
 		}
-	} else if maxBufferSize < 64*1024 {
-		// 场景2：限制很小（< 64KB）
-		initialCapacity = int(maxBufferSize) // 预分配限制值
 	} else {
-		// 场景3：未知大小
-		initialCapacity = 64 * 1024 // 🔥 预分配 64KB（避免小文件浪费）
+		// 场景2：未知大小，使用分层预分配策略（优化，10% 场景）
+		initialCapacity = getSmartInitialCapacity(maxBufferSize)
 	}
 
 	allData := make([]byte, 0, initialCapacity)
@@ -2144,6 +2409,36 @@ func readAllDataWithLimit(streamReader *StreamReader, maxBufferSize int64) ([]by
 	return allData, nil
 }
 
+// getSmartInitialCapacity 智能计算初始容量（分层预分配策略）
+// 🔥 优化：替代固定 64KB 预分配，根据限制大小分层决策
+//
+// 策略说明：
+//   - 小限制（≤ 8KB）：全预分配（避免扩容）
+//   - 中限制（≤ 64KB）：预分配 16KB（平衡内存和扩容）
+//   - 大限制（> 64KB）：预分配 32KB（避免过度浪费）
+//
+// 收益：
+//   - 内存节省：从固定 64KB → 16-32KB（减少 50-75%）
+//   - 无统计开销：纯计算逻辑，无状态
+//   - 立即生效：无冷启动问题
+//   - 简单实现：无需历史数据
+func getSmartInitialCapacity(maxBufferSize int64) int {
+	switch {
+	case maxBufferSize <= 8*1024:
+		// 小限制：全预分配（避免扩容开销）
+		return int(maxBufferSize)
+	case maxBufferSize <= 64*1024:
+		// 中限制：预分配 16KB（常见的小文件大小）
+		return 16 * 1024
+	case maxBufferSize <= 1024*1024:
+		// 大限制：预分配 32KB（平衡内存和性能）
+		return 32 * 1024
+	default:
+		// 超大限制：预分配 64KB（保持原有策略）
+		return 64 * 1024
+	}
+}
+
 // createStreamingResponse 创建流式响应对象
 func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response *goja.Object, data *ResponseData) *goja.Object {
 	// 创建 StreamReader，传入大小限制和 Content-Length
@@ -2171,13 +2466,13 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 	// on(event, callback) - 注册事件监听器（Node.js Stream 标准）
 	bodyObj.Set("on", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) < 2 {
-			panic(runtime.NewTypeError("on() requires event name and callback"))
+			panic(runtime.NewTypeError("on() 需要 event name 和 callback 参数"))
 		}
 
 		eventName := call.Arguments[0].String()
 		callback, ok := goja.AssertFunction(call.Arguments[1])
 		if !ok {
-			panic(runtime.NewTypeError("second argument must be a function"))
+			panic(runtime.NewTypeError("第二个参数必须是一个函数"))
 		}
 
 		// 存储监听器
@@ -2204,13 +2499,13 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 	// once(event, callback) - 注册一次性事件监听器
 	bodyObj.Set("once", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) < 2 {
-			panic(runtime.NewTypeError("once() requires event name and callback"))
+			panic(runtime.NewTypeError("once() 需要 event name 和 callback 参数"))
 		}
 
 		eventName := call.Arguments[0].String()
 		originalCallback, ok := goja.AssertFunction(call.Arguments[1])
 		if !ok {
-			panic(runtime.NewTypeError("second argument must be a function"))
+			panic(runtime.NewTypeError("第二个参数必须是一个函数"))
 		}
 
 		// 使用标记来追踪是否已执行
@@ -2274,12 +2569,12 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 	// pipe(destination) - 管道传输（简化版）
 	bodyObj.Set("pipe", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("pipe() requires a destination"))
+			panic(runtime.NewTypeError("pipe() 需要一个目标参数"))
 		}
 
 		destination := call.Arguments[0].ToObject(runtime)
 		if destination == nil {
-			panic(runtime.NewTypeError("destination must be an object"))
+			panic(runtime.NewTypeError("destination 必须是一个对象"))
 		}
 
 		// 监听 data 事件并写入目标
@@ -2290,6 +2585,27 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 	})
 
 	// ==================== Web Streams API（保留原有实现）====================
+
+	// 🔥 v2.5.0: cancel() 方法 - 标准 ReadableStream API
+	// 允许用户直接调用 response.body.cancel() 取消流
+	// 参考：https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream/cancel
+	bodyObj.Set("cancel", func(call goja.FunctionCall) goja.Value {
+		promise, resolve, _ := runtime.NewPromise()
+
+		// 关闭底层流，立即释放连接
+		streamReader.Close()
+		isDestroyed = true
+
+		// 触发 close 事件（Node.js Stream 兼容）
+		if callbacks, exists := listeners["close"]; exists {
+			for _, cb := range callbacks {
+				cb(goja.Undefined())
+			}
+		}
+
+		resolve(goja.Undefined())
+		return runtime.ToValue(promise)
+	})
 	// getReader() 方法 - 返回流式读取器
 	bodyObj.Set("getReader", func(call goja.FunctionCall) goja.Value {
 		readerObj := runtime.NewObject()
@@ -2334,7 +2650,7 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 						uint8ArrayConstructor := runtime.Get("Uint8Array")
 						uint8Array, err := runtime.New(uint8ArrayConstructor, runtime.ToValue(arrayBuffer))
 						if err != nil {
-							reject(runtime.NewGoError(fmt.Errorf("failed to create Uint8Array: %w", err)))
+							reject(runtime.NewGoError(fmt.Errorf("创建 Uint8Array 失败: %w", err)))
 							return goja.Undefined()
 						}
 
@@ -2368,7 +2684,7 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 						uint8ArrayConstructor := runtime.Get("Uint8Array")
 						uint8Array, err := runtime.New(uint8ArrayConstructor, runtime.ToValue(arrayBuffer))
 						if err != nil {
-							reject(runtime.NewGoError(fmt.Errorf("failed to create Uint8Array: %w", err)))
+							reject(runtime.NewGoError(fmt.Errorf("创建 Uint8Array 失败: %w", err)))
 						} else {
 							resultObj.Set("value", uint8Array)
 							resolve(runtime.ToValue(resultObj))
@@ -2406,17 +2722,70 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 	// 将 body 对象设置到 response
 	response.Set("body", bodyObj)
 
+	// 🔥 关键优化：缓存机制（支持 clone 和重复读取）
+	// 第一次读取流时缓存数据，后续 clone() 和 body 方法使用缓存
+	var cachedData []byte        // 缓存的响应数据
+	var cacheError error         // 缓存过程中的错误
+	var cacheOnce sync.Once      // 确保只读取一次
+	var cacheMutex sync.RWMutex  // 保护缓存访问
+	var bodyUsed bool            // 🔥 标记 body 是否已被消费
+	var bodyUsedMutex sync.Mutex // 保护 bodyUsed 状态
+
+	// 设置初始 bodyUsed 状态
+	response.Set("bodyUsed", runtime.ToValue(false))
+
+	// 通用的数据获取函数：优先使用缓存，缓存不存在时读取流
+	getResponseData := func() ([]byte, error) {
+		cacheOnce.Do(func() {
+			allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+
+			cacheMutex.Lock()
+			cachedData = allData
+			cacheError = err
+			cacheMutex.Unlock()
+
+			if err == nil {
+				// 成功读取后，更新原始 ResponseData 为缓冲模式
+				data.Body = allData
+				data.IsStreaming = false
+				data.BodyStream = nil
+			}
+		})
+
+		cacheMutex.RLock()
+		defer cacheMutex.RUnlock()
+		return cachedData, cacheError
+	}
+
+	// 🔥 检查并标记 body 为已使用（符合 Fetch API 标准）
+	checkAndMarkBodyUsed := func() error {
+		bodyUsedMutex.Lock()
+		defer bodyUsedMutex.Unlock()
+
+		if bodyUsed {
+			return fmt.Errorf("响应体已被消费")
+		}
+		bodyUsed = true
+		response.Set("bodyUsed", runtime.ToValue(true))
+		return nil
+	}
+
 	// 添加便捷方法：直接读取全部数据（与非流式模式兼容）
-	// 🔥 新方案：缓冲读取方法应用 1MB 限制
+	// 🔥 新方案：使用缓存机制 + bodyUsed 检查（符合标准）
 	response.Set("arrayBuffer", func(call goja.FunctionCall) goja.Value {
 		promise, resolve, reject := runtime.NewPromise()
+
+		// 🔥 检查 body 是否已被使用
+		if err := checkAndMarkBodyUsed(); err != nil {
+			reject(runtime.NewTypeError(err.Error()))
+			return runtime.ToValue(promise)
+		}
 
 		// 🔥 使用 setImmediate 异步执行
 		setImmediate := runtime.Get("setImmediate")
 		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
 			callback := func(call goja.FunctionCall) goja.Value {
-				// 🔥 使用统一的缓冲读取函数（智能预分配 + 限制检查）
-				allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+				allData, err := getResponseData()
 				if err != nil {
 					reject(runtime.NewGoError(err))
 					return goja.Undefined()
@@ -2429,7 +2798,7 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
 		} else {
 			// 降级：同步执行
-			allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+			allData, err := getResponseData()
 			if err != nil {
 				reject(runtime.NewGoError(err))
 				return runtime.ToValue(promise)
@@ -2444,11 +2813,16 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 	response.Set("text", func(call goja.FunctionCall) goja.Value {
 		promise, resolve, reject := runtime.NewPromise()
 
+		// 🔥 检查 body 是否已被使用
+		if err := checkAndMarkBodyUsed(); err != nil {
+			reject(runtime.NewTypeError(err.Error()))
+			return runtime.ToValue(promise)
+		}
+
 		setImmediate := runtime.Get("setImmediate")
 		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
 			callback := func(call goja.FunctionCall) goja.Value {
-				// 🔥 使用统一的缓冲读取函数（智能预分配 + 限制检查）
-				allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+				allData, err := getResponseData()
 				if err != nil {
 					reject(runtime.NewGoError(err))
 					return goja.Undefined()
@@ -2459,7 +2833,7 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
 		} else {
 			// 降级：同步执行
-			allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+			allData, err := getResponseData()
 			if err != nil {
 				reject(runtime.NewGoError(err))
 				return runtime.ToValue(promise)
@@ -2473,11 +2847,16 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 	response.Set("json", func(call goja.FunctionCall) goja.Value {
 		promise, resolve, reject := runtime.NewPromise()
 
+		// 🔥 检查 body 是否已被使用
+		if err := checkAndMarkBodyUsed(); err != nil {
+			reject(runtime.NewTypeError(err.Error()))
+			return runtime.ToValue(promise)
+		}
+
 		setImmediate := runtime.Get("setImmediate")
 		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
 			callback := func(call goja.FunctionCall) goja.Value {
-				// 🔥 使用统一的缓冲读取函数（智能预分配 + 限制检查）
-				allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+				allData, err := getResponseData()
 				if err != nil {
 					reject(runtime.NewGoError(err))
 					return goja.Undefined()
@@ -2486,7 +2865,7 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 				var jsonData interface{}
 				err = json.Unmarshal(allData, &jsonData)
 				if err != nil {
-					reject(runtime.NewTypeError(fmt.Sprintf("Invalid JSON: %v", err)))
+					reject(runtime.NewTypeError(fmt.Sprintf("无效的 JSON: %v", err)))
 				} else {
 					resolve(runtime.ToValue(jsonData))
 				}
@@ -2495,7 +2874,7 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
 		} else {
 			// 降级：同步执行
-			allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+			allData, err := getResponseData()
 			if err != nil {
 				reject(runtime.NewGoError(err))
 				return runtime.ToValue(promise)
@@ -2504,7 +2883,7 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 			var jsonData interface{}
 			err = json.Unmarshal(allData, &jsonData)
 			if err != nil {
-				reject(runtime.NewTypeError(fmt.Sprintf("Invalid JSON: %v", err)))
+				reject(runtime.NewTypeError(fmt.Sprintf("无效的 JSON: %v", err)))
 			} else {
 				resolve(runtime.ToValue(jsonData))
 			}
@@ -2517,11 +2896,16 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 	response.Set("blob", func(call goja.FunctionCall) goja.Value {
 		promise, resolve, reject := runtime.NewPromise()
 
+		// 🔥 检查 body 是否已被使用
+		if err := checkAndMarkBodyUsed(); err != nil {
+			reject(runtime.NewTypeError(err.Error()))
+			return runtime.ToValue(promise)
+		}
+
 		setImmediate := runtime.Get("setImmediate")
 		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
 			callback := func(call goja.FunctionCall) goja.Value {
-				// 🔥 使用统一的缓冲读取函数（智能预分配 + 限制检查）
-				allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+				allData, err := getResponseData()
 				if err != nil {
 					reject(runtime.NewGoError(err))
 					return goja.Undefined()
@@ -2546,7 +2930,7 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
 		} else {
 			// 降级：同步执行
-			allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
+			allData, err := getResponseData()
 			if err != nil {
 				reject(runtime.NewGoError(err))
 				return runtime.ToValue(promise)
@@ -2569,6 +2953,32 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 		}
 
 		return runtime.ToValue(promise)
+	})
+
+	// 🔥 新增: clone() 方法 - 克隆流式响应
+	// 策略：复用缓存机制，支持多次克隆
+	response.Set("clone", func(call goja.FunctionCall) goja.Value {
+		// 复用 getResponseData() 函数获取缓存的数据
+		localData, localErr := getResponseData()
+
+		if localErr != nil {
+			panic(runtime.NewGoError(fmt.Errorf("克隆响应失败: %w", localErr)))
+		}
+
+		// 创建克隆的 ResponseData（非流式）
+		clonedData := &ResponseData{
+			StatusCode:    data.StatusCode,
+			Status:        data.Status,
+			Headers:       data.Headers.Clone(),
+			Body:          make([]byte, len(localData)),
+			IsStreaming:   false, // 克隆为非流式
+			FinalURL:      data.FinalURL,
+			ContentLength: int64(len(localData)),
+		}
+		copy(clonedData.Body, localData)
+
+		// 返回新的 Response 对象
+		return fe.recreateResponse(runtime, clonedData)
 	})
 
 	return response
@@ -2610,7 +3020,7 @@ func (fe *FetchEnhancer) recreateResponse(runtime *goja.Runtime, data *ResponseD
 		bodyMutex.Lock()
 		if bodyUsed {
 			bodyMutex.Unlock()
-			reject(runtime.NewTypeError("Body has already been consumed"))
+			reject(runtime.NewTypeError("响应体已被消费"))
 		} else {
 			bodyUsed = true
 			bodyMutex.Unlock()
@@ -2628,7 +3038,7 @@ func (fe *FetchEnhancer) recreateResponse(runtime *goja.Runtime, data *ResponseD
 		bodyMutex.Lock()
 		if bodyUsed {
 			bodyMutex.Unlock()
-			reject(runtime.NewTypeError("Body has already been consumed"))
+			reject(runtime.NewTypeError("响应体已被消费"))
 		} else {
 			// 🔥 先解锁，稍后根据解析结果决定是否标记 bodyUsed
 			bodyMutex.Unlock()
@@ -2644,10 +3054,10 @@ func (fe *FetchEnhancer) recreateResponse(runtime *goja.Runtime, data *ResponseD
 					if len(bodyPreview) > 100 {
 						bodyPreview = bodyPreview[:100] + "..."
 					}
-					errorMsg := fmt.Sprintf("Failed to parse JSON (HTTP %d): Response body is not valid JSON. Body preview: %s", data.StatusCode, bodyPreview)
+					errorMsg := fmt.Sprintf("解析 JSON 失败 (HTTP %d): 响应体不是有效的 JSON。内容预览: %s", data.StatusCode, bodyPreview)
 					reject(runtime.NewTypeError(errorMsg))
 				} else {
-					reject(runtime.NewTypeError(fmt.Sprintf("Invalid JSON: %v", err)))
+					reject(runtime.NewTypeError(fmt.Sprintf("无效的 JSON: %v", err)))
 				}
 			} else {
 				// ✅ 解析成功，标记 body 为已使用
@@ -2669,7 +3079,7 @@ func (fe *FetchEnhancer) recreateResponse(runtime *goja.Runtime, data *ResponseD
 		bodyMutex.Lock()
 		if bodyUsed {
 			bodyMutex.Unlock()
-			reject(runtime.NewTypeError("Body has already been consumed"))
+			reject(runtime.NewTypeError("响应体已被消费"))
 		} else {
 			bodyUsed = true
 			bodyMutex.Unlock()
@@ -2690,7 +3100,7 @@ func (fe *FetchEnhancer) recreateResponse(runtime *goja.Runtime, data *ResponseD
 		bodyMutex.Lock()
 		if bodyUsed {
 			bodyMutex.Unlock()
-			reject(runtime.NewTypeError("Body has already been consumed"))
+			reject(runtime.NewTypeError("响应体已被消费"))
 		} else {
 			bodyUsed = true
 			bodyMutex.Unlock()
@@ -2761,7 +3171,7 @@ func (fe *FetchEnhancer) Name() string {
 //   - 正在进行的请求不受影响（会正常完成）
 //
 // 注意：
-//   - CloseIdleConnections() 只关闭空闲连接
+//   - ClosionseIdleConnect() 只关闭空闲连接
 //   - 活跃连接会在请求完成后自然关闭
 //   - 这是符合 HTTP 标准的优雅关闭方式
 func (fe *FetchEnhancer) Close() error {

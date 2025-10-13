@@ -656,10 +656,22 @@
           // 🔥 流式响应：直接返回 response.body（ReadableStream）
           dataPromise = Promise.resolve(response.body);
         } else if (responseType === 'json') {
-          dataPromise = response.json().catch(function(jsonError) {
-            // JSON 解析失败时降级为文本，但记录警告
-            console.warn('Failed to parse JSON response, fallback to text:', jsonError.message);
-            return response.text();
+          // 🔥 修复: 先读取为 text,再尝试解析 JSON
+          // 避免 json() 失败后流已关闭导致无法降级到 text()
+          dataPromise = response.text().then(function(text) {
+            // 如果响应体为空，返回 null
+            if (!text || text.trim() === '') {
+              return null;
+            }
+            
+            // 尝试解析 JSON
+            try {
+              return JSON.parse(text);
+            } catch (jsonError) {
+              // JSON 解析失败时，返回原始文本
+              console.warn('Failed to parse JSON response, returning raw text:', jsonError.message);
+              return text;
+            }
           });
         } else if (responseType === 'text') {
           dataPromise = response.text();

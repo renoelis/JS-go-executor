@@ -9,9 +9,11 @@ import (
 // JSMemoryLimiter JavaScript 侧内存限制器（可配置）
 //
 // 设计理念：
-//   - 简单：只拦截明显的大内存分配（Array, TypedArray）
+//   - 简单：只拦截明显的大内存分配（Array, TypedArray, ArrayBuffer）
 //   - 可配置：可以通过配置禁用
 //   - 提前拦截：在创建数组时就检查，不等到使用时
+//
+// 🔥 注意：Blob/File 的限制由 FetchEnhancer 负责（见 blob_file_api.go）
 type JSMemoryLimiter struct {
 	enabled         bool  // 是否启用
 	maxAllocation   int64 // 最大单次分配（字节）
@@ -74,9 +76,8 @@ func (jml *JSMemoryLimiter) RegisterLimiter(runtime *goja.Runtime) error {
 	function checkSize(size, type) {
 		if (typeof size === 'number' && size > MAX_SIZE) {
 			throw new TypeError(
-				type + ' allocation too large: ' + size + ' elements/bytes exceeds ' + 
-				MAX_SIZE + ' bytes (' + MAX_SIZE_MB + ' MB) limit. ' +
-				'Reduce data size or set ENABLE_JS_MEMORY_LIMIT=false to disable this check.'
+				type + ' 分配内存过大：' + size + ' 元素/字节超过限制 ' + 
+				MAX_SIZE + ' 字节 (' + MAX_SIZE_MB + ' MB)。请减少数据大小。'
 			);
 		}
 	}
@@ -84,6 +85,7 @@ func (jml *JSMemoryLimiter) RegisterLimiter(runtime *goja.Runtime) error {
 	// 1. 包装 Array 构造函数
 	(function() {
 		var OriginalArray = Array;
+		var OriginalPush = Array.prototype.push;
 		
 		// 新的 Array 构造函数
 		function WrappedArray() {
@@ -116,6 +118,19 @@ func (jml *JSMemoryLimiter) RegisterLimiter(runtime *goja.Runtime) error {
 		WrappedArray.from = OriginalArray.from;
 		WrappedArray.of = OriginalArray.of;
 		WrappedArray.isArray = OriginalArray.isArray;
+		
+		// 🔥 新增：包装 Array.prototype.push 以防止创建超大数组
+		Array.prototype.push = function() {
+			// 检查推送后的数组长度
+			var newLength = this.length + arguments.length;
+			if (newLength > MAX_SIZE / 8) {  // 假设每个元素至少8字节
+				throw new TypeError(
+					'Array.push 操作会导致数组长度超过限制：' + newLength + ' 元素超过 ' + 
+					Math.floor(MAX_SIZE / 8) + ' 元素限制 (' + MAX_SIZE_MB + ' MB)。请减少数据大小。'
+				);
+			}
+			return OriginalPush.apply(this, arguments);
+		};
 		
 		// 替换全局 Array
 		global.Array = WrappedArray;
@@ -165,6 +180,48 @@ func (jml *JSMemoryLimiter) RegisterLimiter(runtime *goja.Runtime) error {
 			global[name] = Wrapped;
 		})(typedArrays[i].name, typedArrays[i].bytes);
 	}
+	
+	// 3. 包装 ArrayBuffer 构造函数
+	// 🔥 修复 Bypass 2: ArrayBuffer 可以绕过内存限制
+	(function() {
+		var OriginalArrayBuffer = ArrayBuffer;
+		
+		// 检查是否存在（某些环境可能不支持）
+		if (typeof OriginalArrayBuffer === 'undefined') {
+			return;
+		}
+		
+		// 新的 ArrayBuffer 构造函数
+		function WrappedArrayBuffer(byteLength) {
+			// 检查参数
+			if (arguments.length > 0 && typeof byteLength === 'number') {
+				checkSize(byteLength, 'ArrayBuffer');
+			}
+			
+			// 调用原始构造函数
+			if (arguments.length === 0) {
+				return new OriginalArrayBuffer();
+			} else {
+				return new OriginalArrayBuffer(byteLength);
+			}
+		}
+		
+		// 保留原型链和静态方法
+		WrappedArrayBuffer.prototype = OriginalArrayBuffer.prototype;
+		
+		// 保留 ArrayBuffer.isView() 静态方法（ES6）
+		if (OriginalArrayBuffer.isView) {
+			WrappedArrayBuffer.isView = OriginalArrayBuffer.isView;
+		}
+		
+		// 保留 prototype.constructor
+		if (WrappedArrayBuffer.prototype) {
+			WrappedArrayBuffer.prototype.constructor = WrappedArrayBuffer;
+		}
+		
+		// 替换全局 ArrayBuffer
+		global.ArrayBuffer = WrappedArrayBuffer;
+	})();
 }).call(this);  // 使用 .call(this) 确保 this 是全局对象
 `, maxSize, maxSizeMB)
 

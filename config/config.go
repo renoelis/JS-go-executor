@@ -25,14 +25,16 @@ type Config struct {
 	Redis       RedisConfig      // Redis配置
 	Cache       CacheConfig      // 缓存配置
 	TokenLimit  TokenLimitConfig // Token限流配置
+	XLSX        XLSXConfig       // 🔥 XLSX 模块配置
 }
 
 // ServerConfig HTTP服务器配置
 type ServerConfig struct {
-	Port         string
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	GinMode      string
+	Port             string
+	ReadTimeout      time.Duration
+	WriteTimeout     time.Duration
+	GinMode          string
+	MaxRequestBodyMB int // 🔥 最大请求体大小（MB），默认 10MB（DoS 防护）
 	// 🔒 CORS 配置
 	AllowedOrigins []string // 允许的前端域名列表（为空则只允许服务端和同域调用）
 }
@@ -54,6 +56,7 @@ type ExecutorConfig struct {
 	// 🔥 超时配置（新增可配置项）
 	ConcurrencyWaitTimeout    time.Duration // 并发槽位等待超时（默认 10 秒）
 	RuntimePoolAcquireTimeout time.Duration // Runtime 池获取超时（默认 5 秒）
+	SlowExecutionThreshold    time.Duration // 🔥 慢执行检测阈值（默认 1 秒）
 
 	// 🔥 熔断器配置
 	CircuitBreakerEnabled      bool          // 是否启用熔断器
@@ -65,14 +68,23 @@ type ExecutorConfig struct {
 	// 🔥 JavaScript 内存限制配置
 	EnableJSMemoryLimit bool  // 是否启用 JavaScript 侧内存限制（默认：true）
 	JSMemoryLimitMB     int64 // JavaScript 单次分配最大大小（MB，默认使用 MaxBlobFileSize）
+
+	// 🔥 健康检查和池管理配置
+	MinErrorCountForCheck         int     // 最小错误次数阈值（默认：10，低于此值不检查错误率）
+	MaxErrorRateThreshold         float64 // 最大错误率阈值（默认：0.1，即 10%，超过视为异常）
+	MinExecutionCountForStats     int     // 统计长期运行的最小执行次数（默认：1000）
+	LongRunningThresholdMinutes   int     // 长期运行时间阈值（分钟，默认：60）
+	PoolExpansionThresholdPercent float64 // 池扩展阈值百分比（默认：0.1，即 10%，可用槽位低于此值时扩展）
+	HealthCheckIntervalSeconds    int     // 健康检查间隔（秒，默认：30）
 }
 
 // FetchConfig Fetch API配置
 type FetchConfig struct {
-	Timeout            time.Duration
-	MaxBlobFileSize    int64
-	FormDataBufferSize int
-	MaxFileSize        int64
+	Timeout             time.Duration // HTTP 请求超时（连接建立+发送+等待响应头）
+	ResponseReadTimeout time.Duration // 🔥 新增：响应读取总时长超时（防止慢速读取攻击）
+	MaxBlobFileSize     int64
+	FormDataBufferSize  int
+	MaxFileSize         int64
 
 	// 🔥 下载限制（新）
 	MaxResponseSize  int64 // response.arrayBuffer/blob/text/json() 缓冲读取限制（默认 1MB）
@@ -86,6 +98,20 @@ type FetchConfig struct {
 	MaxFormDataSize     int64 // 废弃：统一 FormData 限制，改用 MaxBufferedFormDataSize 和 MaxStreamingFormDataSize
 	StreamingThreshold  int64 // 废弃：自动切换阈值，现由用户代码控制
 	EnableChunkedUpload bool  // 保留：是否启用分块传输编码
+
+	// 🔥 HTTP Transport 配置（新增）
+	HTTPMaxIdleConns          int           // 最大空闲连接数（默认：50）
+	HTTPMaxIdleConnsPerHost   int           // 每个 host 的最大空闲连接数（默认：10）
+	HTTPMaxConnsPerHost       int           // 每个 host 的最大连接数（默认：100）
+	HTTPIdleConnTimeout       time.Duration // 空闲连接超时（默认：90秒）
+	HTTPDialTimeout           time.Duration // 连接建立超时（默认：10秒）
+	HTTPKeepAlive             time.Duration // Keep-Alive 间隔（默认：30秒）
+	HTTPTLSHandshakeTimeout   time.Duration // TLS 握手超时（默认：10秒）
+	HTTPExpectContinueTimeout time.Duration // 期望继续超时（默认：1秒）
+	HTTPForceHTTP2            bool          // 启用 HTTP/2（默认：true）
+
+	// 🔥 响应体空闲超时（防止资源泄漏）
+	ResponseBodyIdleTimeout time.Duration // 响应体空闲超时（默认：30秒，即1分钟）
 }
 
 // RuntimeConfig Go运行时配置
@@ -131,6 +157,13 @@ type TokenLimitConfig struct {
 	HotTierSize int           // 热数据层大小（默认：500）
 	RedisTTL    time.Duration // Redis TTL（默认：1小时）
 	BatchSize   int           // 批量写入大小（默认：100）
+}
+
+// XLSXConfig XLSX 模块配置
+type XLSXConfig struct {
+	MaxSnapshotSize int64 // Copy-on-Read 模式的最大文件大小（字节），默认 5MB
+	MaxRows         int   // 🔥 最大行数限制（默认 100000）
+	MaxCols         int   // 🔥 最大列数限制（默认 100）
 }
 
 // calculateMaxConcurrent 基于系统内存智能计算并发限制
@@ -213,11 +246,12 @@ func LoadConfig() *Config {
 	}
 
 	cfg.Server = ServerConfig{
-		Port:           getEnvString("PORT", "3002"),
-		GinMode:        getEnvString("GIN_MODE", "release"),
-		ReadTimeout:    time.Duration(executionTimeoutMS) * time.Millisecond,
-		WriteTimeout:   time.Duration(executionTimeoutMS+5000) * time.Millisecond, // ✅ 比执行超时多5秒
-		AllowedOrigins: allowedOrigins,                                            // 🔒 允许的前端域名列表
+		Port:             getEnvString("PORT", "3002"),
+		GinMode:          getEnvString("GIN_MODE", "release"),
+		ReadTimeout:      time.Duration(executionTimeoutMS) * time.Millisecond,
+		WriteTimeout:     time.Duration(executionTimeoutMS+5000) * time.Millisecond, // ✅ 比执行超时多5秒
+		MaxRequestBodyMB: getEnvInt("MAX_REQUEST_BODY_MB", 10),                      // 🔥 最大请求体 10MB（DoS 防护）
+		AllowedOrigins:   allowedOrigins,                                            // 🔒 允许的前端域名列表
 	}
 
 	// 加载执行器配置
@@ -315,8 +349,9 @@ func LoadConfig() *Config {
 		AllowConsole:     allowConsole, // 🔥 Console 控制
 
 		// 🔥 超时配置（新增可配置项）
-		ConcurrencyWaitTimeout:    time.Duration(getEnvInt("CONCURRENCY_WAIT_TIMEOUT_SEC", 10)) * time.Second,    // 并发等待超时（默认 10 秒）
-		RuntimePoolAcquireTimeout: time.Duration(getEnvInt("RUNTIME_POOL_ACQUIRE_TIMEOUT_SEC", 5)) * time.Second, // Runtime 获取超时（默认 5 秒）
+		ConcurrencyWaitTimeout:    time.Duration(getEnvInt("CONCURRENCY_WAIT_TIMEOUT_SEC", 10)) * time.Second,       // 并发等待超时（默认 10 秒）
+		RuntimePoolAcquireTimeout: time.Duration(getEnvInt("RUNTIME_POOL_ACQUIRE_TIMEOUT_SEC", 5)) * time.Second,    // Runtime 获取超时（默认 5 秒）
+		SlowExecutionThreshold:    time.Duration(getEnvInt("SLOW_EXECUTION_THRESHOLD_MS", 1000)) * time.Millisecond, // 🔥 慢执行阈值（默认 1 秒）
 
 		// 🔥 熔断器配置
 		CircuitBreakerEnabled:      getEnvBool("CIRCUIT_BREAKER_ENABLED", true),                               // 默认启用
@@ -328,14 +363,23 @@ func LoadConfig() *Config {
 		// 🔥 JavaScript 内存限制配置
 		EnableJSMemoryLimit: getEnvBool("ENABLE_JS_MEMORY_LIMIT", true), // 默认启用
 		JSMemoryLimitMB:     int64(getEnvInt("JS_MEMORY_LIMIT_MB", 0)),  // 默认 0（使用 MaxBlobFileSize）
+
+		// 🔥 健康检查和池管理配置
+		MinErrorCountForCheck:         getEnvInt("MIN_ERROR_COUNT_FOR_CHECK", 10),           // 最小错误次数（默认：10）
+		MaxErrorRateThreshold:         getEnvFloat("MAX_ERROR_RATE_THRESHOLD", 0.1),         // 最大错误率（默认：0.1，即 10%）
+		MinExecutionCountForStats:     getEnvInt("MIN_EXECUTION_COUNT_FOR_STATS", 1000),     // 最小执行次数（默认：1000）
+		LongRunningThresholdMinutes:   getEnvInt("LONG_RUNNING_THRESHOLD_MINUTES", 60),      // 长期运行阈值（默认：60 分钟）
+		PoolExpansionThresholdPercent: getEnvFloat("POOL_EXPANSION_THRESHOLD_PERCENT", 0.1), // 池扩展阈值（默认：0.1，即 10%）
+		HealthCheckIntervalSeconds:    getEnvInt("HEALTH_CHECK_INTERVAL_SECONDS", 30),       // 健康检查间隔（默认：30 秒）
 	}
 
 	// 加载Fetch配置
 	cfg.Fetch = FetchConfig{
-		Timeout:            time.Duration(getEnvInt("FETCH_TIMEOUT_MS", 300000)) * time.Millisecond,
-		MaxBlobFileSize:    int64(getEnvInt("MAX_BLOB_FILE_SIZE_MB", 100)) * 1024 * 1024,
-		FormDataBufferSize: getEnvInt("FORMDATA_BUFFER_SIZE", 2*1024*1024),
-		MaxFileSize:        int64(getEnvInt("MAX_FILE_SIZE_MB", 50)) * 1024 * 1024,
+		Timeout:             time.Duration(getEnvInt("FETCH_TIMEOUT_MS", 30000)) * time.Millisecond,                // 🔥 请求超时：默认 30 秒
+		ResponseReadTimeout: time.Duration(getEnvInt("FETCH_RESPONSE_READ_TIMEOUT_MS", 300000)) * time.Millisecond, // 🔥 响应读取超时：默认 5 分钟
+		MaxBlobFileSize:     int64(getEnvInt("MAX_BLOB_FILE_SIZE_MB", 100)) * 1024 * 1024,
+		FormDataBufferSize:  getEnvInt("FORMDATA_BUFFER_SIZE", 2*1024*1024),
+		MaxFileSize:         int64(getEnvInt("MAX_FILE_SIZE_MB", 50)) * 1024 * 1024,
 
 		// 🔥 下载限制（新方案）
 		MaxResponseSize:  int64(getEnvInt("MAX_RESPONSE_SIZE_MB", 1)) * 1024 * 1024,    // 默认 1MB - 缓冲读取（arrayBuffer/blob/text/json）
@@ -349,6 +393,20 @@ func LoadConfig() *Config {
 		MaxFormDataSize:     int64(getEnvInt("MAX_FORMDATA_SIZE_MB", 100)) * 1024 * 1024,          // 废弃
 		StreamingThreshold:  int64(getEnvInt("FORMDATA_STREAMING_THRESHOLD_MB", 1)) * 1024 * 1024, // 废弃
 		EnableChunkedUpload: getEnvInt("ENABLE_CHUNKED_UPLOAD", 1) == 1,                           // 保留
+
+		// 🔥 HTTP Transport 配置（新增）
+		HTTPMaxIdleConns:          getEnvInt("HTTP_MAX_IDLE_CONNS", 50),                                          // 最大空闲连接数
+		HTTPMaxIdleConnsPerHost:   getEnvInt("HTTP_MAX_IDLE_CONNS_PER_HOST", 10),                                 // 每个 host 的最大空闲连接数
+		HTTPMaxConnsPerHost:       getEnvInt("HTTP_MAX_CONNS_PER_HOST", 100),                                     // 每个 host 的最大连接数
+		HTTPIdleConnTimeout:       time.Duration(getEnvInt("HTTP_IDLE_CONN_TIMEOUT_SEC", 90)) * time.Second,      // 空闲连接超时
+		HTTPDialTimeout:           time.Duration(getEnvInt("HTTP_DIAL_TIMEOUT_SEC", 10)) * time.Second,           // 连接建立超时
+		HTTPKeepAlive:             time.Duration(getEnvInt("HTTP_KEEP_ALIVE_SEC", 30)) * time.Second,             // Keep-Alive 间隔
+		HTTPTLSHandshakeTimeout:   time.Duration(getEnvInt("HTTP_TLS_HANDSHAKE_TIMEOUT_SEC", 10)) * time.Second,  // TLS 握手超时
+		HTTPExpectContinueTimeout: time.Duration(getEnvInt("HTTP_EXPECT_CONTINUE_TIMEOUT_SEC", 1)) * time.Second, // 期望继续超时
+		HTTPForceHTTP2:            getEnvBool("HTTP_FORCE_HTTP2", true),                                          // 启用 HTTP/2
+
+		// 🔥 响应体空闲超时（防止资源泄漏）
+		ResponseBodyIdleTimeout: time.Duration(getEnvInt("HTTP_RESPONSE_BODY_IDLE_TIMEOUT_SEC", 30)) * time.Second, // 默认 30 秒（1 分钟）
 	}
 
 	// 加载Go运行时配置
@@ -417,6 +475,13 @@ func LoadConfig() *Config {
 		HotTierSize: getEnvInt("RATE_LIMIT_HOT_SIZE", 500),
 		RedisTTL:    time.Duration(getEnvInt("RATE_LIMIT_REDIS_TTL_MINUTES", 60)) * time.Minute,
 		BatchSize:   getEnvInt("RATE_LIMIT_BATCH_SIZE", 100),
+	}
+
+	// 🔥 加载 XLSX 配置
+	cfg.XLSX = XLSXConfig{
+		MaxSnapshotSize: getEnvInt64("XLSX_MAX_SNAPSHOT_SIZE_MB", 5) * 1024 * 1024, // 默认 5MB
+		MaxRows:         getEnvInt("XLSX_MAX_ROWS", 100000),                        // 🔥 默认 10万行
+		MaxCols:         getEnvInt("XLSX_MAX_COLS", 100),                           // 🔥 默认 100列
 	}
 
 	// 🔒 加载和验证认证配置
@@ -504,6 +569,22 @@ func getEnvInt(key string, defaultValue int) int {
 				zap.String("key", key),
 				zap.String("invalid_value", value),
 				zap.Int("default", defaultValue),
+				zap.Error(err))
+		}
+	}
+	return defaultValue
+}
+
+// getEnvInt64 获取int64类型的环境变量
+func getEnvInt64(key string, defaultValue int64) int64 {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return intValue
+		} else {
+			utils.Warn("环境变量解析失败，使用默认值",
+				zap.String("key", key),
+				zap.String("invalid_value", value),
+				zap.Int64("default", defaultValue),
 				zap.Error(err))
 		}
 	}

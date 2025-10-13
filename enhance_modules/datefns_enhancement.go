@@ -75,7 +75,7 @@ func (dfe *DateFnsEnhancer) RegisterDateFnsModule(registry *require.Registry) {
 	registry.RegisterNativeModule("date-fns", func(runtime *goja.Runtime, module *goja.Object) {
 		// 确保 date-fns 已加载
 		if err := dfe.loadDateFns(runtime); err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("failed to load date-fns: %w", err)))
+			panic(runtime.NewGoError(fmt.Errorf("加载 date-fns 模块失败: %w", err)))
 		}
 
 		// 获取 dateFns 对象
@@ -83,7 +83,7 @@ func (dfe *DateFnsEnhancer) RegisterDateFnsModule(registry *require.Registry) {
 		if dateFnsVal != nil && !goja.IsUndefined(dateFnsVal) {
 			module.Set("exports", dateFnsVal)
 		} else {
-			panic(runtime.NewGoError(fmt.Errorf("date-fns not available")))
+			panic(runtime.NewGoError(fmt.Errorf("date-fns 不可用")))
 		}
 	})
 

@@ -21,6 +21,9 @@ services:
       - PORT=3002
       - GIN_MODE=release
       
+      # 🔥 DoS 防护配置
+      - MAX_REQUEST_BODY_MB=5           # 服务接口请求体大小限制（MB）
+      
       # 🔒 CORS 跨域配置（生产环境：严格控制）
       - ALLOWED_ORIGINS=                 # ⚠️ 为空则只允许服务端和同域调用（推荐）
       
@@ -30,10 +33,10 @@ services:
       - DB_USER=flow_user
       - DB_PASSWORD=flow_password_2025
       - DB_NAME=flow_codeblock_go
-      - DB_MAX_OPEN_CONNS=100
-      - DB_MAX_IDLE_CONNS=20
-      - DB_CONN_MAX_LIFETIME_MIN=60
-      - DB_CONN_MAX_IDLE_TIME_MIN=10
+      - DB_MAX_OPEN_CONNS=100            # 最大打开连接数（并发查询上限）
+      - DB_MAX_IDLE_CONNS=20             # 最大空闲连接数（连接池大小）
+      - DB_CONN_MAX_LIFETIME_MIN=60      # 连接最大生命周期（分钟，防止连接过期）
+      - DB_CONN_MAX_IDLE_TIME_MIN=10     # 空闲连接最大存活时间（分钟，释放长期不用的连接）
       
       # ==================== Redis配置 ====================
       - REDIS_ENABLED=true
@@ -91,21 +94,28 @@ services:
       - RUNTIME_POOL_SIZE=200            # Runtime池大小 (200 个)
       - MIN_RUNTIME_POOL_SIZE=100        # 最小池大小 (100 个)
       - MAX_RUNTIME_POOL_SIZE=200        # 最大池大小 (200 个)
-      - RUNTIME_IDLE_TIMEOUT_MIN=5       # Runtime空闲超时(分钟)
-      #- MAX_CONCURRENT_EXECUTIONS=1600   # 🔧 最大并发数 (200 Runtime 推荐)，不传系统会动态计算
-      - CODE_CACHE_SIZE=100              # 代码缓存大小
+      - RUNTIME_IDLE_TIMEOUT_MIN=10       # Runtime空闲超时(分钟)
+      - MAX_CONCURRENT_EXECUTIONS=400   # 🔧 最大并发数 (200 Runtime 推荐)，不传系统会动态计算
+      - CODE_CACHE_SIZE=100              # 代码缓存个数大小
       - ALLOW_CONSOLE=false              # 🔧 生产环境禁用console
       
       # 执行限制
       - MAX_CODE_LENGTH=65535            # 代码长度限制(字节) - 64KB
       - MAX_INPUT_SIZE=1048576           # Input大小限制(字节) - 1MB
       - MAX_RESULT_SIZE=5242880          # 结果大小限制(字节) - 5MB
-      - EXECUTION_TIMEOUT_MS=60000      # 🔧 执行超时(毫秒) - 1分钟
+      - EXECUTION_TIMEOUT_MS=60000       # 🔧 执行超时(毫秒) - 1分钟（固定）
+      # ⚠️ 重要：EXECUTION_TIMEOUT 必须大于 FETCH_TIMEOUT + FETCH_RESPONSE_READ_TIMEOUT
+      #    当前：60秒 > (20秒 + 35秒) = 55秒 ✅
       
       # ==================== 🔥 并发控制超时配置 ====================
       # 说明：控制系统繁忙时的等待行为
       - CONCURRENCY_WAIT_TIMEOUT_SEC=10  # 并发槽位等待超时(秒) - 默认 10 秒
       - RUNTIME_POOL_ACQUIRE_TIMEOUT_SEC=5  # Runtime 池获取超时(秒) - 默认 5 秒
+      
+      # ==================== 🔍 慢执行检测配置 ====================
+      # SLOW_EXECUTION_THRESHOLD_MS: 慢执行检测阈值（毫秒）
+      # 说明：超过此时间的代码执行会记录 WARN 日志，帮助定位性能问题
+      - SLOW_EXECUTION_THRESHOLD_MS=3000  # 配置为 3 秒，
       
       # ==================== 🔥 熔断器配置 ====================
       # 说明：防止重度过载，保护系统稳定性
@@ -115,31 +125,88 @@ services:
       - CIRCUIT_BREAKER_TIMEOUT_SEC=10   # Open状态持续时间(秒)
       - CIRCUIT_BREAKER_MAX_REQUESTS=100 # Half-Open状态最大探测请求数
       
-      # ==================== Fetch API配置 ====================
-      - FETCH_TIMEOUT_MS=30000          # Fetch超时(毫秒) - 30秒
+      # ==================== Fetch API 超时配置 ====================
+      # 🔥 拆分为两个独立参数（v2.5.3 新增）
+      - FETCH_TIMEOUT_MS=20000                      # HTTP 请求超时（连接+发送+响应头，20秒）
+      - FETCH_RESPONSE_READ_TIMEOUT_MS=35000        # 🔥 响应读取总时长超时（35秒）
+      # ⚠️ 配置原则（严格遵守）：
+      #    FETCH_TIMEOUT + FETCH_RESPONSE_READ_TIMEOUT < EXECUTION_TIMEOUT
+      #    当前：20秒 + 35秒 = 55秒 < 60秒执行超时 ✅
+      #    留出 5 秒缓冲：用于代码处理数据、JSON 序列化、返回结果
+      # 
+      # 🎯 适用场景（60秒执行超时）：
+      #   - API 调用和小文件下载（< 5MB）
+      #   - 快速响应要求的业务
+      #   - 不适合大文件流式传输（需要更长的执行超时）
       
       # 🔥 下载限制（新方案）
-      - MAX_RESPONSE_SIZE_MB=1          # 缓冲读取限制(arrayBuffer/blob/text/json) - 生产环境1MB
+      - MAX_RESPONSE_SIZE_MB=2          # 缓冲读取限制(arrayBuffer/blob/text/json) - 生产环境1MB
       - MAX_STREAMING_SIZE_MB=10        # 流式读取限制(getReader) - 生产环境10MB
       
       # 🔥 上传限制（新方案）
-      - MAX_BUFFERED_FORMDATA_MB=1      # 缓冲上传限制(Web FormData + Blob、Node.js form-data + Buffer) - 生产环境1MB
+      - MAX_BUFFERED_FORMDATA_MB=2      # 缓冲上传限制(Web FormData + Blob、Node.js form-data + Buffer) - 生产环境1MB
       - MAX_STREAMING_FORMDATA_MB=10    # 流式上传限制(Node.js form-data + Stream) - 生产环境10MB
       
       # 其他配置
       - ENABLE_CHUNKED_UPLOAD=1         # 启用分块传输编码
-      - MAX_BLOB_FILE_SIZE_MB=1         # Blob/File最大大小(MB)
+      - MAX_BLOB_FILE_SIZE_MB=10        # Blob/File最大大小(MB)
       - FORMDATA_BUFFER_SIZE=524288     # FormData缓冲区大小(字节) - 512KB
-      - MAX_FILE_SIZE_MB=1              # 单文件最大大小(MB)
+      - MAX_FILE_SIZE_MB=10             # 单文件最大大小(MB)
+      
+      # 🔥 XLSX 模块配置（生产环境）
+      - XLSX_MAX_SNAPSHOT_SIZE_MB=2     # Copy-on-Read 模式的最大文件大小（默认5MB，生产环境保守配置）
+      - XLSX_MAX_ROWS=10000            # 🔥 最大行数限制（默认10000）
+      - XLSX_MAX_COLS=100               # 🔥 最大列数限制（默认100）
+      
+      # 🔥 HTTP Transport 配置（生产环境：优化性能和安全性）
+      - HTTP_MAX_IDLE_CONNS=100                  # 全局最大空闲连接数（生产环境：较大值）
+      - HTTP_MAX_IDLE_CONNS_PER_HOST=10          # 每个 host 的最大空闲连接数（生产环境：较大值）
+      - HTTP_MAX_CONNS_PER_HOST=50              # 每个 host 的最大连接数（防止慢速攻击）
+      - HTTP_IDLE_CONN_TIMEOUT_SEC=90            # 空闲连接超时（秒）
+      - HTTP_DIAL_TIMEOUT_SEC=10                 # 连接建立超时（秒）
+      - HTTP_KEEP_ALIVE_SEC=30                   # Keep-Alive 间隔（秒）
+      - HTTP_TLS_HANDSHAKE_TIMEOUT_SEC=10        # TLS 握手超时（秒）
+      - HTTP_EXPECT_CONTINUE_TIMEOUT_SEC=1       # 期望继续超时（秒）
+      - HTTP_FORCE_HTTP2=true                    # 启用 HTTP/2
+      - HTTP_RESPONSE_BODY_IDLE_TIMEOUT_SEC=30   # 🔥 响应体空闲超时（30秒，必须 < EXECUTION_TIMEOUT）
+      # ⚠️ 配置说明：
+      #    - 设置为 30秒，在执行超时（60秒）内
+      #    - 所有值都 < 60秒执行超时，确保能正常触发
+      #    - 主要保护由 totalTimer (35秒) 提供
  
       # ==================== JavaScript 内存限制 ====================
-      - ENABLE_JS_MEMORY_LIMIT=true      # 🔧 启用 JS 侧内存限制
-      - JS_MEMORY_LIMIT_MB=0              # 🔧 限制大小（0=使用 MAX_BLOB_FILE_SIZE_MB）
-            
+      # 说明：拦截 JavaScript 侧的大内存分配（Array、TypedArray、ArrayBuffer、Array.push）
+      # JS_MEMORY_LIMIT_MB: JavaScript 单次分配的最大内存大小（MB）
+      #   - 0: 使用 MAX_BLOB_FILE_SIZE_MB 的值（默认，自动跟随）
+      #   - >0: 指定具体限制（如 12 = 12MB）
+      #   
+      # 🔍 Array.push 限制计算：
+      #   最大元素数 = (JS_MEMORY_LIMIT_MB * 1024 * 1024) / 8
+      #   示例：
+      #     - 10MB → 1,310,720 个元素（生产环境当前值）
+      #     - 12MB → 1,572,864 个元素
+      #     - 50MB → 6,553,600 个元素
+      # 
+      # ⚠️ 注意：
+      #   - Array.push 超限时会抛出中文错误："Array.push 操作会导致数组长度超过限制..."
+      #   - 其他限制包括：new Array(n)、new Uint8Array(n)、new ArrayBuffer(n)
+      #   - 生产环境建议保持启用，防止恶意代码或错误代码导致内存溢出
+      - ENABLE_JS_MEMORY_LIMIT=true       # 🔧 启用 JS 侧内存限制（默认：true，生产环境必须启用）
+      - JS_MEMORY_LIMIT_MB=0              # 🔧 限制大小（0=使用 MAX_BLOB_FILE_SIZE_MB，当前为10MB → 1.3M元素）
+      
+      # ==================== 🔥 健康检查和池管理配置 ====================
+      # 生产环境：严格的阈值，及时发现和响应问题
+      - MIN_ERROR_COUNT_FOR_CHECK=10             # 最小错误次数阈值（生产环境：10，避免误判）
+      - MAX_ERROR_RATE_THRESHOLD=0.1             # 最大错误率阈值（生产环境：0.1 即 10%，及时发现问题）
+      - MIN_EXECUTION_COUNT_FOR_STATS=1000       # 统计长期运行的最小执行次数（生产环境：1000，确保准确性）
+      - LONG_RUNNING_THRESHOLD_MINUTES=60        # 长期运行时间阈值（生产环境：60分钟）
+      - POOL_EXPANSION_THRESHOLD_PERCENT=0.1     # 池扩展阈值（生产环境：0.1 即 10%，及时响应负载）
+      - HEALTH_CHECK_INTERVAL_SECONDS=30         # 健康检查间隔（生产环境：30秒，及时监控）
       
       # ==================== Go运行时配置 ====================
       - GOMAXPROCS=0                     # 0=使用所有CPU核心
       - GOGC=100                          # 🔧 GC目标百分比 (100→75，更频繁GC，降低内存峰值)
+      - GOMEMLIMIT=2048MiB
       
       # ==================== 🔍 调试配置 ====================
       # 生产环境默认禁用，需要时可临时启用

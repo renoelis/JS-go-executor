@@ -43,13 +43,29 @@ func RegisterFormDataModule(registry *require.Registry, fetchEnhancer *FetchEnha
 func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) goja.Value {
 	constructor := func(call goja.ConstructorCall) *goja.Object {
 		// 创建底层的 StreamingFormData 实例
-		config := DefaultFormDataStreamConfig()
+		// 🔥 重要：每个 FormData 都应该有独立的 config（深拷贝）
+		// 避免 config.Context 被共享，导致一个 FormData 的 context 取消影响其他 FormData
+		var config *FormDataStreamConfig
 		if nfm.fetchEnhancer != nil && nfm.fetchEnhancer.formDataConfig != nil {
-			config = nfm.fetchEnhancer.formDataConfig
+			// 深拷贝 config，避免共享
+			baseCfg := nfm.fetchEnhancer.formDataConfig
+			config = &FormDataStreamConfig{
+				MaxBufferedFormDataSize:  baseCfg.MaxBufferedFormDataSize,
+				MaxStreamingFormDataSize: baseCfg.MaxStreamingFormDataSize,
+				EnableChunkedUpload:      baseCfg.EnableChunkedUpload,
+				BufferSize:               baseCfg.BufferSize,
+				MaxFileSize:              baseCfg.MaxFileSize,
+				Timeout:                  baseCfg.Timeout,
+				Context:                  nil, // 🔥 关键：每个 FormData 独立的 context，默认 nil
+				MaxFormDataSize:          baseCfg.MaxFormDataSize,
+				StreamingThreshold:       baseCfg.StreamingThreshold,
+			}
+		} else {
+			config = DefaultFormDataStreamConfig()
 		}
 		streamingFormData := NewStreamingFormData(config)
 		if streamingFormData == nil {
-			panic(runtime.NewGoError(fmt.Errorf("failed to create StreamingFormData instance")))
+			panic(runtime.NewGoError(fmt.Errorf("创建 StreamingFormData 实例失败")))
 		}
 
 		// 创建 FormData 对象
@@ -68,7 +84,7 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 		// 2. append(name, value, options) - options 对象 {filename, contentType, knownLength}
 		formDataObj.Set("append", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) < 2 {
-				panic(runtime.NewTypeError("FormData.append requires at least 2 arguments"))
+				panic(runtime.NewTypeError("FormData.append 需要至少 2 个参数"))
 			}
 
 			name := call.Arguments[0].String()
@@ -126,7 +142,7 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 		// setBoundary(boundary) - 设置自定义边界
 		formDataObj.Set("setBoundary", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
-				panic(runtime.NewTypeError("setBoundary requires a boundary string"))
+				panic(runtime.NewTypeError("setBoundary 需要一个边界字符串参数"))
 			}
 			boundary := call.Arguments[0].String()
 			streamingFormData.boundary = boundary
@@ -151,7 +167,7 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 
 			callback, ok := goja.AssertFunction(call.Arguments[0])
 			if !ok {
-				panic(runtime.NewTypeError("getLength requires a callback function"))
+				panic(runtime.NewTypeError("getLength 需要一个回调函数参数"))
 			}
 
 			// 同步计算长度
@@ -170,29 +186,29 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 			// 创建 Reader 并读取所有数据
 			reader, err := streamingFormData.CreateReader()
 			if err != nil {
-				panic(runtime.NewGoError(fmt.Errorf("failed to create reader: %w", err)))
+				panic(runtime.NewGoError(fmt.Errorf("创建 reader 失败: %w", err)))
 			}
 
 			// 读取所有数据到 Buffer
 			var buf bytes.Buffer
 			if _, err := io.Copy(&buf, reader); err != nil {
-				panic(runtime.NewGoError(fmt.Errorf("failed to read form data: %w", err)))
+				panic(runtime.NewGoError(fmt.Errorf("读取表单数据失败: %w", err)))
 			}
 
 			// 转换为 goja Buffer
 			bufferConstructor := runtime.Get("Buffer")
 			if goja.IsUndefined(bufferConstructor) || goja.IsNull(bufferConstructor) {
-				panic(runtime.NewTypeError("Buffer is not available"))
+				panic(runtime.NewTypeError("Buffer 不可用"))
 			}
 
 			bufferObj := bufferConstructor.ToObject(runtime)
 			if bufferObj == nil {
-				panic(runtime.NewTypeError("Failed to convert Buffer to object"))
+				panic(runtime.NewTypeError("转换 Buffer 为对象失败"))
 			}
 
 			fromFunc, ok := goja.AssertFunction(bufferObj.Get("from"))
 			if !ok {
-				panic(runtime.NewTypeError("Buffer.from is not available"))
+				panic(runtime.NewTypeError("Buffer.from 不可用"))
 			}
 
 			// 创建 Uint8Array
@@ -239,7 +255,7 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 		// 🔥 使用内部 fetch API 实现
 		formDataObj.Set("submit", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
-				panic(runtime.NewTypeError("submit requires a URL"))
+				panic(runtime.NewTypeError("submit 需要一个 URL 参数"))
 			}
 
 			url := call.Arguments[0].String()
@@ -248,19 +264,19 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 				var ok bool
 				callback, ok = goja.AssertFunction(call.Arguments[1])
 				if !ok {
-					panic(runtime.NewTypeError("callback must be a function"))
+					panic(runtime.NewTypeError("callback 必须是一个函数"))
 				}
 			}
 
 			// 使用 fetch API 发送请求
 			fetchFunc := runtime.Get("fetch")
 			if goja.IsUndefined(fetchFunc) {
-				panic(runtime.NewTypeError("fetch is not available"))
+				panic(runtime.NewTypeError("fetch 不可用"))
 			}
 
 			fetch, ok := goja.AssertFunction(fetchFunc)
 			if !ok {
-				panic(runtime.NewTypeError("fetch is not a function"))
+				panic(runtime.NewTypeError("fetch 不是一个函数"))
 			}
 
 			// 构建 fetch 选项
@@ -331,13 +347,13 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingFormData *StreamingFormData, name string, value goja.Value, filename, contentType string) error {
 	// 安全检查
 	if nfm == nil {
-		return fmt.Errorf("nfm is nil")
+		return fmt.Errorf("nfm 为 nil")
 	}
 	if runtime == nil {
-		return fmt.Errorf("runtime is nil")
+		return fmt.Errorf("runtime 为 nil")
 	}
 	if streamingFormData == nil {
-		return fmt.Errorf("streamingFormData is nil")
+		return fmt.Errorf("streamingFormData 为 nil")
 	}
 
 	// 先检查 null/undefined（在 ToObject 之前，避免 panic）
@@ -366,7 +382,7 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 		isFile := obj.Get("__isFile")
 		if !goja.IsUndefined(isFile) && isFile != nil && isFile.ToBoolean() {
 			if nfm.fetchEnhancer == nil {
-				return fmt.Errorf("fetchEnhancer is nil")
+				return fmt.Errorf("fetchEnhancer 为 nil")
 			}
 
 			data, contentTypeFromFile, filenameFromFile, err := nfm.fetchEnhancer.extractFileData(obj)
@@ -392,7 +408,7 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 		isBlob := obj.Get("__isBlob")
 		if !goja.IsUndefined(isBlob) && isBlob != nil && isBlob.ToBoolean() {
 			if nfm.fetchEnhancer == nil {
-				return fmt.Errorf("fetchEnhancer is nil")
+				return fmt.Errorf("fetchEnhancer 为 nil")
 			}
 
 			data, contentTypeFromBlob, err := nfm.fetchEnhancer.extractBlobData(obj)

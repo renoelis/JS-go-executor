@@ -81,7 +81,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 	// 覆盖 Buffer.from 静态方法，支持编码参数
 	buffer.Set("from", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("Buffer.from requires at least 1 argument"))
+			panic(runtime.NewTypeError("Buffer.from 需要至少 1 个参数"))
 		}
 
 		arg0 := call.Arguments[0]
@@ -94,7 +94,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 
 		// 判断第一个参数的类型
 		if goja.IsNull(arg0) || goja.IsUndefined(arg0) {
-			panic(runtime.NewTypeError("First argument must be a string, Buffer, ArrayBuffer, Array, or Array-like object"))
+			panic(runtime.NewTypeError("第一个参数必须是字符串、Buffer、ArrayBuffer、Array 或类数组对象"))
 		}
 
 		// 如果是字符串，根据编码创建 Buffer
@@ -109,19 +109,19 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 			case "hex":
 				decoded, err := hex.DecodeString(str)
 				if err != nil {
-					panic(runtime.NewTypeError("Invalid hex string"))
+					panic(runtime.NewTypeError("无效的十六进制字符串"))
 				}
 				data = decoded
 			case "base64":
 				decoded, err := decodeBase64Lenient(str)
 				if err != nil {
-					panic(runtime.NewTypeError("Invalid base64 string"))
+					panic(runtime.NewTypeError("无效的 base64 字符串"))
 				}
 				data = decoded
 			case "base64url":
 				decoded, err := base64.RawURLEncoding.DecodeString(str)
 				if err != nil {
-					panic(runtime.NewTypeError("Invalid base64url string"))
+					panic(runtime.NewTypeError("无效的 base64url 字符串"))
 				}
 				data = decoded
 			case "latin1", "binary":
@@ -168,7 +168,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 			// 创建 Buffer
 			bufferConstructor := runtime.Get("Buffer")
 			if bufferConstructor == nil {
-				panic(runtime.NewTypeError("Buffer constructor not found"))
+				panic(runtime.NewTypeError("Buffer 构造函数未找到"))
 			}
 
 			// 调用 Buffer.alloc 或类似方法创建 buffer
@@ -184,32 +184,32 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 			if !goja.IsUndefined(originalFrom) {
 				fromFunc, ok := goja.AssertFunction(originalFrom)
 				if !ok {
-					panic(runtime.NewTypeError("Buffer.from is not a function"))
+					panic(runtime.NewTypeError("Buffer.from 不是一个函数"))
 				}
 				result, err := fromFunc(goja.Undefined(), arr)
 				if err != nil {
-					panic(runtime.NewTypeError("Failed to create Buffer: " + err.Error()))
+					panic(runtime.NewTypeError("创建 Buffer 失败: " + err.Error()))
 				}
 				return result
 			}
 
-			panic(runtime.NewTypeError("Buffer.from not available"))
+			panic(runtime.NewTypeError("Buffer.from 不可用"))
 		}
 
 		// 对于其他类型（数组、Buffer、ArrayBuffer等），调用原生实现
 		if !goja.IsUndefined(originalFrom) {
 			fromFunc, ok := goja.AssertFunction(originalFrom)
 			if !ok {
-				panic(runtime.NewTypeError("Buffer.from is not a function"))
+				panic(runtime.NewTypeError("Buffer.from 不是一个函数"))
 			}
 			result, err := fromFunc(goja.Undefined(), call.Arguments...)
 			if err != nil {
-				panic(runtime.NewTypeError("Failed to create Buffer: " + err.Error()))
+				panic(runtime.NewTypeError("创建 Buffer 失败: " + err.Error()))
 			}
 			return result
 		}
 
-		panic(runtime.NewTypeError("First argument must be a string, Buffer, ArrayBuffer, Array, or Array-like object"))
+		panic(runtime.NewTypeError("第一个参数必须是字符串、Buffer、ArrayBuffer、Array 或类数组对象"))
 	})
 
 	// 添加 Buffer.isBuffer 静态方法（修复版 - 更严格的判断）
@@ -269,18 +269,18 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 	// 添加 Buffer.allocUnsafe 静态方法
 	buffer.Set("allocUnsafe", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("The size argument is required"))
+			panic(runtime.NewTypeError("size 参数是必需的"))
 		}
 
 		size := call.Arguments[0].ToInteger()
 		if size < 0 {
-			panic(runtime.NewTypeError("The size argument must be non-negative"))
+			panic(runtime.NewTypeError("size 参数必须非负"))
 		}
 
 		// 使用Buffer.alloc创建，但不初始化内容（在实际实现中allocUnsafe不会清零）
 		allocFunc, ok := goja.AssertFunction(buffer.Get("alloc"))
 		if !ok {
-			panic(runtime.NewTypeError("Buffer.alloc is not available"))
+			panic(runtime.NewTypeError("Buffer.alloc 不可用"))
 		}
 
 		result, err := allocFunc(buffer, runtime.ToValue(size))
@@ -293,18 +293,18 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 	// 添加 Buffer.allocUnsafeSlow 静态方法
 	buffer.Set("allocUnsafeSlow", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("The size argument is required"))
+			panic(runtime.NewTypeError("size 参数是必需的"))
 		}
 
 		size := call.Arguments[0].ToInteger()
 		if size < 0 {
-			panic(runtime.NewTypeError("The size argument must be non-negative"))
+			panic(runtime.NewTypeError("size 参数必须非负"))
 		}
 
 		// allocUnsafeSlow 创建非池化的Buffer
 		allocFunc, ok := goja.AssertFunction(buffer.Get("alloc"))
 		if !ok {
-			panic(runtime.NewTypeError("Buffer.alloc is not available"))
+			panic(runtime.NewTypeError("Buffer.alloc 不可用"))
 		}
 
 		result, err := allocFunc(buffer, runtime.ToValue(size))
@@ -317,7 +317,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 	// 添加 Buffer.byteLength 静态方法
 	buffer.Set("byteLength", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("String is required"))
+			panic(runtime.NewTypeError("字符串参数是必需的"))
 		}
 
 		str := call.Arguments[0].String()
@@ -333,20 +333,20 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		case "hex":
 			decoded, err := hex.DecodeString(str)
 			if err != nil {
-				panic(runtime.NewTypeError("Invalid hex string"))
+				panic(runtime.NewTypeError("无效的十六进制字符串"))
 			}
 			length = len(decoded)
 		case "base64":
 			// 使用宽松的 base64 解码（Node.js 行为）
 			decoded, err := decodeBase64Lenient(str)
 			if err != nil {
-				panic(runtime.NewTypeError("Invalid base64 string"))
+				panic(runtime.NewTypeError("无效的 base64 字符串"))
 			}
 			length = len(decoded)
 		case "base64url":
 			decoded, err := base64.RawURLEncoding.DecodeString(str)
 			if err != nil {
-				panic(runtime.NewTypeError("Invalid base64url string"))
+				panic(runtime.NewTypeError("无效的 base64url 字符串"))
 			}
 			length = len(decoded)
 		case "ascii", "latin1", "binary":
@@ -383,13 +383,13 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 	// 添加 Buffer.compare 静态方法
 	buffer.Set("compare", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) < 2 {
-			panic(runtime.NewTypeError("Two buffers are required"))
+			panic(runtime.NewTypeError("需要两个 buffer 参数"))
 		}
 
 		buf1 := call.Arguments[0].ToObject(runtime)
 		buf2 := call.Arguments[1].ToObject(runtime)
 		if buf1 == nil || buf2 == nil {
-			panic(runtime.NewTypeError("Arguments must be buffers"))
+			panic(runtime.NewTypeError("参数必须是 buffer"))
 		}
 
 		// 获取两个buffer的长度
@@ -441,7 +441,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 	// 添加 Buffer.concat 静态方法
 	buffer.Set("concat", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("The buffers argument is required"))
+			panic(runtime.NewTypeError("buffers 参数是必需的"))
 		}
 
 		buffers := call.Arguments[0]
@@ -454,13 +454,13 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 
 		buffersObj := buffers.ToObject(runtime)
 		if buffersObj == nil {
-			panic(runtime.NewTypeError("Buffers must be an array"))
+			panic(runtime.NewTypeError("Buffers 必须是一个数组"))
 		}
 
 		// 获取数组长度
 		lengthVal := buffersObj.Get("length")
 		if goja.IsUndefined(lengthVal) {
-			panic(runtime.NewTypeError("Buffers must be an array"))
+			panic(runtime.NewTypeError("Buffers 必须是一个数组"))
 		}
 
 		arrayLength := lengthVal.ToInteger()
@@ -468,7 +468,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 			// 返回空Buffer
 			allocFunc, ok := goja.AssertFunction(buffer.Get("alloc"))
 			if !ok {
-				panic(runtime.NewTypeError("Buffer.alloc is not available"))
+				panic(runtime.NewTypeError("Buffer.alloc 不可用"))
 			}
 			result, err := allocFunc(buffer, runtime.ToValue(0))
 			if err != nil {
@@ -506,7 +506,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		// 创建结果Buffer
 		allocFunc, ok := goja.AssertFunction(buffer.Get("alloc"))
 		if !ok {
-			panic(runtime.NewTypeError("Buffer.alloc is not available"))
+			panic(runtime.NewTypeError("Buffer.alloc 不可用"))
 		}
 
 		result, err := allocFunc(buffer, runtime.ToValue(totalLength))
@@ -516,7 +516,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 
 		resultObj := result.ToObject(runtime)
 		if resultObj == nil {
-			panic(runtime.NewTypeError("Failed to create result buffer"))
+			panic(runtime.NewTypeError("创建结果 buffer 失败"))
 		}
 
 		// 复制数据
@@ -551,7 +551,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		originalFrom := buffer.Get("from")
 		buffer.Set("from", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
-				panic(runtime.NewTypeError("The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array"))
+				panic(runtime.NewTypeError("第一个参数必须是字符串类型或 Buffer、ArrayBuffer、Array 的实例"))
 			}
 
 			arg := call.Arguments[0]
@@ -623,7 +623,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 				return result
 			}
 
-			panic(runtime.NewTypeError("Buffer.from is not properly initialized"))
+			panic(runtime.NewTypeError("Buffer.from 未正确初始化"))
 		})
 	*/
 
@@ -659,7 +659,7 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 	prototype.Set("write", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("String is required"))
+			panic(runtime.NewTypeError("字符串参数是必需的"))
 		}
 
 		str := call.Arguments[0].String()
@@ -752,20 +752,20 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 		case "hex":
 			decoded, err := hex.DecodeString(str)
 			if err != nil {
-				panic(runtime.NewTypeError("Invalid hex string"))
+				panic(runtime.NewTypeError("无效的十六进制字符串"))
 			}
 			data = decoded
 		case "base64":
 			// 使用宽松的 base64 解码（Node.js 行为）
 			decoded, err := decodeBase64Lenient(str)
 			if err != nil {
-				panic(runtime.NewTypeError("Invalid base64 string"))
+				panic(runtime.NewTypeError("无效的 base64 字符串"))
 			}
 			data = decoded
 		case "base64url":
 			decoded, err := base64.RawURLEncoding.DecodeString(str)
 			if err != nil {
-				panic(runtime.NewTypeError("Invalid base64url string"))
+				panic(runtime.NewTypeError("无效的 base64url 字符串"))
 			}
 			data = decoded
 		case "latin1", "binary":
@@ -879,17 +879,17 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 		// 使用Buffer.alloc创建新Buffer，然后复制数据
 		bufferConstructor := runtime.Get("Buffer")
 		if bufferConstructor == nil {
-			panic(runtime.NewTypeError("Buffer constructor is not available"))
+			panic(runtime.NewTypeError("Buffer 构造函数不可用"))
 		}
 
 		bufferObj := bufferConstructor.ToObject(runtime)
 		if bufferObj == nil {
-			panic(runtime.NewTypeError("Buffer constructor is not an object"))
+			panic(runtime.NewTypeError("Buffer 构造函数不是一个对象"))
 		}
 
 		allocFunc, ok := goja.AssertFunction(bufferObj.Get("alloc"))
 		if !ok {
-			panic(runtime.NewTypeError("Buffer.alloc is not available"))
+			panic(runtime.NewTypeError("Buffer.alloc 不可用"))
 		}
 
 		// 创建新的Buffer
@@ -901,7 +901,7 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 
 		newBufferObj := newBuffer.ToObject(runtime)
 		if newBufferObj == nil {
-			panic(runtime.NewTypeError("Failed to create new buffer"))
+			panic(runtime.NewTypeError("创建新 buffer 失败"))
 		}
 
 		// 复制数据
@@ -1098,12 +1098,12 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 	prototype.Set("copy", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("Target buffer is required"))
+			panic(runtime.NewTypeError("目标 buffer 是必需的"))
 		}
 
 		target := call.Arguments[0].ToObject(runtime)
 		if target == nil {
-			panic(runtime.NewTypeError("Target must be a buffer"))
+			panic(runtime.NewTypeError("目标必须是一个 buffer"))
 		}
 
 		targetStart := int64(0)
@@ -1159,12 +1159,12 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 	prototype.Set("compare", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("Target buffer is required"))
+			panic(runtime.NewTypeError("目标 buffer 是必需的"))
 		}
 
 		target := call.Arguments[0].ToObject(runtime)
 		if target == nil {
-			panic(runtime.NewTypeError("Target must be a buffer"))
+			panic(runtime.NewTypeError("目标必须是一个 buffer"))
 		}
 
 		// 获取两个buffer的长度
@@ -1265,7 +1265,7 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 	prototype.Set("fill", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		value := call.Arguments[0]
@@ -1491,7 +1491,7 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 
 		// 长度必须是2的倍数
 		if bufferLength%2 != 0 {
-			panic(runtime.NewTypeError("Buffer size must be a multiple of 16-bits"))
+			panic(runtime.NewTypeError("Buffer 大小必须是 16 位的倍数"))
 		}
 
 		// 交换每对字节
@@ -1519,7 +1519,7 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 
 		// 长度必须是4的倍数
 		if bufferLength%4 != 0 {
-			panic(runtime.NewTypeError("Buffer size must be a multiple of 32-bits"))
+			panic(runtime.NewTypeError("Buffer 大小必须是 32 位的倍数"))
 		}
 
 		// 交换每4个字节
@@ -1551,7 +1551,7 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 
 		// 长度必须是8的倍数
 		if bufferLength%8 != 0 {
-			panic(runtime.NewTypeError("Buffer size must be a multiple of 64-bits"))
+			panic(runtime.NewTypeError("Buffer 大小必须是 64 位的倍数"))
 		}
 
 		// 交换每8个字节
@@ -1636,17 +1636,17 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 		// 创建新的Buffer（在真实的Node.js中subarray返回视图，这里简化为复制）
 		bufferConstructor := runtime.Get("Buffer")
 		if bufferConstructor == nil {
-			panic(runtime.NewTypeError("Buffer constructor is not available"))
+			panic(runtime.NewTypeError("Buffer 构造函数不可用"))
 		}
 
 		bufferObj := bufferConstructor.ToObject(runtime)
 		if bufferObj == nil {
-			panic(runtime.NewTypeError("Buffer constructor is not an object"))
+			panic(runtime.NewTypeError("Buffer 构造函数不是一个对象"))
 		}
 
 		allocFunc, ok := goja.AssertFunction(bufferObj.Get("alloc"))
 		if !ok {
-			panic(runtime.NewTypeError("Buffer.alloc is not available"))
+			panic(runtime.NewTypeError("Buffer.alloc 不可用"))
 		}
 
 		subarrayLength := end - start
@@ -1657,7 +1657,7 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 
 		newBufferObj := newBuffer.ToObject(runtime)
 		if newBufferObj == nil {
-			panic(runtime.NewTypeError("Failed to create new buffer"))
+			panic(runtime.NewTypeError("创建新 buffer 失败"))
 		}
 
 		// 复制数据
@@ -1677,12 +1677,12 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 	prototype.Set("set", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("Array is required"))
+			panic(runtime.NewTypeError("Array 参数是必需的"))
 		}
 
 		sourceArray := call.Arguments[0].ToObject(runtime)
 		if sourceArray == nil {
-			panic(runtime.NewTypeError("First argument must be an array or buffer"))
+			panic(runtime.NewTypeError("第一个参数必须是数组或 buffer"))
 		}
 
 		offset := int64(0)
@@ -1704,7 +1704,7 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 
 		// 边界检查
 		if offset < 0 || offset+sourceLength > bufferLength {
-			panic(runtime.NewTypeError("Offset is outside buffer bounds"))
+			panic(runtime.NewTypeError("偏移量超出 buffer 边界"))
 		}
 
 		// 复制数据
@@ -1733,8 +1733,8 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 // checkIntRange 检查整数是否在指定范围内（Node.js 行为）
 func checkIntRange(runtime *goja.Runtime, value int64, min int64, max int64, valueName string) {
 	if value < min || value > max {
-		panic(runtime.NewTypeError("The value of \"" + valueName + "\" is out of range. It must be >= " +
-			strconv.FormatInt(min, 10) + " and <= " + strconv.FormatInt(max, 10) + ". Received " +
+		panic(runtime.NewTypeError("\"" + valueName + "\" 的值超出范围。必须 >= " +
+			strconv.FormatInt(min, 10) + " 且 <= " + strconv.FormatInt(max, 10) + "。接收到 " +
 			strconv.FormatInt(value, 10)))
 	}
 }
@@ -1742,7 +1742,7 @@ func checkIntRange(runtime *goja.Runtime, value int64, min int64, max int64, val
 // checkReadBounds 检查读取边界并返回 buffer length
 func checkReadBounds(runtime *goja.Runtime, this *goja.Object, offset, byteSize int64, methodName string) int64 {
 	if this == nil {
-		panic(runtime.NewTypeError("Method " + methodName + " called on incompatible receiver"))
+		panic(runtime.NewTypeError("方法 " + methodName + " 在不兼容的接收器上调用"))
 	}
 
 	bufferLength := int64(0)
@@ -1751,7 +1751,7 @@ func checkReadBounds(runtime *goja.Runtime, this *goja.Object, offset, byteSize 
 	}
 
 	if offset < 0 || offset+byteSize > bufferLength {
-		panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+		panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 	}
 
 	return bufferLength
@@ -1777,14 +1777,14 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 				return runtime.ToValue(int64(result))
 			}
 		}
-		panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+		panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 	})
 
 	// writeInt8
 	prototype.Set("writeInt8", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		value := call.Arguments[0].ToInteger()
@@ -1800,7 +1800,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		}
 
 		if offset >= bufferLength {
-			panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 		}
 
 		// 写入值
@@ -1824,14 +1824,14 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 				return runtime.ToValue(byteVal & 0xFF)
 			}
 		}
-		panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+		panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 	})
 
 	// writeUInt8
 	prototype.Set("writeUInt8", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		value := call.Arguments[0].ToInteger()
@@ -1847,7 +1847,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		}
 
 		if offset >= bufferLength {
-			panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 		}
 
 		// 写入值
@@ -1933,7 +1933,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 	prototype.Set("writeInt16BE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		rawValue := call.Arguments[0].ToInteger()
@@ -1951,7 +1951,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			bufferLength = lengthVal.ToInteger()
 		}
 		if offset+1 >= bufferLength {
-			panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 		}
 
 		// 写入大端16位整数
@@ -1964,7 +1964,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 	prototype.Set("writeInt16LE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		rawValue := call.Arguments[0].ToInteger()
@@ -1982,7 +1982,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			bufferLength = lengthVal.ToInteger()
 		}
 		if offset+1 >= bufferLength {
-			panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 		}
 
 		// 写入小端16位整数
@@ -1995,7 +1995,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 	prototype.Set("writeUInt16BE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		rawValue := call.Arguments[0].ToInteger()
@@ -2013,7 +2013,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			bufferLength = lengthVal.ToInteger()
 		}
 		if offset+1 >= bufferLength {
-			panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 		}
 
 		// 写入大端16位无符号整数
@@ -2026,7 +2026,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 	prototype.Set("writeUInt16LE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		rawValue := call.Arguments[0].ToInteger()
@@ -2044,7 +2044,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			bufferLength = lengthVal.ToInteger()
 		}
 		if offset+1 >= bufferLength {
-			panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 		}
 
 		// 写入小端16位无符号整数
@@ -2139,13 +2139,13 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 	prototype.Set("writeInt32BE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		// 获取原始值并检查范围（Node.js 行为）
 		rawValue := call.Arguments[0].ToInteger()
 		if rawValue < math.MinInt32 || rawValue > math.MaxInt32 {
-			panic(runtime.NewTypeError("The value of \"value\" is out of range. It must be >= -2147483648 and <= 2147483647. Received " + strconv.FormatInt(rawValue, 10)))
+			panic(runtime.NewTypeError("\"value\" 的值超出范围。必须 >= -2147483648 且 <= 2147483647。接收到 " + strconv.FormatInt(rawValue, 10)))
 		}
 		value := int32(rawValue)
 
@@ -2160,7 +2160,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			bufferLength = lengthVal.ToInteger()
 		}
 		if offset+3 >= bufferLength {
-			panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 		}
 
 		// 写入大端32位整数
@@ -2175,13 +2175,13 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 	prototype.Set("writeInt32LE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		// 获取原始值并检查范围（Node.js 行为）
 		rawValue := call.Arguments[0].ToInteger()
 		if rawValue < math.MinInt32 || rawValue > math.MaxInt32 {
-			panic(runtime.NewTypeError("The value of \"value\" is out of range. It must be >= -2147483648 and <= 2147483647. Received " + strconv.FormatInt(rawValue, 10)))
+			panic(runtime.NewTypeError("\"value\" 的值超出范围。必须 >= -2147483648 且 <= 2147483647。接收到 " + strconv.FormatInt(rawValue, 10)))
 		}
 		value := int32(rawValue)
 
@@ -2196,7 +2196,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			bufferLength = lengthVal.ToInteger()
 		}
 		if offset+3 >= bufferLength {
-			panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 		}
 
 		// 写入小端32位整数
@@ -2211,7 +2211,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 	prototype.Set("writeUInt32BE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		rawValue := call.Arguments[0].ToInteger()
@@ -2229,7 +2229,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			bufferLength = lengthVal.ToInteger()
 		}
 		if offset+3 >= bufferLength {
-			panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 		}
 
 		// 写入大端32位无符号整数
@@ -2244,7 +2244,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 	prototype.Set("writeUInt32LE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		rawValue := call.Arguments[0].ToInteger()
@@ -2262,7 +2262,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			bufferLength = lengthVal.ToInteger()
 		}
 		if offset+3 >= bufferLength {
-			panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 		}
 
 		// 写入小端32位无符号整数
@@ -2359,7 +2359,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 	prototype.Set("writeFloatBE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		value := float32(call.Arguments[0].ToFloat())
@@ -2374,7 +2374,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			bufferLength = lengthVal.ToInteger()
 		}
 		if offset+3 >= bufferLength {
-			panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 		}
 
 		// 写入大端32位浮点数
@@ -2391,7 +2391,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 	prototype.Set("writeFloatLE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		value := float32(call.Arguments[0].ToFloat())
@@ -2406,7 +2406,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			bufferLength = lengthVal.ToInteger()
 		}
 		if offset+3 >= bufferLength {
-			panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 		}
 
 		// 写入小端32位浮点数
@@ -2423,7 +2423,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 	prototype.Set("writeDoubleBE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		value := call.Arguments[0].ToFloat()
@@ -2438,7 +2438,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			bufferLength = lengthVal.ToInteger()
 		}
 		if offset+7 >= bufferLength {
-			panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 		}
 
 		// 写入大端64位双精度浮点数
@@ -2455,7 +2455,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 	prototype.Set("writeDoubleLE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		value := call.Arguments[0].ToFloat()
@@ -2470,7 +2470,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			bufferLength = lengthVal.ToInteger()
 		}
 		if offset+7 >= bufferLength {
-			panic(runtime.NewTypeError("RangeError: Offset is outside the bounds of the Buffer"))
+			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
 		}
 
 		// 写入小端64位双精度浮点数
@@ -2488,7 +2488,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 func safeGetThis(runtime *goja.Runtime, call goja.FunctionCall) *goja.Object {
 	this := call.This.ToObject(runtime)
 	if this == nil {
-		panic(runtime.NewTypeError("Cannot read property of null or undefined"))
+		panic(runtime.NewTypeError("无法读取 null 或 undefined 的属性"))
 	}
 	return this
 }
@@ -2577,17 +2577,17 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 	prototype.Set("readIntBE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if this == nil {
-			panic(runtime.NewTypeError("Method readIntBE called on incompatible receiver"))
+			panic(runtime.NewTypeError("方法 readIntBE 在不兼容的接收器上调用"))
 		}
 		if len(call.Arguments) < 2 {
-			panic(runtime.NewTypeError("Offset and byteLength are required"))
+			panic(runtime.NewTypeError("Offset 和 byteLength 参数是必需的"))
 		}
 
 		offset := call.Arguments[0].ToInteger()
 		byteLength := call.Arguments[1].ToInteger()
 
 		if byteLength < 1 || byteLength > 6 {
-			panic(runtime.NewTypeError("byteLength must be between 1 and 6"))
+			panic(runtime.NewTypeError("byteLength 必须在 1 到 6 之间"))
 		}
 
 		// 检查边界
@@ -2611,17 +2611,17 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 	prototype.Set("readIntLE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if this == nil {
-			panic(runtime.NewTypeError("Method readIntLE called on incompatible receiver"))
+			panic(runtime.NewTypeError("方法 readIntLE 在不兼容的接收器上调用"))
 		}
 		if len(call.Arguments) < 2 {
-			panic(runtime.NewTypeError("Offset and byteLength are required"))
+			panic(runtime.NewTypeError("Offset 和 byteLength 参数是必需的"))
 		}
 
 		offset := call.Arguments[0].ToInteger()
 		byteLength := call.Arguments[1].ToInteger()
 
 		if byteLength < 1 || byteLength > 6 {
-			panic(runtime.NewTypeError("byteLength must be between 1 and 6"))
+			panic(runtime.NewTypeError("byteLength 必须在 1 到 6 之间"))
 		}
 
 		// 检查边界
@@ -2645,17 +2645,17 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 	prototype.Set("readUIntBE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if this == nil {
-			panic(runtime.NewTypeError("Method readUIntBE called on incompatible receiver"))
+			panic(runtime.NewTypeError("方法 readUIntBE 在不兼容的接收器上调用"))
 		}
 		if len(call.Arguments) < 2 {
-			panic(runtime.NewTypeError("Offset and byteLength are required"))
+			panic(runtime.NewTypeError("Offset 和 byteLength 参数是必需的"))
 		}
 
 		offset := call.Arguments[0].ToInteger()
 		byteLength := call.Arguments[1].ToInteger()
 
 		if byteLength < 1 || byteLength > 6 {
-			panic(runtime.NewTypeError("byteLength must be between 1 and 6"))
+			panic(runtime.NewTypeError("byteLength 必须在 1 到 6 之间"))
 		}
 
 		// 检查边界
@@ -2675,17 +2675,17 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 	prototype.Set("readUIntLE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if this == nil {
-			panic(runtime.NewTypeError("Method readUIntLE called on incompatible receiver"))
+			panic(runtime.NewTypeError("方法 readUIntLE 在不兼容的接收器上调用"))
 		}
 		if len(call.Arguments) < 2 {
-			panic(runtime.NewTypeError("Offset and byteLength are required"))
+			panic(runtime.NewTypeError("Offset 和 byteLength 参数是必需的"))
 		}
 
 		offset := call.Arguments[0].ToInteger()
 		byteLength := call.Arguments[1].ToInteger()
 
 		if byteLength < 1 || byteLength > 6 {
-			panic(runtime.NewTypeError("byteLength must be between 1 and 6"))
+			panic(runtime.NewTypeError("byteLength 必须在 1 到 6 之间"))
 		}
 
 		// 检查边界
@@ -2705,7 +2705,7 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 	prototype.Set("writeIntBE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 3 {
-			panic(runtime.NewTypeError("Value, offset and byteLength are required"))
+			panic(runtime.NewTypeError("Value、offset 和 byteLength 参数是必需的"))
 		}
 
 		value := call.Arguments[0].ToInteger()
@@ -2713,7 +2713,7 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 		byteLength := call.Arguments[2].ToInteger()
 
 		if byteLength < 1 || byteLength > 6 {
-			panic(runtime.NewTypeError("byteLength must be between 1 and 6"))
+			panic(runtime.NewTypeError("byteLength 必须在 1 到 6 之间"))
 		}
 
 		// 写入字节（大端）
@@ -2730,7 +2730,7 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 	prototype.Set("writeIntLE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 3 {
-			panic(runtime.NewTypeError("Value, offset and byteLength are required"))
+			panic(runtime.NewTypeError("Value、offset 和 byteLength 参数是必需的"))
 		}
 
 		value := call.Arguments[0].ToInteger()
@@ -2738,7 +2738,7 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 		byteLength := call.Arguments[2].ToInteger()
 
 		if byteLength < 1 || byteLength > 6 {
-			panic(runtime.NewTypeError("byteLength must be between 1 and 6"))
+			panic(runtime.NewTypeError("byteLength 必须在 1 到 6 之间"))
 		}
 
 		// 写入字节（小端）
@@ -2755,7 +2755,7 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 	prototype.Set("writeUIntBE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 3 {
-			panic(runtime.NewTypeError("Value, offset and byteLength are required"))
+			panic(runtime.NewTypeError("Value、offset 和 byteLength 参数是必需的"))
 		}
 
 		value := uint64(call.Arguments[0].ToInteger())
@@ -2763,7 +2763,7 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 		byteLength := call.Arguments[2].ToInteger()
 
 		if byteLength < 1 || byteLength > 6 {
-			panic(runtime.NewTypeError("byteLength must be between 1 and 6"))
+			panic(runtime.NewTypeError("byteLength 必须在 1 到 6 之间"))
 		}
 
 		// 写入字节（大端）
@@ -2780,7 +2780,7 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 	prototype.Set("writeUIntLE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) < 3 {
-			panic(runtime.NewTypeError("Value, offset and byteLength are required"))
+			panic(runtime.NewTypeError("Value、offset 和 byteLength 参数是必需的"))
 		}
 
 		value := uint64(call.Arguments[0].ToInteger())
@@ -2788,7 +2788,7 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 		byteLength := call.Arguments[2].ToInteger()
 
 		if byteLength < 1 || byteLength > 6 {
-			panic(runtime.NewTypeError("byteLength must be between 1 and 6"))
+			panic(runtime.NewTypeError("byteLength 必须在 1 到 6 之间"))
 		}
 
 		// 写入字节（小端）
@@ -2957,7 +2957,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 	getBigIntValue := func(value goja.Value) *big.Int {
 		// 检查是否为 undefined 或 null
 		if goja.IsUndefined(value) || goja.IsNull(value) {
-			panic(runtime.NewTypeError("Cannot convert undefined or null to BigInt"))
+			panic(runtime.NewTypeError("无法将 undefined 或 null 转换为 BigInt"))
 		}
 
 		// 🔥 新增：优先检查是否为原生 bigint（通过 Export 导出）
@@ -2971,17 +2971,17 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		// 先检查是否为数字类型（防止 ToObject 失败）
 		// 如果是普通数字，直接抛出类型错误
 		if _, ok := value.Export().(int64); ok {
-			panic(runtime.NewTypeError("The \"value\" argument must be of type bigint. Received type number"))
+			panic(runtime.NewTypeError("\"value\" 参数必须是 bigint 类型。接收到 number 类型"))
 		}
 		if _, ok := value.Export().(float64); ok {
-			panic(runtime.NewTypeError("The \"value\" argument must be of type bigint. Received type number"))
+			panic(runtime.NewTypeError("\"value\" 参数必须是 bigint 类型。接收到 number 类型"))
 		}
 
 		// 尝试获取 BigInt 对象（兼容旧的对象方式）
 		defer func() {
 			if r := recover(); r != nil {
 				// 如果ToObject失败，抛出类型错误
-				panic(runtime.NewTypeError("The \"value\" argument must be of type bigint"))
+				panic(runtime.NewTypeError("\"value\" 参数必须是 bigint 类型"))
 			}
 		}()
 
@@ -2996,7 +2996,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		}
 
 		// 如果不是 BigInt 对象，抛出类型错误（Node.js 行为）
-		panic(runtime.NewTypeError("The \"value\" argument must be of type bigint"))
+		panic(runtime.NewTypeError("\"value\" 参数必须是 bigint 类型"))
 	}
 
 	// readBigInt64BE - 读取 64 位有符号大端整数
@@ -3129,10 +3129,10 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 	prototype.Set("writeBigInt64BE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if this == nil {
-			panic(runtime.NewTypeError("Method writeBigInt64BE called on incompatible receiver"))
+			panic(runtime.NewTypeError("方法 writeBigInt64BE 在不兼容的接收器上调用"))
 		}
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		offset := int64(0)
@@ -3171,10 +3171,10 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 	prototype.Set("writeBigInt64LE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if this == nil {
-			panic(runtime.NewTypeError("Method writeBigInt64LE called on incompatible receiver"))
+			panic(runtime.NewTypeError("方法 writeBigInt64LE 在不兼容的接收器上调用"))
 		}
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		offset := int64(0)
@@ -3213,10 +3213,10 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 	prototype.Set("writeBigUInt64BE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if this == nil {
-			panic(runtime.NewTypeError("Method writeBigUInt64BE called on incompatible receiver"))
+			panic(runtime.NewTypeError("方法 writeBigUInt64BE 在不兼容的接收器上调用"))
 		}
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		offset := int64(0)
@@ -3249,10 +3249,10 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 	prototype.Set("writeBigUInt64LE", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if this == nil {
-			panic(runtime.NewTypeError("Method writeBigUInt64LE called on incompatible receiver"))
+			panic(runtime.NewTypeError("方法 writeBigUInt64LE 在不兼容的接收器上调用"))
 		}
 		if len(call.Arguments) < 1 {
-			panic(runtime.NewTypeError("Value is required"))
+			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		offset := int64(0)

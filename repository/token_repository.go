@@ -46,7 +46,7 @@ func (r *TokenRepository) GenerateToken() (string, error) {
 		// 🔒 安全第一：绝不降级到弱随机性（如时间戳）
 		// 宁可失败也不生成可预测的 Token
 		// crypto/rand.Read 失败极其罕见（< 1/10,000,000），但一旦发生必须处理
-		return "", fmt.Errorf("failed to generate secure random bytes: %w", err)
+		return "", fmt.Errorf("生成安全随机字节失败: %w", err)
 	}
 	randomStr := hex.EncodeToString(randomBytes)
 

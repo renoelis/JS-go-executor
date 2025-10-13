@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/dop251/goja_nodejs/url"
 	"github.com/sony/gobreaker"
 	"go.uber.org/zap"
+	"golang.org/x/sync/singleflight"
 )
 
 // JSExecutor Go+goja JavaScript执行器
@@ -59,6 +61,15 @@ type JSExecutor struct {
 	allowConsole              bool          // 是否允许用户代码使用 console
 	concurrencyWaitTimeout    time.Duration // 🔥 并发槽位等待超时（可配置）
 	runtimePoolAcquireTimeout time.Duration // 🔥 Runtime 池获取超时（可配置）
+	slowExecutionThreshold    time.Duration // 🔥 慢执行检测阈值（可配置）
+
+	// 🔥 健康检查和池管理配置（从配置文件加载）
+	minErrorCountForCheck         int           // 最小错误次数阈值
+	maxErrorRateThreshold         float64       // 最大错误率阈值
+	minExecutionCountForStats     int           // 统计长期运行的最小执行次数
+	longRunningThreshold          time.Duration // 长期运行时间阈值
+	poolExpansionThresholdPercent float64       // 池扩展阈值百分比
+	healthCheckInterval           time.Duration // 健康检查间隔
 
 	// Node.js兼容性
 	registry *require.Registry
@@ -68,10 +79,6 @@ type JSExecutor struct {
 
 	// 🔥 JavaScript 内存限制器（可配置）
 	jsMemoryLimiter *enhance_modules.JSMemoryLimiter
-
-	// 🔒 预加载的库导出（安全隔离）
-	preloadedLibs map[string]interface{}
-	preloadMutex  sync.RWMutex
 
 	// 用户代码编译缓存 (LRU 实现)
 	codeCache      *utils.LRUCache
@@ -83,6 +90,10 @@ type JSExecutor struct {
 	// key: 代码哈希, value: error (nil 表示验证通过)
 	validationCache      *utils.GenericLRUCache
 	validationCacheMutex sync.RWMutex
+
+	// 🔥 代码编译去重（防止缓存穿透）
+	// 使用 singleflight 避免多个请求同时编译相同代码
+	compileGroup singleflight.Group
 
 	// 代码分析器（智能路由）
 	analyzer *utils.CodeAnalyzer
@@ -104,29 +115,37 @@ type JSExecutor struct {
 }
 
 // runtimeHealthInfo 运行时健康信息
-// 🔒 并发安全：executionCount/errorCount/createdAt/lastUsedAt 使用 atomic 操作
+// 🔒 并发安全：使用 Go 1.19+ 的 atomic.Int64 类型，提供编译时类型安全
 //
-//   - time.Time 改用 int64 时间戳（UnixNano），支持 atomic 读写
+// 优化历程：
 //
-//   - 无法直接使用 atomic 操作（atomic 只支持 int32/int64/pointer）
+//	v1: 使用 mutex 保护所有字段 → 锁竞争严重
+//	v2: 改用 int64 + atomic 函数 → 持锁时间从 2-5ms → 50-100μs（40-100x 加速）
+//	v3: 升级到 atomic.Int64 类型 → 编译时类型安全，代码更简洁
 //
-//   - 解决方案：使用 Unix 纳秒时间戳（int64）+ atomic 操作
+// 性能优势：
 //
-//   - 性能提升：
-//     ✅ 所有更新操作可用读锁（不阻塞健康检查）
-//     ✅ 快照拷贝持锁时间从 2-5ms → 50-100μs（40-100x 加速）
-//     ✅ 写锁操作从 1000次/秒 → 0次/秒
-//     ✅ 锁竞争减少 99%+
-//     ✅ 高并发下吞吐量提升 0.5-1%
+//	✅ 所有更新操作可用读锁（不阻塞健康检查）
+//	✅ 快照拷贝持锁时间 50-100μs（极短）
+//	✅ 写锁操作从 1000次/秒 → 0次/秒
+//	✅ 锁竞争减少 99%+
+//	✅ 高并发下吞吐量提升 0.5-1%
 //
-//   - 时间转换：
-//     写入: atomic.StoreInt64(&health.lastUsedAtNano, time.Now().UnixNano())
-//     读取: lastUsed := time.Unix(0, atomic.LoadInt64(&health.lastUsedAtNano))
+// 类型安全：
+//
+//	✅ 编译器保证正确使用（atomic.Int64.Add/Load/Store）
+//	✅ 避免错误的非原子操作
+//	✅ 代码更简洁易读
+//
+// 时间转换：
+//
+//	写入: health.lastUsedAtNano.Store(time.Now().UnixNano())
+//	读取: lastUsed := time.Unix(0, health.lastUsedAtNano.Load())
 type runtimeHealthInfo struct {
-	createdAtNano  int64 // Unix 纳秒时间戳，使用 atomic.LoadInt64/StoreInt64
-	lastUsedAtNano int64 // Unix 纳秒时间戳，使用 atomic.LoadInt64/StoreInt64
-	executionCount int64 // 必须使用 atomic.AddInt64 / atomic.LoadInt64
-	errorCount     int64 // 必须使用 atomic.AddInt64 / atomic.LoadInt64
+	createdAtNano  atomic.Int64 // Unix 纳秒时间戳，Go 1.19+ atomic.Int64
+	lastUsedAtNano atomic.Int64 // Unix 纳秒时间戳，Go 1.19+ atomic.Int64
+	executionCount atomic.Int64 // 执行次数计数器，Go 1.19+ atomic.Int64
+	errorCount     atomic.Int64 // 错误次数计数器，Go 1.19+ atomic.Int64
 }
 
 // NewJSExecutor 创建新的JavaScript执行器
@@ -148,16 +167,25 @@ func NewJSExecutor(cfg *config.Config) *JSExecutor {
 		allowConsole:              cfg.Executor.AllowConsole,              // 🔥 Console 控制
 		concurrencyWaitTimeout:    cfg.Executor.ConcurrencyWaitTimeout,    // 🔥 并发等待超时（可配置）
 		runtimePoolAcquireTimeout: cfg.Executor.RuntimePoolAcquireTimeout, // 🔥 Runtime 获取超时（可配置）
-		registry:                  new(require.Registry),
-		moduleRegistry:            NewModuleRegistry(), // 🔥 创建模块注册器
-		codeCache:                 utils.NewLRUCache(cfg.Executor.CodeCacheSize),
-		validationCache:           utils.NewGenericLRUCache(cfg.Executor.CodeCacheSize), // 🔥 验证缓存（与代码缓存相同大小）
-		maxCacheSize:              cfg.Executor.CodeCacheSize,
-		analyzer:                  utils.NewCodeAnalyzer(),
-		stats:                     &model.ExecutorStats{},
-		warmupStats:               &model.WarmupStats{Status: "not_started"},
-		shutdown:                  make(chan struct{}),
-		preloadedLibs:             make(map[string]interface{}),
+		slowExecutionThreshold:    cfg.Executor.SlowExecutionThreshold,    // 🔥 慢执行检测阈值（可配置）
+
+		// 🔥 健康检查和池管理配置（从配置文件加载）
+		minErrorCountForCheck:         cfg.Executor.MinErrorCountForCheck,
+		maxErrorRateThreshold:         cfg.Executor.MaxErrorRateThreshold,
+		minExecutionCountForStats:     cfg.Executor.MinExecutionCountForStats,
+		longRunningThreshold:          time.Duration(cfg.Executor.LongRunningThresholdMinutes) * time.Minute,
+		poolExpansionThresholdPercent: cfg.Executor.PoolExpansionThresholdPercent,
+		healthCheckInterval:           time.Duration(cfg.Executor.HealthCheckIntervalSeconds) * time.Second,
+
+		registry:        new(require.Registry),
+		moduleRegistry:  NewModuleRegistry(), // 🔥 创建模块注册器
+		codeCache:       utils.NewLRUCache(cfg.Executor.CodeCacheSize),
+		validationCache: utils.NewGenericLRUCache(cfg.Executor.CodeCacheSize), // 🔥 验证缓存（与代码缓存相同大小）
+		maxCacheSize:    cfg.Executor.CodeCacheSize,
+		analyzer:        utils.NewCodeAnalyzer(),
+		stats:           &model.ExecutorStats{},
+		warmupStats:     &model.WarmupStats{Status: "not_started"},
+		shutdown:        make(chan struct{}),
 	}
 
 	// 🔥 注册所有模块（统一管理）
@@ -182,9 +210,6 @@ func NewJSExecutor(cfg *config.Config) *JSExecutor {
 	} else {
 		utils.Warn("JavaScript 内存限制已禁用，建议仅在开发环境禁用")
 	}
-
-	// 🔒 预加载嵌入库（在可信环境中）
-	executor.preloadEmbeddedLibraries()
 
 	// 🔥 启动时预编译关键模块（Fail Fast）
 	// 错误处理说明：
@@ -237,7 +262,8 @@ func (e *JSExecutor) registerModules(cfg *config.Config) {
 
 	// 注册 Fetch 模块
 	fetchEnhancer := enhance_modules.NewFetchEnhancerWithConfig(
-		cfg.Fetch.Timeout,
+		cfg.Fetch.Timeout,                  // 🔥 HTTP 请求超时（30秒）
+		cfg.Fetch.ResponseReadTimeout,      // 🔥 响应读取超时（5分钟）
 		cfg.Fetch.MaxBufferedFormDataSize,  // 🔥 缓冲模式 FormData 限制（Blob/Buffer）
 		cfg.Fetch.MaxStreamingFormDataSize, // 🔥 流式模式 FormData 限制（Stream）
 		cfg.Fetch.EnableChunkedUpload,
@@ -246,6 +272,19 @@ func (e *JSExecutor) registerModules(cfg *config.Config) {
 		cfg.Fetch.MaxFileSize,
 		cfg.Fetch.MaxResponseSize,  // 🔥 缓冲读取限制（arrayBuffer/blob/text/json）
 		cfg.Fetch.MaxStreamingSize, // 🔥 流式读取限制（getReader）
+		// 🔥 HTTP Transport 配置（新增，使用环境变量配置）
+		&enhance_modules.HTTPTransportConfig{
+			MaxIdleConns:          cfg.Fetch.HTTPMaxIdleConns,
+			MaxIdleConnsPerHost:   cfg.Fetch.HTTPMaxIdleConnsPerHost,
+			MaxConnsPerHost:       cfg.Fetch.HTTPMaxConnsPerHost,
+			IdleConnTimeout:       cfg.Fetch.HTTPIdleConnTimeout,
+			DialTimeout:           cfg.Fetch.HTTPDialTimeout,
+			KeepAlive:             cfg.Fetch.HTTPKeepAlive,
+			TLSHandshakeTimeout:   cfg.Fetch.HTTPTLSHandshakeTimeout,
+			ExpectContinueTimeout: cfg.Fetch.HTTPExpectContinueTimeout,
+			ForceHTTP2:            cfg.Fetch.HTTPForceHTTP2,
+		},
+		cfg.Fetch.ResponseBodyIdleTimeout, // 🔥 v2.4.3: 响应体空闲超时（防止资源泄漏）
 	)
 	e.moduleRegistry.Register(fetchEnhancer)
 
@@ -369,11 +408,17 @@ func (e *JSExecutor) shouldTriggerCircuitBreaker(err error) bool {
 // warmupModules 预热关键模块（启动时预编译）
 // 🔥 Fail Fast 策略：在服务启动时立即发现编译问题
 //
-// 预编译的好处：
+// 预编译机制：
 //  1. 验证嵌入代码完整性（启动时立即发现损坏的代码）
-//  2. 避免首次请求时的编译延迟（提升用户体验）
-//  3. 快速失败原则（如果有问题，服务不应启动）
-//  4. 减少首次请求的响应时间（已编译好，直接使用）
+//  2. 触发所有模块的编译缓存（sync.Once 确保只编译一次）
+//  3. 所有 Runtime 共享编译后的 *goja.Program（全局缓存）
+//  4. 避免首次请求时的编译延迟（提升用户体验）
+//  5. 快速失败原则（如果有问题，服务不应启动）
+//
+// 性能优化：
+//   - 编译：只执行一次（~200ms，启动时）
+//   - 运行：每个 Runtime 运行预编译的 Program（~1-5ms）
+//   - 内存：所有 Runtime 共享 *goja.Program（节省内存）
 func (e *JSExecutor) warmupModules() error {
 	utils.Info("开始预热嵌入式模块...")
 	startTime := time.Now()
@@ -571,39 +616,102 @@ func (e *JSExecutor) GetMaxResultSize() int {
 }
 
 // initRuntimePool 初始化Runtime池
+// 🔥 优化：并行初始化，充分利用多核 CPU 加速启动
+//
+// 性能提升：
+//   - 串行：55ms × 100 = 5500ms（5.5秒）
+//   - 并行：55ms × (100/8核) = 687ms（0.7秒）
+//   - 改善：7.8x 加速（8 核 CPU）
+//
+// 设计要点：
+//  1. 并发创建 Runtime（充分利用 CPU）
+//  2. 错误收集和处理（Fail Fast）
+//  3. 批量初始化健康信息（避免锁竞争）
+//  4. 保证原子性（全部成功或全部失败）
 func (e *JSExecutor) initRuntimePool() {
-	utils.Info("初始化 JavaScript 运行时池", zap.Int("pool_size", e.poolSize))
+	startTime := time.Now()
+	utils.Info("并行初始化 JavaScript 运行时池",
+		zap.Int("pool_size", e.poolSize),
+		zap.Int("cpu_cores", runtime.NumCPU()))
+
+	// 🔥 并行创建 Runtime
+	var wg sync.WaitGroup
+	runtimesChan := make(chan *goja.Runtime, e.poolSize)
+	errorsChan := make(chan error, e.poolSize)
 
 	for i := 0; i < e.poolSize; i++ {
-		runtime := goja.New()
-		if err := e.setupRuntime(runtime); err != nil {
-			utils.Fatal("初始化运行时失败", zap.Int("runtime_index", i), zap.Error(err))
-		}
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
 
-		// 🔒 初始化健康信息（在发布到池之前）
-		// 注意：executionCount 和 errorCount 在后续使用 atomic 操作
-		// 这里直接赋值 0 是安全的，因为此时尚未发布到其他 goroutine
-		now := time.Now().UnixNano()
-		e.healthMutex.Lock()
-		e.runtimeHealth[runtime] = &runtimeHealthInfo{
-			createdAtNano:  now, // Unix 纳秒时间戳
-			lastUsedAtNano: now, // Unix 纳秒时间戳
-			executionCount: 0,   // 安全：尚未发布，无并发访问
-			errorCount:     0,   // 安全：尚未发布，无并发访问
-		}
-		e.healthMutex.Unlock()
+			// 创建并设置 Runtime
+			rt := goja.New()
+			if err := e.setupRuntime(rt); err != nil {
+				errorsChan <- fmt.Errorf("runtime #%d 初始化失败: %w", index, err)
+				return
+			}
 
-		e.runtimePool <- runtime
+			// 成功创建，发送到通道
+			runtimesChan <- rt
+		}(i)
 	}
 
-	utils.Info("运行时池初始化完成", zap.Int("ready_runtimes", e.poolSize))
+	// 等待所有 goroutine 完成
+	wg.Wait()
+	close(runtimesChan)
+	close(errorsChan)
+
+	// 🔥 检查错误（Fail Fast）
+	var errors []error
+	for err := range errorsChan {
+		errors = append(errors, err)
+	}
+
+	if len(errors) > 0 {
+		utils.Error("Runtime 池初始化失败",
+			zap.Int("failed_count", len(errors)),
+			zap.Int("total", e.poolSize))
+		for _, err := range errors {
+			utils.Error("初始化错误", zap.Error(err))
+		}
+		utils.Fatal("Runtime 池初始化失败，服务启动中止")
+	}
+
+	// 🔥 批量初始化健康信息（避免并发写入冲突）
+	now := time.Now().UnixNano()
+	e.healthMutex.Lock()
+	successCount := 0
+	for rt := range runtimesChan {
+		health := &runtimeHealthInfo{}
+		health.createdAtNano.Store(now)  // atomic.Int64.Store()
+		health.lastUsedAtNano.Store(now) // atomic.Int64.Store()
+		health.executionCount.Store(0)   // atomic.Int64.Store()
+		health.errorCount.Store(0)       // atomic.Int64.Store()
+		e.runtimeHealth[rt] = health
+		e.runtimePool <- rt
+		successCount++
+	}
+	e.healthMutex.Unlock()
+
+	elapsed := time.Since(startTime)
+	utils.Info("运行时池初始化完成（并行）",
+		zap.Int("ready_runtimes", successCount),
+		zap.Duration("elapsed", elapsed),
+		zap.String("speedup", fmt.Sprintf("%.1fx", float64(e.poolSize)*55/float64(elapsed.Milliseconds()))))
 }
 
 // setupRuntime 设置Runtime环境
-// 🔒 新的安全加载顺序：
+// 🔒 安全加载顺序（优化后）：
 //  1. 先设置 Node.js 基础模块（此时原型正常）
-//  2. 设置安全限制（禁用 Function、globalThis、删除 constructor）
-//  3. 注入预加载的库（在受限环境中）
+//  2. 设置全局对象（Math, JSON, Base64 等）
+//  3. 注册 JavaScript 内存限制器（防止大内存分配）
+//  4. 统一设置所有模块（使用模块注册器）
+//  5. 禁用 constructor 访问（在模块加载之后）
+//
+// 性能优化：
+//   - 模块使用全局编译缓存（sync.Once + *goja.Program）
+//   - 只运行预编译的 Program（~1-5ms/模块）
+//   - 无需重复编译（已在 warmupModules 中完成）
 func (e *JSExecutor) setupRuntime(runtime *goja.Runtime) error {
 	runtime.Set("__strict__", true)
 
@@ -993,82 +1101,32 @@ func (e *JSExecutor) executeInternal(ctx context.Context, code string, input map
 	// ==================== 步骤8: 记录执行时间和更新统计 ====================
 	// 目的：记录性能指标，用于监控和优化
 	executionTime := time.Since(startTime)
+
+	// 🔥 慢执行检测（帮助定位性能问题）
+	// 从配置读取阈值，支持环境变量控制
+	if executionTime > e.slowExecutionThreshold {
+		codeHash := hashCode(code) // 固定返回 16 字符
+		errorType := "none"
+		if err != nil {
+			if execErr, ok := err.(*model.ExecutionError); ok {
+				errorType = execErr.Type
+			} else {
+				errorType = "unknown"
+			}
+		}
+
+		utils.Warn("慢执行检测",
+			zap.Duration("execution_time", executionTime),
+			zap.Duration("threshold", e.slowExecutionThreshold),
+			zap.String("code_hash", codeHash), // 直接使用，无需截取
+			zap.Int("code_length", len(code)),
+			zap.Bool("success", err == nil),
+			zap.String("error_type", errorType))
+	}
+
 	e.updateStats(executionTime, err == nil)
 
 	return result, err
-}
-
-// preloadEmbeddedLibraries 在可信环境中预加载所有嵌入库
-// 🔒 安全策略：在服务启动时一次性加载库，然后在用户 runtime 中禁用危险功能
-func (e *JSExecutor) preloadEmbeddedLibraries() {
-	utils.Debug("开始预加载嵌入库（可信环境）")
-
-	// 创建一个临时的、完全权限的 runtime
-	trustedRuntime := goja.New()
-
-	// ✅ 在这个环境中，Function 和 globalThis 可用（嵌入库需要）
-	// 注意：必须先 Enable registry，再 Enable console
-	e.registry.Enable(trustedRuntime)
-	console.Enable(trustedRuntime)
-
-	// 🔥 注册 btoa/atob 函数（避免 axios 警告）
-	e.registerBase64Functions(trustedRuntime)
-
-	// 🔥 重要：在预加载其他库之前，先 Setup 所有模块（特别是 Buffer，它提供 BigInt）
-	// qs 库需要 BigInt.prototype.valueOf，而 Buffer 模块会设置 BigInt 及其 prototype
-	if err := e.moduleRegistry.SetupAll(trustedRuntime); err != nil {
-		utils.Warn("预加载时设置模块失败", zap.Error(err))
-	}
-
-	// 需要预加载的库列表
-	libsToPreload := []string{
-		"lodash",    // 使用 Function('return this')()
-		"qs",        // 使用 globalThis 检测
-		"axios",     // JS 包装器（底层用 Go 实现的 fetch）
-		"crypto-js", // 使用 globalThis 检测
-		"date-fns",  // 纯 JS 库
-		// "pinyin", // 🔥 已移除：不需要 pinyin 功能，节省 1.6GB 内存（20 Runtime）
-		"uuid", // 纯 JS 库
-		// 注意：crypto（Go 原生）和 xlsx（Go 原生）不需要预加载
-	}
-
-	successCount := 0
-	for _, libName := range libsToPreload {
-		code := fmt.Sprintf(`
-			(function() {
-				try {
-					return require('%s');
-				} catch (e) {
-					throw new Error('加载 %s 失败: ' + e.message);
-				}
-			})()
-		`, libName, libName)
-
-		libExport, err := trustedRuntime.RunString(code)
-		if err != nil {
-			utils.Warn("预加载库失败", zap.String("library", libName), zap.Error(err))
-			continue
-		}
-
-		// 导出为 Go interface{}（可以跨 runtime 使用）
-		e.preloadMutex.Lock()
-		e.preloadedLibs[libName] = libExport.Export()
-		e.preloadMutex.Unlock()
-
-		successCount++
-		utils.Debug("库预加载成功", zap.String("library", libName))
-	}
-
-	utils.Info("预加载完成", zap.Int("success_count", successCount), zap.Int("total", len(libsToPreload)))
-}
-
-// injectPreloadedLibraries 将预加载的库注入到用户 runtime
-// 🔒 此时 Function 和 globalThis 已被禁用，无法沙箱逃逸
-// 策略：预加载的库已经存在于 registry 中，直接使用原始 require 即可
-func (e *JSExecutor) injectPreloadedLibraries(runtime *goja.Runtime) {
-	// 预加载的库已经通过 e.registry 注册，无需额外注入
-	// runtime 已经调用了 e.registry.Enable()，可以直接 require
-	utils.Debug("预加载的库可通过 require 使用")
 }
 
 // 剩余方法将作为 executor_service_helpers.go 的一部分

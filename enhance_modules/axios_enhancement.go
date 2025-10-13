@@ -41,19 +41,19 @@ func (ae *AxiosEnhancer) RegisterAxiosModule(registry *require.Registry) {
 		})
 
 		if ae.compileErr != nil {
-			panic(runtime.NewGoError(fmt.Errorf("failed to compile axios.js: %w", ae.compileErr)))
+			panic(runtime.NewGoError(fmt.Errorf("编译 axios.js 失败: %w", ae.compileErr)))
 		}
 
 		// 执行 axios.js 代码
 		_, err := runtime.RunProgram(ae.compiledProgram)
 		if err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("failed to load axios: %w", err)))
+			panic(runtime.NewGoError(fmt.Errorf("加载 axios 模块失败: %w", err)))
 		}
 
 		// 获取 axios 对象
 		axiosVal := runtime.Get("axios")
 		if axiosVal == nil || goja.IsUndefined(axiosVal) {
-			panic(runtime.NewGoError(fmt.Errorf("axios object not found after loading axios.js")))
+			panic(runtime.NewGoError(fmt.Errorf("加载 axios.js 后未找到 axios 对象")))
 		}
 
 		// 导出 axios

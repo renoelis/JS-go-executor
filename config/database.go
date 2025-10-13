@@ -7,7 +7,7 @@ import (
 
 	"flow-codeblock-go/utils"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 	"go.uber.org/zap"
 )
@@ -42,14 +42,32 @@ func LoadDatabaseConfig() *DatabaseConfig {
 
 // InitDatabase 初始化数据库连接
 func InitDatabase(cfg *DatabaseConfig) (*sqlx.DB, error) {
-	// 构建DSN
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Asia%%2FShanghai",
-		cfg.User,
-		cfg.Password,
-		cfg.Host,
-		cfg.Port,
-		cfg.Database,
-	)
+	// 🔥 使用 mysql.Config 构建 DSN（类型安全、更清晰）
+	// 优势：
+	//   1. 结构化配置，避免手写 DSN 字符串
+	//   2. 自动处理特殊字符（包括密码中的 @/:? 等）
+	//   3. 类型安全，减少拼写错误
+	//   4. 更易维护和阅读
+	mysqlCfg := mysql.NewConfig()
+	mysqlCfg.User = cfg.User
+	mysqlCfg.Passwd = cfg.Password
+	mysqlCfg.Net = "tcp"
+	mysqlCfg.Addr = fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+	mysqlCfg.DBName = cfg.Database
+	mysqlCfg.ParseTime = true
+	mysqlCfg.Params = map[string]string{
+		"charset": "utf8mb4",
+	}
+
+	// 设置时区为上海（东八区）
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		// 如果加载失败，使用 FixedZone（兜底方案）
+		loc = time.FixedZone("CST", 8*3600)
+	}
+	mysqlCfg.Loc = loc
+
+	dsn := mysqlCfg.FormatDSN()
 
 	// 连接数据库
 	db, err := sqlx.Connect("mysql", dsn)
@@ -57,11 +75,8 @@ func InitDatabase(cfg *DatabaseConfig) (*sqlx.DB, error) {
 		return nil, fmt.Errorf("数据库连接失败: %w", err)
 	}
 
-	// 设置会话时区为上海时区（东八区）
-	_, err = db.Exec("SET time_zone = '+08:00'")
-	if err != nil {
-		return nil, fmt.Errorf("设置时区失败: %w", err)
-	}
+	// 🔥 时区已在 DSN 中设置（通过 mysqlCfg.Loc），无需再执行 SET time_zone
+	// 优势：减少一次数据库往返，连接更快
 
 	// 配置连接池
 	db.SetMaxOpenConns(cfg.MaxOpenConns)

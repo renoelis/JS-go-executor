@@ -2112,14 +2112,17 @@ return {
                 },
                 xlsx: {
                     input: {
-                        excelUrl: "https://qingliu-obs.obs.cn-north-1.myhuaweicloud.com/documents/data/invite/13569E7/afff4c5a-b13e-48dc-acac-31d95d193c38.xlsx",
+                        excelUrl: "https://qingliu-obs.obs.cn-north-1.myhuaweicloud.com/documents/data/invite/13569E7/304e4987-6ded-4a70-8d46-f5548a5c5621.xlsx",
                         sheetIndex: 0,
                         maxRows: 10
                     },
                     code: `// 从 URL 读取 Excel 文件示例（使用 xlsx + fetch）
-const XLSX = require('xlsx');
+const xlsx = require('xlsx');
 
 async function readExcelFromUrl() {
+  let workbook;
+  let result;  // ⭐ 在 try 外部声明结果变量
+  
   try {
     // 1. 从 URL 下载 Excel 文件
     const response = await fetch(input.excelUrl);
@@ -2131,11 +2134,11 @@ async function readExcelFromUrl() {
     // 2. 获取文件的 ArrayBuffer
     const arrayBuffer = await response.arrayBuffer();
     
-    // 3. 将 ArrayBuffer 转换为 Uint8Array
-    const data = new Uint8Array(arrayBuffer);
+    // 3. 转换为 Buffer（推荐方式）
+    const buffer = Buffer.from(arrayBuffer);
     
-    // 4. 使用 XLSX 读取工作簿
-    const workbook = XLSX.read(data, { type: 'array' });
+    // 4. 使用 xlsx 读取工作簿
+    workbook = xlsx.read(buffer);
     
     // 5. 获取工作簿信息
     const sheetNames = workbook.SheetNames;
@@ -2145,7 +2148,7 @@ async function readExcelFromUrl() {
     const worksheet = workbook.Sheets[sheetName];
     
     // 7. 将工作表转换为 JSON
-    const jsonData = XLSX.utils.sheet_to_json(worksheet);
+    const jsonData = xlsx.utils.sheet_to_json(worksheet);
     
     // 8. 数据分析和统计
     const totalRows = jsonData.length;
@@ -2171,7 +2174,8 @@ async function readExcelFromUrl() {
       });
     }
     
-    return {
+    // ✅ 保存到变量，不在 try 中 return
+    result = {
       success: true,
       source: {
         url: input.excelUrl,
@@ -2193,12 +2197,16 @@ async function readExcelFromUrl() {
     };
     
   } catch (error) {
-    return {
+    result = {
       success: false,
       error: error.message,
       url: input.excelUrl
     };
+  } finally {
+    if (workbook) workbook.close();  // ⭐ 必须调用，释放资源
   }
+  
+  return result;  // ✅ 在 finally 之后 return
 }
 
 // 执行异步函数并返回结果

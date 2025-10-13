@@ -32,7 +32,7 @@ func (qe *QsEnhancer) RegisterQsModule(registry *require.Registry) {
 	registry.RegisterNativeModule("qs", func(runtime *goja.Runtime, module *goja.Object) {
 		// 确保 qs 已加载
 		if err := qe.loadQs(runtime); err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("failed to load qs: %w", err)))
+			panic(runtime.NewGoError(fmt.Errorf("加载 qs 模块失败: %w", err)))
 		}
 
 		// 获取 qs 导出对象

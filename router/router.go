@@ -41,7 +41,15 @@ func SetupRouter(
 	// 基础中间件
 	router.Use(gin.Logger())
 	router.Use(gin.Recovery())
-	router.Use(middleware.RequestIDMiddleware())          // 🆕 请求ID中间件（最先执行）
+	router.Use(middleware.RequestIDMiddleware()) // 🆕 请求ID中间件（最先执行）
+
+	// 🔥 请求体大小限制（DoS 防护 - 第一道防线）
+	maxRequestBodyBytes := int64(cfg.Server.MaxRequestBodyMB) * 1024 * 1024
+	router.Use(middleware.RequestBodyLimitMiddleware(maxRequestBodyBytes))
+	utils.Info("请求体大小限制已启用",
+		zap.Int("max_mb", cfg.Server.MaxRequestBodyMB),
+		zap.Int64("max_bytes", maxRequestBodyBytes))
+
 	router.Use(corsMiddleware(cfg.Server.AllowedOrigins)) // 🔒 智能 CORS 控制
 
 	// 🔥 创建限流器实例（需要在关闭时释放）

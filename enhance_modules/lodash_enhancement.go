@@ -32,7 +32,7 @@ func (le *LodashEnhancer) RegisterLodashModule(registry *require.Registry) {
 	registry.RegisterNativeModule("lodash", func(runtime *goja.Runtime, module *goja.Object) {
 		// 确保 lodash 已加载
 		if err := le.loadLodash(runtime); err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("failed to load lodash: %w", err)))
+			panic(runtime.NewGoError(fmt.Errorf("加载 lodash 模块失败: %w", err)))
 		}
 
 		// 获取 lodash 导出对象
