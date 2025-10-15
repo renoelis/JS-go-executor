@@ -46,12 +46,12 @@ RUN chown -R appuser:appuser /app
 # 切换到非root用户
 USER appuser
 
-# 暴露端口
+# 暴露端口（默认3002，运行时可通过环境变量覆盖）
 EXPOSE 3002
 
-# 健康检查
+# 健康检查（使用环境变量PORT，默认3002）
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3002/health || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT:-3002}/health || exit 1
 
 # 启动应用
 CMD ["./flow-codeblock-go"]

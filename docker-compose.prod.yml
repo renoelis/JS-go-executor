@@ -13,215 +13,183 @@ services:
     image: flow-codeblock-go:latest
     container_name: flow-codeblock-go-prod
     ports:
-      - "3002:3002"
+      - "${PORT}:${PORT}"
+    
+    # 从 .env文件加载环境变量
+    env_file:
+      - .env
     
     environment:
       # ==================== 基础配置 ====================
-      - ENVIRONMENT=production
-      - PORT=3002
-      - GIN_MODE=release
+      - ENVIRONMENT=${ENVIRONMENT}
+      - PORT=${PORT}
+      - GIN_MODE=${GIN_MODE}
       
       # 🔥 DoS 防护配置
-      - MAX_REQUEST_BODY_MB=5           # 服务接口请求体大小限制（MB）
+      - MAX_REQUEST_BODY_MB=${MAX_REQUEST_BODY_MB:-5}           # 服务接口请求体大小限制（MB）
       
       # 🔒 CORS 跨域配置（生产环境：严格控制）
-      - ALLOWED_ORIGINS=                 # ⚠️ 为空则只允许服务端和同域调用（推荐）
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}                 # ⚠️ 为空则只允许服务端和同域调用（推荐）
       
       # ==================== 数据库配置 ====================
-      - DB_HOST=mysql
-      - DB_PORT=3306
-      - DB_USER=flow_user
-      - DB_PASSWORD=flow_password_2025
-      - DB_NAME=flow_codeblock_go
-      - DB_MAX_OPEN_CONNS=100            # 最大打开连接数（并发查询上限）
-      - DB_MAX_IDLE_CONNS=20             # 最大空闲连接数（连接池大小）
-      - DB_CONN_MAX_LIFETIME_MIN=60      # 连接最大生命周期（分钟，防止连接过期）
-      - DB_CONN_MAX_IDLE_TIME_MIN=10     # 空闲连接最大存活时间（分钟，释放长期不用的连接）
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - DB_MAX_OPEN_CONNS=${DB_MAX_OPEN_CONNS}            # 最大打开连接数（并发查询上限）
+      - DB_MAX_IDLE_CONNS=${DB_MAX_IDLE_CONNS}             # 最大空闲连接数（连接池大小）
+      - DB_CONN_MAX_LIFETIME_MIN=${DB_CONN_MAX_LIFETIME_MIN}      # 连接最大生命周期（分钟，防止连接过期）
+      - DB_CONN_MAX_IDLE_TIME_MIN=${DB_CONN_MAX_IDLE_TIME_MIN}     # 空闲连接最大存活时间（分钟，释放长期不用的连接）
       
       # ==================== Redis配置 ====================
-      - REDIS_ENABLED=true
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_PASSWORD=flow_redis_2025
-      - REDIS_DB=0
-      - REDIS_POOL_SIZE=100              # Redis连接池大小
-      - REDIS_MIN_IDLE_CONNS=10          # 最小空闲连接数
-      - REDIS_DIAL_TIMEOUT_SEC=5         # 连接超时(秒)
-      - REDIS_READ_TIMEOUT_SEC=3         # 读取超时(秒)
-      - REDIS_WRITE_TIMEOUT_SEC=3        # 写入超时(秒)
-      - REDIS_MAX_RETRIES=3              # 最大重试次数
+      - REDIS_ENABLED=${REDIS_ENABLED}
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_DB=${REDIS_DB}
+      - REDIS_POOL_SIZE=${REDIS_POOL_SIZE}              # Redis连接池大小
+      - REDIS_MIN_IDLE_CONNS=${REDIS_MIN_IDLE_CONNS}          # 最小空闲连接数
+      - REDIS_DIAL_TIMEOUT_SEC=${REDIS_DIAL_TIMEOUT_SEC}         # 连接超时(秒)
+      - REDIS_READ_TIMEOUT_SEC=${REDIS_READ_TIMEOUT_SEC}         # 读取超时(秒)
+      - REDIS_WRITE_TIMEOUT_SEC=${REDIS_WRITE_TIMEOUT_SEC}        # 写入超时(秒)
+      - REDIS_MAX_RETRIES=${REDIS_MAX_RETRIES}              # 最大重试次数
       
       # ==================== 🔐 认证配置 ====================
       # ⚠️ 生产环境必须修改！使用强随机密码！
       # 生成方法: openssl rand -base64 32  /  ADMIN_TOKEN=$(uuidgen)
-      - ADMIN_TOKEN=9560D6C9-264A-45E4-B8BF-BF4957860484
+      - ADMIN_TOKEN=${ADMIN_TOKEN}
       
       # ==================== Token缓存配置 ====================
-      - TOKEN_CACHE_HOT_SIZE=300         # 🔧 热缓存大小 500→300 (内存优化)
-      - TOKEN_CACHE_HOT_TTL_MINUTES=3    # 🔧 热缓存TTL 5→3分钟 (内存优化)
-      - TOKEN_CACHE_REDIS_TTL_MINUTES=30 # 🔧 Redis TTL 60→30分钟 (内存优化)
+      - TOKEN_CACHE_HOT_SIZE=${TOKEN_CACHE_HOT_SIZE}         # 🔧 热缓存大小 500→300 (内存优化)
+      - TOKEN_CACHE_HOT_TTL_MINUTES=${TOKEN_CACHE_HOT_TTL_MINUTES}    # 🔧 热缓存TTL 5→3分钟 (内存优化)
+      - TOKEN_CACHE_REDIS_TTL_MINUTES=${TOKEN_CACHE_REDIS_TTL_MINUTES} # 🔧 Redis TTL 60→30分钟 (内存优化)
       
       # ==================== 🔥 缓存写入池配置 ====================
       # 说明：统一管理所有异步缓存写入，防止 goroutine 暴涨
-      - CACHE_WRITE_POOL_WORKERS=15      # Worker数量 (推荐:10-20)
-      - CACHE_WRITE_POOL_QUEUE_SIZE=1500 # 队列大小 (推荐:1000-2000)
-      - CACHE_WRITE_POOL_SUBMIT_TIMEOUT_MS=50 # 提交超时(毫秒)
+      - CACHE_WRITE_POOL_WORKERS=${CACHE_WRITE_POOL_WORKERS}      # Worker数量 (推荐:10-20)
+      - CACHE_WRITE_POOL_QUEUE_SIZE=${CACHE_WRITE_POOL_QUEUE_SIZE} # 队列大小 (推荐:1000-2000)
+      - CACHE_WRITE_POOL_SUBMIT_TIMEOUT_MS=${CACHE_WRITE_POOL_SUBMIT_TIMEOUT_MS} # 提交超时(毫秒)
       
       # ==================== Token限流配置 ====================
-      - RATE_LIMIT_HOT_SIZE=300          # 🔧 限流热数据 500→300 (内存优化)
-      - RATE_LIMIT_REDIS_TTL_MINUTES=60  # Redis TTL(分钟)
-      - RATE_LIMIT_BATCH_SIZE=100        # 批量写入大小
+      - RATE_LIMIT_HOT_SIZE=${RATE_LIMIT_HOT_SIZE}          # 🔧 限流热数据 500→300 (内存优化)
+      - RATE_LIMIT_REDIS_TTL_MINUTES=${RATE_LIMIT_REDIS_TTL_MINUTES}  # Redis TTL(分钟)
+      - RATE_LIMIT_BATCH_SIZE=${RATE_LIMIT_BATCH_SIZE}        # 批量写入大小
       
       # ==================== 🚦 IP限流配置 ====================
       # # 认证前IP限流（严格）- 防止暴力破解Token
-      - IP_RATE_LIMIT_PRE_AUTH=50        # 每秒请求数 (推荐:50)
-      - IP_RATE_LIMIT_PRE_AUTH_BURST=100 # 突发请求数 (推荐:100)
+      - IP_RATE_LIMIT_PRE_AUTH=${IP_RATE_LIMIT_PRE_AUTH}        # 每秒请求数 (推荐:50)
+      - IP_RATE_LIMIT_PRE_AUTH_BURST=${IP_RATE_LIMIT_PRE_AUTH_BURST} # 突发请求数 (推荐:100)
       
       # 认证后IP限流（宽松）- 防止极端滥用
-      - IP_RATE_LIMIT_POST_AUTH=200      # 每秒请求数 (推荐:200)
-      - IP_RATE_LIMIT_POST_AUTH_BURST=400 # 突发请求数 (推荐:400)
+      - IP_RATE_LIMIT_POST_AUTH=${IP_RATE_LIMIT_POST_AUTH}      # 每秒请求数 (推荐:200)
+      - IP_RATE_LIMIT_POST_AUTH_BURST=${IP_RATE_LIMIT_POST_AUTH_BURST} # 突发请求数 (推荐:400)
       
       # 全局IP限流（公开端点）
-      - IP_RATE_LIMIT_GLOBAL=50          # 每秒请求数 (推荐:50)
-      - IP_RATE_LIMIT_GLOBAL_BURST=100   # 突发请求数 (推荐:100)
+      - IP_RATE_LIMIT_GLOBAL=${IP_RATE_LIMIT_GLOBAL}          # 每秒请求数 (推荐:50)
+      - IP_RATE_LIMIT_GLOBAL_BURST=${IP_RATE_LIMIT_GLOBAL_BURST}   # 突发请求数 (推荐:100)
       
       # ==================== 🚀 JavaScript执行器配置 ====================
-      # 📋 推荐配置:
-      #   🖥️  2H4G服务器: POOL=50, MAX_CONCURRENT=400, TIMEOUT=120000
-      #   🖥️  4H8G服务器: POOL=100, MAX_CONCURRENT=800, TIMEOUT=180000
-      #   🖥️  8H16G服务器: POOL=200, MAX_CONCURRENT=1600, TIMEOUT=300000
-      # 🔥 当前配置: 6GB内存，支持 200 Runtime
-      - RUNTIME_POOL_SIZE=200            # Runtime池大小 (200 个)
-      - MIN_RUNTIME_POOL_SIZE=100        # 最小池大小 (100 个)
-      - MAX_RUNTIME_POOL_SIZE=200        # 最大池大小 (200 个)
-      - RUNTIME_IDLE_TIMEOUT_MIN=10       # Runtime空闲超时(分钟)
-      - MAX_CONCURRENT_EXECUTIONS=400   # 🔧 最大并发数 (200 Runtime 推荐)，不传系统会动态计算
-      - CODE_CACHE_SIZE=100              # 代码缓存个数大小
-      - ALLOW_CONSOLE=false              # 🔧 生产环境禁用console
+      - RUNTIME_POOL_SIZE=${RUNTIME_POOL_SIZE}            # Runtime池大小 (200 个)
+      - MIN_RUNTIME_POOL_SIZE=${MIN_RUNTIME_POOL_SIZE}        # 最小池大小 (100 个)
+      - MAX_RUNTIME_POOL_SIZE=${MAX_RUNTIME_POOL_SIZE}        # 最大池大小 (200 个)
+      - RUNTIME_IDLE_TIMEOUT_MIN=${RUNTIME_IDLE_TIMEOUT_MIN}       # Runtime空闲超时(分钟)
+      - MAX_CONCURRENT_EXECUTIONS=${MAX_CONCURRENT_EXECUTIONS}   # 🔧 最大并发数 (200 Runtime 推荐)，不传系统会动态计算
+      - CODE_CACHE_SIZE=${CODE_CACHE_SIZE}              # 代码缓存个数大小
+      - ALLOW_CONSOLE=${ALLOW_CONSOLE}              # 🔧 生产环境禁用console
       
       # 执行限制
-      - MAX_CODE_LENGTH=65535            # 代码长度限制(字节) - 64KB
-      - MAX_INPUT_SIZE=1048576           # Input大小限制(字节) - 1MB
-      - MAX_RESULT_SIZE=5242880          # 结果大小限制(字节) - 5MB
-      - EXECUTION_TIMEOUT_MS=60000       # 🔧 执行超时(毫秒) - 1分钟（固定）
-      # ⚠️ 重要：EXECUTION_TIMEOUT 必须大于 FETCH_TIMEOUT + FETCH_RESPONSE_READ_TIMEOUT
-      #    当前：60秒 > (20秒 + 35秒) = 55秒 ✅
+      - MAX_CODE_LENGTH=${MAX_CODE_LENGTH}            # 代码长度限制(字节) - 64KB
+      - MAX_INPUT_SIZE=${MAX_INPUT_SIZE}           # Input大小限制(字节) - 1MB
+      - MAX_RESULT_SIZE=${MAX_RESULT_SIZE}          # 结果大小限制(字节) - 5MB
+      - EXECUTION_TIMEOUT_MS=${EXECUTION_TIMEOUT_MS}       # 🔧 执行超时(毫秒) - 1分钟（固定）
       
       # ==================== 🔥 并发控制超时配置 ====================
       # 说明：控制系统繁忙时的等待行为
-      - CONCURRENCY_WAIT_TIMEOUT_SEC=10  # 并发槽位等待超时(秒) - 默认 10 秒
-      - RUNTIME_POOL_ACQUIRE_TIMEOUT_SEC=5  # Runtime 池获取超时(秒) - 默认 5 秒
+      - CONCURRENCY_WAIT_TIMEOUT_SEC=${CONCURRENCY_WAIT_TIMEOUT_SEC}  # 并发槽位等待超时(秒) - 默认 10 秒
+      - RUNTIME_POOL_ACQUIRE_TIMEOUT_SEC=${RUNTIME_POOL_ACQUIRE_TIMEOUT_SEC}  # Runtime 池获取超时(秒) - 默认 5 秒
       
       # ==================== 🔍 慢执行检测配置 ====================
       # SLOW_EXECUTION_THRESHOLD_MS: 慢执行检测阈值（毫秒）
       # 说明：超过此时间的代码执行会记录 WARN 日志，帮助定位性能问题
-      - SLOW_EXECUTION_THRESHOLD_MS=3000  # 配置为 3 秒，
+      - SLOW_EXECUTION_THRESHOLD_MS=${SLOW_EXECUTION_THRESHOLD_MS}  # 配置为 3 秒，
       
       # ==================== 🔥 熔断器配置 ====================
       # 说明：防止重度过载，保护系统稳定性
-      - CIRCUIT_BREAKER_ENABLED=true     # 是否启用熔断器
-      - CIRCUIT_BREAKER_MIN_REQUESTS=100 # 最小请求数(触发熔断的最小样本)
-      - CIRCUIT_BREAKER_FAILURE_RATIO=0.9 # 失败率阈值 (0.9 = 90%)
-      - CIRCUIT_BREAKER_TIMEOUT_SEC=10   # Open状态持续时间(秒)
-      - CIRCUIT_BREAKER_MAX_REQUESTS=100 # Half-Open状态最大探测请求数
+      - CIRCUIT_BREAKER_ENABLED=${CIRCUIT_BREAKER_ENABLED}     # 是否启用熔断器
+      - CIRCUIT_BREAKER_MIN_REQUESTS=${CIRCUIT_BREAKER_MIN_REQUESTS} # 最小请求数(触发熔断的最小样本)
+      - CIRCUIT_BREAKER_FAILURE_RATIO=${CIRCUIT_BREAKER_FAILURE_RATIO} # 失败率阈值 (0.9 = 90%)
+      - CIRCUIT_BREAKER_TIMEOUT_SEC=${CIRCUIT_BREAKER_TIMEOUT_SEC}   # Open状态持续时间(秒)
+      - CIRCUIT_BREAKER_MAX_REQUESTS=${CIRCUIT_BREAKER_MAX_REQUESTS} # Half-Open状态最大探测请求数
       
       # ==================== Fetch API 超时配置 ====================
       # 🔥 拆分为两个独立参数（v2.5.3 新增）
-      - FETCH_TIMEOUT_MS=20000                      # HTTP 请求超时（连接+发送+响应头，20秒）
-      - FETCH_RESPONSE_READ_TIMEOUT_MS=35000        # 🔥 响应读取总时长超时（35秒）
-      # ⚠️ 配置原则（严格遵守）：
-      #    FETCH_TIMEOUT + FETCH_RESPONSE_READ_TIMEOUT < EXECUTION_TIMEOUT
-      #    当前：20秒 + 35秒 = 55秒 < 60秒执行超时 ✅
-      #    留出 5 秒缓冲：用于代码处理数据、JSON 序列化、返回结果
-      # 
-      # 🎯 适用场景（60秒执行超时）：
-      #   - API 调用和小文件下载（< 5MB）
-      #   - 快速响应要求的业务
-      #   - 不适合大文件流式传输（需要更长的执行超时）
+      - FETCH_TIMEOUT_MS=${FETCH_TIMEOUT_MS}                      # HTTP 请求超时（连接+发送+响应头，20秒）
+      - FETCH_RESPONSE_READ_TIMEOUT_MS=${FETCH_RESPONSE_READ_TIMEOUT_MS}        # 🔥 响应读取总时长超时（35秒）
       
       # 🔥 下载限制（新方案）
-      - MAX_RESPONSE_SIZE_MB=2          # 缓冲读取限制(arrayBuffer/blob/text/json) - 生产环境1MB
-      - MAX_STREAMING_SIZE_MB=10        # 流式读取限制(getReader) - 生产环境10MB
+      - MAX_RESPONSE_SIZE_MB=${MAX_RESPONSE_SIZE_MB}          # 缓冲读取限制(arrayBuffer/blob/text/json) - 生产环境1MB
+      - MAX_STREAMING_SIZE_MB=${MAX_STREAMING_SIZE_MB}        # 流式读取限制(getReader) - 生产环境10MB
       
       # 🔥 上传限制（新方案）
-      - MAX_BUFFERED_FORMDATA_MB=2      # 缓冲上传限制(Web FormData + Blob、Node.js form-data + Buffer) - 生产环境1MB
-      - MAX_STREAMING_FORMDATA_MB=10    # 流式上传限制(Node.js form-data + Stream) - 生产环境10MB
+      - MAX_BUFFERED_FORMDATA_MB=${MAX_BUFFERED_FORMDATA_MB}      # 缓冲上传限制(Web FormData + Blob、Node.js form-data + Buffer) - 生产环境1MB
+      - MAX_STREAMING_FORMDATA_MB=${MAX_STREAMING_FORMDATA_MB}   # 流式上传限制(Node.js form-data + Stream) - 生产环境10MB
       
       # 其他配置
-      - ENABLE_CHUNKED_UPLOAD=1         # 启用分块传输编码
-      - MAX_BLOB_FILE_SIZE_MB=10        # Blob/File最大大小(MB)
-      - FORMDATA_BUFFER_SIZE=524288     # FormData缓冲区大小(字节) - 512KB
-      - MAX_FILE_SIZE_MB=10             # 单文件最大大小(MB)
+      - ENABLE_CHUNKED_UPLOAD=${ENABLE_CHUNKED_UPLOAD}         # 启用分块传输编码
+      - MAX_BLOB_FILE_SIZE_MB=${MAX_BLOB_FILE_SIZE_MB}        # Blob/File最大大小(MB)
+      - FORMDATA_BUFFER_SIZE=${FORMDATA_BUFFER_SIZE}     # FormData缓冲区大小(字节) - 512KB
+      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB}             # 单文件最大大小(MB)
       
       # 🔥 XLSX 模块配置（生产环境）
-      - XLSX_MAX_SNAPSHOT_SIZE_MB=2     # Copy-on-Read 模式的最大文件大小（默认5MB，生产环境保守配置）
-      - XLSX_MAX_ROWS=10000            # 🔥 最大行数限制（默认10000）
-      - XLSX_MAX_COLS=100               # 🔥 最大列数限制（默认100）
+      - XLSX_MAX_SNAPSHOT_SIZE_MB=${XLSX_MAX_SNAPSHOT_SIZE_MB}     # Copy-on-Read 模式的最大文件大小（默认5MB，生产环境保守配置）
+      - XLSX_MAX_ROWS=${XLSX_MAX_ROWS}            # 🔥 最大行数限制（默认10000）
+      - XLSX_MAX_COLS=${XLSX_MAX_COLS}               # 🔥 最大列数限制（默认100）
       
       # 🔥 HTTP Transport 配置（生产环境：优化性能和安全性）
-      - HTTP_MAX_IDLE_CONNS=100                  # 全局最大空闲连接数（生产环境：较大值）
-      - HTTP_MAX_IDLE_CONNS_PER_HOST=10          # 每个 host 的最大空闲连接数（生产环境：较大值）
-      - HTTP_MAX_CONNS_PER_HOST=50              # 每个 host 的最大连接数（防止慢速攻击）
-      - HTTP_IDLE_CONN_TIMEOUT_SEC=90            # 空闲连接超时（秒）
-      - HTTP_DIAL_TIMEOUT_SEC=10                 # 连接建立超时（秒）
-      - HTTP_KEEP_ALIVE_SEC=30                   # Keep-Alive 间隔（秒）
-      - HTTP_TLS_HANDSHAKE_TIMEOUT_SEC=10        # TLS 握手超时（秒）
-      - HTTP_EXPECT_CONTINUE_TIMEOUT_SEC=1       # 期望继续超时（秒）
-      - HTTP_FORCE_HTTP2=true                    # 启用 HTTP/2
-      - HTTP_RESPONSE_BODY_IDLE_TIMEOUT_SEC=30   # 🔥 响应体空闲超时（30秒，必须 < EXECUTION_TIMEOUT）
-      # ⚠️ 配置说明：
-      #    - 设置为 30秒，在执行超时（60秒）内
-      #    - 所有值都 < 60秒执行超时，确保能正常触发
-      #    - 主要保护由 totalTimer (35秒) 提供
- 
+      - HTTP_MAX_IDLE_CONNS=${HTTP_MAX_IDLE_CONNS}                  # 全局最大空闲连接数（生产环境：较大值）
+      - HTTP_MAX_IDLE_CONNS_PER_HOST=${HTTP_MAX_IDLE_CONNS_PER_HOST}          # 每个 host 的最大空闲连接数（生产环境：较大值）
+      - HTTP_MAX_CONNS_PER_HOST=${HTTP_MAX_CONNS_PER_HOST}              # 每个 host 的最大连接数（防止慢速攻击）
+      - HTTP_IDLE_CONN_TIMEOUT_SEC=${HTTP_IDLE_CONN_TIMEOUT_SEC}            # 空闲连接超时（秒）
+      - HTTP_DIAL_TIMEOUT_SEC=${HTTP_DIAL_TIMEOUT_SEC}                 # 连接建立超时（秒）
+      - HTTP_KEEP_ALIVE_SEC=${HTTP_KEEP_ALIVE_SEC}                   # Keep-Alive 间隔（秒）
+      - HTTP_TLS_HANDSHAKE_TIMEOUT_SEC=${HTTP_TLS_HANDSHAKE_TIMEOUT_SEC}        # TLS 握手超时（秒）
+      - HTTP_EXPECT_CONTINUE_TIMEOUT_SEC=${HTTP_EXPECT_CONTINUE_TIMEOUT_SEC}       # 期望继续超时（秒）
+      - HTTP_FORCE_HTTP2=${HTTP_FORCE_HTTP2}                    # 启用 HTTP/2
+      - HTTP_RESPONSE_BODY_IDLE_TIMEOUT_SEC=${HTTP_RESPONSE_BODY_IDLE_TIMEOUT_SEC}   # 🔥 响应体空闲超时（30秒，必须 < EXECUTION_TIMEOUT）
+      
       # ==================== JavaScript 内存限制 ====================
-      # 说明：拦截 JavaScript 侧的大内存分配（Array、TypedArray、ArrayBuffer、Array.push）
-      # JS_MEMORY_LIMIT_MB: JavaScript 单次分配的最大内存大小（MB）
-      #   - 0: 使用 MAX_BLOB_FILE_SIZE_MB 的值（默认，自动跟随）
-      #   - >0: 指定具体限制（如 12 = 12MB）
-      #   
-      # 🔍 Array.push 限制计算：
-      #   最大元素数 = (JS_MEMORY_LIMIT_MB * 1024 * 1024) / 8
-      #   示例：
-      #     - 10MB → 1,310,720 个元素（生产环境当前值）
-      #     - 12MB → 1,572,864 个元素
-      #     - 50MB → 6,553,600 个元素
-      # 
-      # ⚠️ 注意：
-      #   - Array.push 超限时会抛出中文错误："Array.push 操作会导致数组长度超过限制..."
-      #   - 其他限制包括：new Array(n)、new Uint8Array(n)、new ArrayBuffer(n)
-      #   - 生产环境建议保持启用，防止恶意代码或错误代码导致内存溢出
-      - ENABLE_JS_MEMORY_LIMIT=true       # 🔧 启用 JS 侧内存限制（默认：true，生产环境必须启用）
-      - JS_MEMORY_LIMIT_MB=0              # 🔧 限制大小（0=使用 MAX_BLOB_FILE_SIZE_MB，当前为10MB → 1.3M元素）
+      - ENABLE_JS_MEMORY_LIMIT=${ENABLE_JS_MEMORY_LIMIT}       # 🔧 启用 JS 侧内存限制（默认：true，生产环境必须启用）
+      - JS_MEMORY_LIMIT_MB=${JS_MEMORY_LIMIT_MB}              # 🔧 限制大小（0=使用 MAX_BLOB_FILE_SIZE_MB，当前为10MB → 1.3M元素）
       
       # ==================== 🔥 健康检查和池管理配置 ====================
       # 生产环境：严格的阈值，及时发现和响应问题
-      - MIN_ERROR_COUNT_FOR_CHECK=10             # 最小错误次数阈值（生产环境：10，避免误判）
-      - MAX_ERROR_RATE_THRESHOLD=0.1             # 最大错误率阈值（生产环境：0.1 即 10%，及时发现问题）
-      - MIN_EXECUTION_COUNT_FOR_STATS=1000       # 统计长期运行的最小执行次数（生产环境：1000，确保准确性）
-      - LONG_RUNNING_THRESHOLD_MINUTES=60        # 长期运行时间阈值（生产环境：60分钟）
-      - POOL_EXPANSION_THRESHOLD_PERCENT=0.1     # 池扩展阈值（生产环境：0.1 即 10%，及时响应负载）
-      - HEALTH_CHECK_INTERVAL_SECONDS=30         # 健康检查间隔（生产环境：30秒，及时监控）
+      - MIN_ERROR_COUNT_FOR_CHECK=${MIN_ERROR_COUNT_FOR_CHECK}             # 最小错误次数阈值（生产环境：10，避免误判）
+      - MAX_ERROR_RATE_THRESHOLD=${MAX_ERROR_RATE_THRESHOLD}             # 最大错误率阈值（生产环境：0.1 即 10%，及时发现问题）
+      - MIN_EXECUTION_COUNT_FOR_STATS=${MIN_EXECUTION_COUNT_FOR_STATS}       # 统计长期运行的最小执行次数（生产环境：1000，确保准确性）
+      - LONG_RUNNING_THRESHOLD_MINUTES=${LONG_RUNNING_THRESHOLD_MINUTES}        # 长期运行时间阈值（生产环境：60分钟）
+      - POOL_EXPANSION_THRESHOLD_PERCENT=${POOL_EXPANSION_THRESHOLD_PERCENT}     # 池扩展阈值（生产环境：0.1 即 10%，及时响应负载）
+      - HEALTH_CHECK_INTERVAL_SECONDS=${HEALTH_CHECK_INTERVAL_SECONDS}         # 健康检查间隔（生产环境：30秒，及时监控）
       
       # ==================== Go运行时配置 ====================
-      - GOMAXPROCS=0                     # 0=使用所有CPU核心
-      - GOGC=100                          # 🔧 GC目标百分比 (100→75，更频繁GC，降低内存峰值)
-      - GOMEMLIMIT=2048MiB
+      - GOMAXPROCS=${GOMAXPROCS}                     # 0=使用所有CPU核心
+      - GOGC=${GOGC}                          # 🔧 GC目标百分比 (100→75，更频繁GC，降低内存峰值)
+      - GOMEMLIMIT=${GOMEMLIMIT}
       
       # ==================== 🔍 调试配置 ====================
       # 生产环境默认禁用，需要时可临时启用
-      - ENABLE_PPROF=false               # pprof 性能分析接口 (生产环境建议禁用)
+      - ENABLE_PPROF=${ENABLE_PPROF}               # pprof 性能分析接口 (生产环境建议禁用)
       
       # ==================== 🔧 测试工具配置 ====================
       # 测试工具页面配置 - 访问地址: http://your-domain:3002/flow/test-tool
       # 可根据部署环境修改这些链接
-      - TEST_TOOL_API_URL=https://api.renoelis.top                                           # API服务地址
-      - TEST_TOOL_HELP_URL=https://exiao.yuque.com/rlf3k1/oanb79/fa3tqkxk1h2n912q         # Flow CodeBlock 帮助文档
-      - TEST_TOOL_API_DOC_URL=https://exiao.yuque.com/rlf3k1/oanb79/ybd2nfdshmhaihc2      # Flow CodeBlock API 接口文档
-      - TEST_TOOL_GUIDE_URL=https://exiao.yuque.com/rlf3k1/oanb79/olsa9bvc6vm2m26c        # Flow CodeBlock 在线测试工具使用指南
-      - TEST_TOOL_EXAMPLE_URL=https://exiao.yuque.com/rlf3k1/oanb79/tlty7ic7szfr2v7v     # Flow CodeBlock 代码示例
-      - TEST_TOOL_AI_URL=https://wings.qingflow.com/ultron/share/agent/443790716135587842 # 轻翼AI：Flow CodeBlock 代码AI助手
-      - TEST_TOOL_APPLY_URL=https://qingflow.com/f/cabirpa60001                          # 申请开通服务链接
+      - TEST_TOOL_API_URL=${TEST_TOOL_API_URL}                                           # API服务地址
+      - TEST_TOOL_HELP_URL=${TEST_TOOL_HELP_URL}         # Flow CodeBlock 帮助文档
+      - TEST_TOOL_API_DOC_URL=${TEST_TOOL_API_DOC_URL}      # Flow CodeBlock API 接口文档
+      - TEST_TOOL_GUIDE_URL=${TEST_TOOL_GUIDE_URL}        # Flow CodeBlock 在线测试工具使用指南
+      - TEST_TOOL_EXAMPLE_URL=${TEST_TOOL_EXAMPLE_URL}     # Flow CodeBlock 代码示例
+      - TEST_TOOL_AI_URL=${TEST_TOOL_AI_URL} # 轻翼AI：Flow CodeBlock 代码AI助手
+      - TEST_TOOL_APPLY_URL=${TEST_TOOL_APPLY_URL}                          # 申请开通服务链接
     
     restart: unless-stopped
     
@@ -286,17 +254,17 @@ services:
     image: mysql:8.0
     container_name: flow-codeblock-mysql-prod
     environment:
-      - MYSQL_ROOT_PASSWORD=root_password_2025
-      - MYSQL_DATABASE=flow_codeblock_go
-      - MYSQL_USER=flow_user
-      - MYSQL_PASSWORD=flow_password_2025
-      - MYSQL_CHARSET=utf8mb4
-      - MYSQL_COLLATION=utf8mb4_unicode_ci
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_CHARSET=${MYSQL_CHARSET}
+      - MYSQL_COLLATION=${MYSQL_COLLATION}
     restart: unless-stopped
     
     # 健康检查
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "flow_user", "-pflow_password_2025"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${MYSQL_USER}", "-p${MYSQL_PASSWORD}"]
       timeout: 20s
       retries: 10
       interval: 10s
@@ -341,12 +309,12 @@ services:
   redis:
     image: redis:7-alpine
     container_name: flow-codeblock-redis-prod
-    command: redis-server --requirepass flow_redis_2025 --maxmemory 1gb --maxmemory-policy allkeys-lru --appendonly yes
+    command: redis-server --requirepass ${REDIS_PASSWORD} --maxmemory 1gb --maxmemory-policy allkeys-lru --appendonly yes
     restart: unless-stopped
     
     # 健康检查
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "flow_redis_2025", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       timeout: 3s
       retries: 3
       interval: 30s
