@@ -25,6 +25,7 @@ type RouterResources struct {
 func SetupRouter(
 	executorController *controller.ExecutorController,
 	tokenController *controller.TokenController,
+	statsController *controller.StatsController, // 🆕 统计控制器
 	tokenService *service.TokenService,
 	rateLimiterService *service.RateLimiterService,
 	adminToken string,
@@ -120,7 +121,7 @@ func SetupRouter(
 			tokenController.QueryTokenPublic,
 		)
 
-		// Ace Editor 静态资源路由
+		// 静态资源路由
 		flowGroup.GET("/assets/ace.js", func(c *gin.Context) {
 			c.Header("Content-Type", "application/javascript; charset=utf-8")
 			c.String(200, assets.AceEditor)
@@ -129,6 +130,10 @@ func SetupRouter(
 			c.Header("Content-Type", "application/javascript; charset=utf-8")
 			c.String(200, assets.AceModeJavaScript)
 		})
+		flowGroup.GET("/assets/mode-json.js", func(c *gin.Context) {
+			c.Header("Content-Type", "application/javascript; charset=utf-8")
+			c.String(200, assets.AceModeJSON)
+		})
 		flowGroup.GET("/assets/theme-monokai.js", func(c *gin.Context) {
 			c.Header("Content-Type", "application/javascript; charset=utf-8")
 			c.String(200, assets.AceThemeMonokai)
@@ -136,6 +141,14 @@ func SetupRouter(
 		flowGroup.GET("/assets/worker-javascript.js", func(c *gin.Context) {
 			c.Header("Content-Type", "application/javascript; charset=utf-8")
 			c.String(200, assets.AceWorkerJavaScript)
+		})
+		flowGroup.GET("/assets/worker-json.js", func(c *gin.Context) {
+			c.Header("Content-Type", "application/javascript; charset=utf-8")
+			c.String(200, assets.AceWorkerJSON)
+		})
+		// 🆕 Logo 图片路由
+		flowGroup.GET("/assets/logo.png", func(c *gin.Context) {
+			c.File("assets/elements/LOGO.png")
 		})
 
 		// 代码执行接口（智能 IP 限流 + Token 认证 + Token 限流）
@@ -178,6 +191,13 @@ func SetupRouter(
 				stats := cacheWritePool.GetStats()
 				utils.RespondSuccess(c, stats, "")
 			})
+
+			// 🆕 统计接口
+			if statsController != nil {
+				adminGroup.GET("/stats/modules", statsController.GetModuleStats)
+				adminGroup.GET("/stats/modules/:module_name", statsController.GetModuleDetailStats)
+				adminGroup.GET("/stats/users", statsController.GetUserActivityStats)
+			}
 		}
 	}
 

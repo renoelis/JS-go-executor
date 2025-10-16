@@ -26,6 +26,7 @@ type Config struct {
 	Cache       CacheConfig      // 缓存配置
 	TokenLimit  TokenLimitConfig // Token限流配置
 	XLSX        XLSXConfig       // 🔥 XLSX 模块配置
+	TestTool    TestToolConfig   // 🔧 测试工具页面配置
 }
 
 // ServerConfig HTTP服务器配置
@@ -93,6 +94,10 @@ type FetchConfig struct {
 	// 🔥 上传限制（新）
 	MaxBufferedFormDataSize  int64 // FormData 缓冲上传限制：Web FormData + Blob、Node.js form-data + Buffer（默认 1MB）
 	MaxStreamingFormDataSize int64 // FormData 流式上传限制：Node.js form-data + Stream（默认 100MB）
+
+	// 🛡️ SSRF 防护配置（新增）
+	EnableSSRFProtection bool // 是否启用 SSRF 防护（默认：根据部署环境自动判断）
+	AllowPrivateIP       bool // 是否允许访问私有 IP（默认：本地部署允许，公有云禁止）
 
 	// 🔧 废弃但保留兼容（优先使用新字段）
 	MaxFormDataSize     int64 // 废弃：统一 FormData 限制，改用 MaxBufferedFormDataSize 和 MaxStreamingFormDataSize
@@ -164,6 +169,18 @@ type XLSXConfig struct {
 	MaxSnapshotSize int64 // Copy-on-Read 模式的最大文件大小（字节），默认 5MB
 	MaxRows         int   // 🔥 最大行数限制（默认 100000）
 	MaxCols         int   // 🔥 最大列数限制（默认 100）
+}
+
+// TestToolConfig 测试工具页面配置
+type TestToolConfig struct {
+	ApiUrl           string // API 服务地址
+	LogoUrl          string // Logo 点击跳转链接
+	AiAssistantUrl   string // AI 助手链接
+	HelpDocUrl       string // 帮助文档链接
+	ApiDocUrl        string // API 文档链接
+	TestToolGuideUrl string // 测试工具使用指南链接
+	ExampleDocUrl    string // 代码示例文档链接
+	ApplyServiceUrl  string // 申请试用服务链接
 }
 
 // calculateMaxConcurrent 基于系统内存智能计算并发限制
@@ -405,6 +422,10 @@ func LoadConfig() *Config {
 		HTTPExpectContinueTimeout: time.Duration(getEnvInt("HTTP_EXPECT_CONTINUE_TIMEOUT_SEC", 1)) * time.Second, // 期望继续超时
 		HTTPForceHTTP2:            getEnvBool("HTTP_FORCE_HTTP2", true),                                          // 启用 HTTP/2
 
+		// 🛡️ SSRF 防护配置（智能判断）
+		EnableSSRFProtection: getSSRFProtectionConfig(cfg.Environment), // 自动根据部署环境判断
+		AllowPrivateIP:       getAllowPrivateIPConfig(cfg.Environment), // 自动根据部署环境判断
+
 		// 🔥 响应体空闲超时（防止资源泄漏）
 		ResponseBodyIdleTimeout: time.Duration(getEnvInt("HTTP_RESPONSE_BODY_IDLE_TIMEOUT_SEC", 30)) * time.Second, // 默认 30 秒（1 分钟）
 	}
@@ -482,6 +503,18 @@ func LoadConfig() *Config {
 		MaxSnapshotSize: getEnvInt64("XLSX_MAX_SNAPSHOT_SIZE_MB", 5) * 1024 * 1024, // 默认 5MB
 		MaxRows:         getEnvInt("XLSX_MAX_ROWS", 100000),                        // 🔥 默认 10万行
 		MaxCols:         getEnvInt("XLSX_MAX_COLS", 100),                           // 🔥 默认 100列
+	}
+
+	// 🔧 加载测试工具页面配置
+	cfg.TestTool = TestToolConfig{
+		ApiUrl:           getEnvString("TEST_TOOL_API_URL", "http://localhost:3002"),
+		LogoUrl:          getEnvString("TEST_TOOL_LOGO_URL", "https://qingflow.com/"),
+		AiAssistantUrl:   getEnvString("TEST_TOOL_AI_URL", ""),
+		HelpDocUrl:       getEnvString("TEST_TOOL_HELP_URL", ""),
+		ApiDocUrl:        getEnvString("TEST_TOOL_API_DOC_URL", ""),
+		TestToolGuideUrl: getEnvString("TEST_TOOL_GUIDE_URL", ""),
+		ExampleDocUrl:    getEnvString("TEST_TOOL_EXAMPLE_URL", ""),
+		ApplyServiceUrl:  getEnvString("TEST_TOOL_APPLY_URL", ""),
 	}
 
 	// 🔒 加载和验证认证配置
@@ -654,4 +687,40 @@ func FormatBytes(bytes uint64) string {
 		exp++
 	}
 	return strconv.FormatFloat(float64(bytes)/float64(div), 'f', 1, 64) + " " + string("KMGTPE"[exp]) + "B"
+}
+
+// getSSRFProtectionConfig 智能获取 SSRF 防护配置
+// 规则：
+// 1. 如果设置了 ENABLE_SSRF_PROTECTION 环境变量，优先使用
+// 2. 如果未设置，根据部署环境自动判断：
+//   - production: 启用 SSRF 防护（假定是公有云）
+//   - development: 禁用 SSRF 防护（假定是本地开发）
+func getSSRFProtectionConfig(environment string) bool {
+	// 1. 检查是否明确设置了环境变量
+	if envValue := os.Getenv("ENABLE_SSRF_PROTECTION"); envValue != "" {
+		return strings.ToLower(envValue) == "true" || envValue == "1"
+	}
+
+	// 2. 根据部署环境自动判断
+	// production 环境默认启用（假定是公有云部署）
+	// development 环境默认禁用（假定是本地开发）
+	return environment == "production"
+}
+
+// getAllowPrivateIPConfig 智能获取是否允许访问私有 IP 的配置
+// 规则：
+// 1. 如果设置了 ALLOW_PRIVATE_IP 环境变量，优先使用
+// 2. 如果未设置，根据部署环境自动判断：
+//   - development: 允许私有 IP（本地开发需要访问内网服务）
+//   - production: 禁止私有 IP（公有云环境防止 SSRF 攻击）
+func getAllowPrivateIPConfig(environment string) bool {
+	// 1. 检查是否明确设置了环境变量
+	if envValue := os.Getenv("ALLOW_PRIVATE_IP"); envValue != "" {
+		return strings.ToLower(envValue) == "true" || envValue == "1"
+	}
+
+	// 2. 根据部署环境自动判断
+	// development 环境默认允许（本地开发）
+	// production 环境默认禁止（公有云部署）
+	return environment == "development"
 }

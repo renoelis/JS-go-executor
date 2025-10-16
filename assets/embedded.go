@@ -31,8 +31,14 @@ var AceEditor string
 //go:embed codemirror/mode-javascript.js
 var AceModeJavaScript string
 
+//go:embed codemirror/mode-json.js
+var AceModeJSON string
+
 //go:embed codemirror/theme-monokai.js
 var AceThemeMonokai string
 
 //go:embed codemirror/worker-javascript.js
 var AceWorkerJavaScript string
+
+//go:embed codemirror/worker-json.js
+var AceWorkerJSON string

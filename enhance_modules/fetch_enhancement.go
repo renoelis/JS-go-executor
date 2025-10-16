@@ -291,6 +291,11 @@ func NewFetchEnhancer(timeout time.Duration) *FetchEnhancer {
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceHTTP2:            true,
 	}
+	// 默认不启用 SSRF 防护（保持向后兼容）
+	defaultSSRFConfig := &SSRFProtectionConfig{
+		Enabled:        false,
+		AllowPrivateIP: true,
+	}
 	return NewFetchEnhancerWithConfig(
 		timeout,       // 请求超时
 		5*time.Minute, // 响应读取超时（默认 5 分钟）
@@ -303,7 +308,8 @@ func NewFetchEnhancer(timeout time.Duration) *FetchEnhancer {
 		1*1024*1024,
 		100*1024*1024,
 		defaultTransportConfig,
-		5*time.Minute, // 默认 5 分钟空闲超时
+		5*time.Minute,     // 默认 5 分钟空闲超时
+		defaultSSRFConfig, // SSRF 防护配置
 	)
 }
 
@@ -321,7 +327,28 @@ func NewFetchEnhancerWithConfig(
 	maxStreamingSize int64, // 流式读取限制（getReader）
 	httpTransportConfig *HTTPTransportConfig, // 🔥 HTTP Transport 配置（新增）
 	responseBodyIdleTimeout time.Duration, // 🔥 v2.4.3: 响应体空闲超时（防止资源泄漏）
+	ssrfProtectionConfig *SSRFProtectionConfig, // 🛡️ SSRF 防护配置（新增）
 ) *FetchEnhancer {
+	// 🛡️ 创建带 SSRF 防护的 DialContext
+	var dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+	if ssrfProtectionConfig != nil && ssrfProtectionConfig.Enabled {
+		// 启用 SSRF 防护
+		dialContext = CreateProtectedDialContext(
+			ssrfProtectionConfig,
+			httpTransportConfig.DialTimeout,
+			httpTransportConfig.KeepAlive,
+		)
+		utils.Info("SSRF 防护已启用",
+			zap.Bool("allow_private_ip", ssrfProtectionConfig.AllowPrivateIP))
+	} else {
+		// 使用标准 Dialer（无 SSRF 防护）
+		dialContext = (&net.Dialer{
+			Timeout:   httpTransportConfig.DialTimeout,
+			KeepAlive: httpTransportConfig.KeepAlive,
+		}).DialContext
+		utils.Info("SSRF 防护已禁用（本地开发模式）")
+	}
+
 	// 🔥 优化：配置高性能且安全的 HTTP Transport（使用环境变量配置）
 	transport := &http.Transport{
 		// 连接池配置
@@ -330,11 +357,8 @@ func NewFetchEnhancerWithConfig(
 		MaxConnsPerHost:     httpTransportConfig.MaxConnsPerHost,     // 🚨 安全修复：限制每个 host 的最大连接数，防止慢速攻击（可配置）
 		IdleConnTimeout:     httpTransportConfig.IdleConnTimeout,     // 空闲连接超时（可配置）
 
-		// 连接超时配置
-		DialContext: (&net.Dialer{
-			Timeout:   httpTransportConfig.DialTimeout, // 连接建立超时（可配置）
-			KeepAlive: httpTransportConfig.KeepAlive,   // Keep-Alive 间隔（可配置）
-		}).DialContext,
+		// 🛡️ 使用带 SSRF 防护的 DialContext（或标准 Dialer）
+		DialContext: dialContext,
 
 		// TLS 握手超时
 		TLSHandshakeTimeout: httpTransportConfig.TLSHandshakeTimeout, // TLS 握手超时（可配置）

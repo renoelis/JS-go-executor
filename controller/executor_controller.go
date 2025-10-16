@@ -23,14 +23,16 @@ type ExecutorController struct {
 	executor     *service.JSExecutor
 	config       *config.Config
 	tokenService *service.TokenService
+	statsService *service.StatsService // 🆕 统计服务
 }
 
 // NewExecutorController 创建新的执行器控制器
-func NewExecutorController(executor *service.JSExecutor, cfg *config.Config, tokenService *service.TokenService) *ExecutorController {
+func NewExecutorController(executor *service.JSExecutor, cfg *config.Config, tokenService *service.TokenService, statsService *service.StatsService) *ExecutorController {
 	return &ExecutorController{
 		executor:     executor,
 		config:       cfg,
 		tokenService: tokenService,
+		statsService: statsService, // 🆕 统计服务
 	}
 }
 
@@ -123,15 +125,20 @@ func (c *ExecutorController) Execute(ctx *gin.Context) {
 
 	code := string(codeBytes)
 
+	// 🆕 解析模块使用情况
+	moduleInfo := utils.ParseModuleUsage(code)
+
 	// 🆕 记录代码执行开始
 	utils.Debug("开始执行代码",
 		zap.String("request_id", requestID),
 		zap.Int("code_length", len(code)),
+		zap.Bool("has_require", moduleInfo.HasRequire),
+		zap.Int("module_count", moduleInfo.ModuleCount),
 		zap.String("ws_id", ctx.GetString("wsId")))
 
 	// 🔥 执行代码：传递 HTTP 请求的 context 和 requestID
 	// 将 requestID 存入 context，供执行器使用作为 executionId
-	execCtx := context.WithValue(ctx.Request.Context(), "request_id", requestID)
+	execCtx := context.WithValue(ctx.Request.Context(), utils.RequestIDKey, requestID)
 	executionResult, err := c.executor.Execute(execCtx, code, req.Input)
 	totalTime := time.Since(startTime).Milliseconds()
 
@@ -156,6 +163,11 @@ func (c *ExecutorController) Execute(ctx *gin.Context) {
 			zap.String("ws_id", ctx.GetString("wsId")),
 			zap.String("email", ctx.GetString("userEmail")))
 
+		// 🆕 记录统计数据(异步,失败情况)
+		if c.statsService != nil {
+			c.recordStats(requestID, ctx, moduleInfo, code, totalTime, "failed")
+		}
+
 		ctx.JSON(400, model.ExecuteResponse{
 			Success: false,
 			Error: &model.ExecuteError{
@@ -179,6 +191,11 @@ func (c *ExecutorController) Execute(ctx *gin.Context) {
 		zap.Int64("execution_time_ms", totalTime),
 		zap.String("ws_id", ctx.GetString("wsId")),
 		zap.String("email", ctx.GetString("userEmail")))
+
+	// 🆕 记录统计数据(异步,成功情况)
+	if c.statsService != nil {
+		c.recordStats(requestID, ctx, moduleInfo, code, totalTime, "success")
+	}
 
 	ctx.JSON(200, model.ExecuteResponse{
 		Success: true,
@@ -531,24 +548,51 @@ func GetStartTime() time.Time {
 	return startTime
 }
 
+// recordStats 记录统计数据(辅助方法)
+func (c *ExecutorController) recordStats(requestID string, ctx *gin.Context, moduleInfo *utils.ModuleUsageInfo, code string, totalTime int64, status string) {
+	// 检测是否为异步代码
+	isAsync := c.executor.GetAnalyzer().IsLikelyAsync(code)
+
+	// 获取Token (从tokenInfo中提取AccessToken字段)
+	token := ""
+	if tokenInfoValue, exists := ctx.Get("tokenInfo"); exists {
+		if tokenInfo, ok := tokenInfoValue.(*model.TokenInfo); ok {
+			token = tokenInfo.AccessToken
+		}
+	}
+
+	statsRecord := &model.ExecutionStatsRecord{
+		ExecutionID:     requestID,
+		Token:           token,
+		WsID:            ctx.GetString("wsId"),
+		Email:           ctx.GetString("userEmail"),
+		HasRequire:      moduleInfo.HasRequire,
+		ModulesUsed:     moduleInfo.GetModuleList(),
+		ModuleCount:     moduleInfo.ModuleCount,
+		ExecutionStatus: status,
+		ExecutionTimeMs: totalTime,
+		CodeLength:      len(code),
+		IsAsync:         isAsync,
+		ExecutionDate:   time.Now().Format("2006-01-02"),
+		ExecutionTime:   time.Now(),
+	}
+
+	c.statsService.RecordExecutionStats(statsRecord)
+}
+
 // TestTool 测试工具页面
 func (c *ExecutorController) TestTool(ctx *gin.Context) {
-	// 从环境变量获取配置，提供默认值
-	apiUrl := utils.GetEnvWithDefault("TEST_TOOL_API_URL", "http://localhost:3002")
-	aiAssistantUrl := utils.GetEnvWithDefault("TEST_TOOL_AI_URL", "")
-	helpDocUrl := utils.GetEnvWithDefault("TEST_TOOL_HELP_URL", "")
-	apiDocUrl := utils.GetEnvWithDefault("TEST_TOOL_API_DOC_URL", "")
-	testToolGuideUrl := utils.GetEnvWithDefault("TEST_TOOL_GUIDE_URL", "")
-	exampleDocUrl := utils.GetEnvWithDefault("TEST_TOOL_EXAMPLE_URL", "")
-	applyServiceUrl := utils.GetEnvWithDefault("TEST_TOOL_APPLY_URL", "")
+	// 从配置中获取测试工具配置
+	testToolCfg := c.config.TestTool
 
 	ctx.HTML(http.StatusOK, "test-tool.html", gin.H{
-		"ApiUrl":           apiUrl,
-		"AiAssistantUrl":   aiAssistantUrl,
-		"HelpDocUrl":       helpDocUrl,
-		"ApiDocUrl":        apiDocUrl,
-		"TestToolGuideUrl": testToolGuideUrl,
-		"ExampleDocUrl":    exampleDocUrl,
-		"ApplyServiceUrl":  applyServiceUrl,
+		"ApiUrl":           testToolCfg.ApiUrl,
+		"LogoUrl":          testToolCfg.LogoUrl,
+		"AiAssistantUrl":   testToolCfg.AiAssistantUrl,
+		"HelpDocUrl":       testToolCfg.HelpDocUrl,
+		"ApiDocUrl":        testToolCfg.ApiDocUrl,
+		"TestToolGuideUrl": testToolCfg.TestToolGuideUrl,
+		"ExampleDocUrl":    testToolCfg.ExampleDocUrl,
+		"ApplyServiceUrl":  testToolCfg.ApplyServiceUrl,
 	})
 }

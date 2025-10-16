@@ -122,6 +122,14 @@ services:
       - CIRCUIT_BREAKER_TIMEOUT_SEC=${CIRCUIT_BREAKER_TIMEOUT_SEC}   # Open状态持续时间(秒)
       - CIRCUIT_BREAKER_MAX_REQUESTS=${CIRCUIT_BREAKER_MAX_REQUESTS} # Half-Open状态最大探测请求数
       
+      # ==================== 🛡️ SSRF 防护配置 ====================
+      # 说明：防止 Server-Side Request Forgery (SSRF) 攻击
+      # 🔒 生产环境推荐配置：
+      #   公有云部署（阿里云/AWS/腾讯云等）: ENABLE_SSRF_PROTECTION=true, ALLOW_PRIVATE_IP=false
+      #   本地/私有云部署: ENABLE_SSRF_PROTECTION=true, ALLOW_PRIVATE_IP=true
+      - ENABLE_SSRF_PROTECTION=${ENABLE_SSRF_PROTECTION:-true}    # 是否启用 SSRF 防护（默认：true）
+      - ALLOW_PRIVATE_IP=${ALLOW_PRIVATE_IP:-false}               # 是否允许访问私有 IP（默认：false，公有云推荐）
+      
       # ==================== Fetch API 超时配置 ====================
       # 🔥 拆分为两个独立参数（v2.5.3 新增）
       - FETCH_TIMEOUT_MS=${FETCH_TIMEOUT_MS}                      # HTTP 请求超时（连接+发送+响应头，20秒）
@@ -184,6 +192,7 @@ services:
       # 测试工具页面配置 - 访问地址: http://your-domain:3002/flow/test-tool
       # 可根据部署环境修改这些链接
       - TEST_TOOL_API_URL=${TEST_TOOL_API_URL}                                           # API服务地址
+      - TEST_TOOL_LOGO_URL=${TEST_TOOL_LOGO_URL:-https://qingflow.com/}                 # Logo点击跳转链接（默认：轻流官网）
       - TEST_TOOL_HELP_URL=${TEST_TOOL_HELP_URL}         # Flow CodeBlock 帮助文档
       - TEST_TOOL_API_DOC_URL=${TEST_TOOL_API_DOC_URL}      # Flow CodeBlock API 接口文档
       - TEST_TOOL_GUIDE_URL=${TEST_TOOL_GUIDE_URL}        # Flow CodeBlock 在线测试工具使用指南

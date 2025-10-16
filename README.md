@@ -18,7 +18,17 @@
 - **LRU代码缓存**: 编译后的代码自动缓存，避免重复编译
 - **智能并发限制**: 基于系统内存自动计算最优并发数
 
+### 📊 统计分析功能 (v2.5+)
+- **模块使用统计**: 实时追踪各模块使用频率、成功率、活跃天数
+- **用户活跃度分析**: 按天/范围统计用户调用次数、模块使用情况
+- **执行详情记录**: 完整记录每次执行的模块、耗时、状态等
+- **智能聚合**: 自动按天聚合统计数据，支持单日/范围查询
+- **可视化友好**: JSON格式响应，易于接入图表系统
+- **异步记录**: 统计写入不阻塞主流程，零性能影响
+
 ### 🛡️ 安全沙箱
+
+#### 代码层安全
 - **危险函数禁用**: eval、globalThis、window、self 等危险函数被完全禁用
 - **危险模块禁用**: fs、path、child_process等模块被拦截
 - **代码解析级检查**: 在执行前检测危险模式和不支持语法
@@ -28,6 +38,16 @@
 - **无限循环检测 (v2.4+)**: 智能检测 while(true)/while(1)/for(;;)/do-while，排除注释和字符串中的误判
 - **资源限制**: 代码长度、执行时间、输入输出大小限制
 - **友好错误提示**: 中文错误消息和模块引入建议
+
+#### 网络层安全 (v2.5.1+)
+- **SSRF 防护**: 防止服务端请求伪造攻击，保护内网资源
+- **智能环境判断**: 根据部署环境自动启用/禁用防护
+  - 公有云（production）: 自动启用，禁止访问私有 IP
+  - 本地开发（development）: 自动禁用，允许访问内网
+- **私有 IP 拦截**: 阻止访问 127.0.0.1, 10.x.x.x, 172.16-31.x.x, 192.168.x.x
+- **云平台保护**: 阻止访问云平台元数据服务（AWS/阿里云/腾讯云）
+- **DNS 重绑定防护**: 解析域名后检查所有 IP，防止绕过
+- **灵活配置**: 支持本地/私有云部署时允许内网访问
 
 ### 🔐 认证和限流 (v2.1+)
 - **Token认证**: 基于数据库的Token认证机制，支持过期时间管理
@@ -205,7 +225,7 @@ TEST_TOOL_EXAMPLE_URL=https://exiao.yuque.com/rlf3k1/oanb79/tlty7ic7szfr2v7v?sin
 ## 🏗️ 项目结构
 
 ```
-go-executor/
+Flow-codeblock_goja/
 ├── cmd/
 │   └── main.go              # 主程序入口，优雅关闭处理
 ├── config/
@@ -214,17 +234,24 @@ go-executor/
 │   └── redis.go             # 🔥 Redis配置
 ├── controller/
 │   ├── executor_controller.go # HTTP控制器 + 测试工具页面
-│   └── token_controller.go    # 🔥 Token管理控制器 + 公开Token查询
+│   ├── token_controller.go    # 🔥 Token管理控制器 + 公开Token查询
+│   └── stats_controller.go    # 📊 统计分析控制器
 ├── middleware/              # 🔥 中间件
 │   ├── auth.go              # Token认证中间件
 │   ├── admin_auth.go        # 管理员认证中间件
-│   └── rate_limiter.go      # 限流中间件
+│   ├── rate_limiter.go      # 限流中间件
+│   ├── request_id.go        # 请求ID追踪中间件
+│   ├── smart_ip_rate_limiter.go  # 智能IP限流
+│   └── global_ip_rate_limiter.go # 全局IP限流
 ├── model/
 │   ├── request.go           # 请求模型
 │   ├── response.go          # 响应模型
 │   ├── executor.go          # 执行器模型
 │   ├── token.go             # 🔥 Token数据模型
-│   └── rate_limit.go        # 🔥 限流数据模型
+│   ├── rate_limit.go        # 🔥 限流数据模型
+│   ├── api_response.go      # 统一API响应模型
+│   ├── stats.go             # 📊 统计数据模型
+│   └── stats_response.go    # 📊 统计响应模型
 ├── repository/              # 🔥 数据访问层
 │   └── token_repository.go  # Token数据访问
 ├── service/
@@ -234,15 +261,11 @@ go-executor/
 │   ├── cache_service.go     # 🔥 混合缓存服务（内存+Redis）
 │   ├── token_service.go     # 🔥 Token业务逻辑
 │   ├── rate_limiter_service.go    # 🔥 限流业务逻辑
-│   └── rate_limiter_tiers.go      # 🔥 三层限流存储
+│   ├── rate_limiter_tiers.go      # 🔥 三层限流存储
+│   ├── stats_service.go     # 📊 统计分析服务
+│   └── cache_write_pool.go  # 缓存写入池
 ├── router/
 │   └── router.go            # 路由配置（集成认证和限流）
-├── utils/
-│   ├── logger.go            # 日志系统
-│   ├── lru_cache.go         # LRU缓存
-│   ├── generic_lru_cache.go # 泛型LRU缓存
-│   ├── code_analyzer.go     # 代码分析器
-│   └── string_helper.go     # 🔥 字符串辅助函数
 ├── enhance_modules/         # 模块增强器
 │   ├── buffer_enhancement.go     # Buffer API实现
 │   ├── crypto_enhancement.go     # Crypto双模块实现
@@ -251,32 +274,45 @@ go-executor/
 │   ├── datefns_enhancement.go    # Date-fns支持
 │   ├── lodash_enhancement.go     # Lodash工具库
 │   ├── qs_enhancement.go         # QS查询字符串
-│   ├── pinyin_enhancement.go     # 拼音转换
+│   ├── pinyin_enhancement.go     # 拼音转换（已弃用，v2.2+）
 │   ├── uuid_enhancement.go       # UUID生成
 │   ├── xlsx_enhancement.go       # ⭐ XLSX Excel操作
 │   ├── formdata_streaming.go     # FormData流式处理
 │   ├── formdata_nodejs.go        # FormData Node.js兼容
 │   ├── blob_file_api.go          # Blob/File对象
-│   └── body_types.go             # HTTP请求体类型
+│   ├── body_types.go             # HTTP请求体类型
+│   └── js_memory_limiter.go      # JavaScript内存限制器
 ├── scripts/
-│   └── init.sql             # 🔥 数据库初始化脚本
+│   ├── init.sql             # 🔥 数据库初始化脚本（含统计表）
+│   ├── stats_tables.sql     # 📊 统计功能数据表
+│   ├── check_security.sh    # 安全检查脚本
+│   └── test-race.sh         # 竞态条件测试
 ├── templates/               # 🎨 HTML模板
 │   └── test-tool.html       # 在线测试工具页面
 ├── assets/
 │   ├── embedded.go          # 嵌入式资源（包含Ace Editor）
-│   ├── crypto-js.min.js     # CryptoJS库
-│   ├── axios.js             # Axios库
 │   ├── codemirror/          # 🎨 Ace Editor本地资源
 │   │   ├── ace.js           # Ace编辑器核心
 │   │   ├── mode-javascript.js # JavaScript语法模式
+│   │   ├── mode-json.js     # JSON语法模式
 │   │   ├── theme-monokai.js   # Monokai主题
-│   │   └── worker-javascript.js # JS语法检查Worker
-│   └── external-libs/       # 其他外部库
+│   │   ├── worker-javascript.js # JS语法检查Worker
+│   │   └── worker-json.js   # JSON语法检查Worker
+│   ├── elements/            # UI元素资源
+│   │   └── LOGO.png         # Logo图片
+│   └── external-libs/       # 其他外部库（6个JS文件）
 ├── utils/
 │   ├── code_analyzer.go     # 代码分析器（智能路由）
+│   ├── code_lexer.go        # 代码词法分析器
 │   ├── lru_cache.go         # LRU缓存
-│   ├── generic_lru_cache.go # 通用LRU缓存（验证缓存）
-│   └── logger.go            # 🔥 智能日志系统
+│   ├── generic_lru_cache.go # 泛型LRU缓存（验证缓存）
+│   ├── logger.go            # 🔥 智能日志系统
+│   ├── module_parser.go     # 📊 模块解析器（统计用）
+│   ├── context_keys.go      # Context键管理
+│   ├── string_helper.go     # 字符串辅助函数
+│   ├── time_helper.go       # 时间辅助函数
+│   ├── response.go          # 响应辅助函数
+│   └── ordered_json.go      # 有序JSON处理
 ├── test/                    # 完整的测试套件
 │   ├── axios/               # Axios测试（27个用例）
 │   ├── Buffer/              # Buffer测试
@@ -323,10 +359,6 @@ curl -X POST http://localhost:3002/flow/codeblock \
 #### 开发环境（本地测试）
 
 ```bash
-# 使用一键启动脚本（推荐）
-./dev_start.sh
-
-# 或手动启动
 docker-compose up -d
 docker-compose logs -f
 ```
@@ -334,10 +366,6 @@ docker-compose logs -f
 #### 生产环境
 
 ```bash
-# 使用一键部署脚本（推荐）
-./deploy_production.sh
-
-# 或手动部署
 docker-compose -f docker-compose.prod.yml up -d
 docker-compose -f docker-compose.prod.yml logs -f
 ```
@@ -353,14 +381,6 @@ RUNTIME_POOL_SIZE=200
 MAX_CONCURRENT_EXECUTIONS=1600
 GOGC=100
 ```
-
-📚 **详细文档**:
-- [Docker 环境配置对比](DOCKER_ENVIRONMENTS.md) - 开发/生产/测试环境详细说明
-- [生产环境优化指南](PRODUCTION_200_RUNTIME_OPTIMIZATION.md) - 200 Runtime 优化方案
-- [内存分析报告](MEMORY_ANALYSIS.md) - 详细的内存占用分析
-- [Pinyin 移除报告](PINYIN_REMOVAL_SUCCESS.md) - 移除 pinyin 的收益分析
-- [生产环境部署指南](PRODUCTION_DEPLOYMENT.md) - 完整的生产部署流程
-- [旧版 Docker 文档](DOCKER.md) - 基础 Docker 使用说明
 
 ### 方式3: 使用环境变量
 
@@ -456,16 +476,16 @@ go run cmd/main.go
   },
   "warmup": {
     "status": "completed",
-    "modules": ["crypto-js", "axios", "date-fns", "lodash", "qs", "pinyin", "uuid"],
-    "totalModules": 7,
-    "successCount": 7,
+    "modules": ["crypto-js", "axios", "date-fns", "lodash", "qs", "uuid"],
+    "totalModules": 6,
+    "successCount": 6,
     "elapsed": "125ms",
     "timestamp": "2024-01-01T10:00:00Z"
   }
 }
 ```
 
-### GET /flow/status - 执行统计（兼容Node.js版本）
+### GET /flow/status - 执行统计
 
 **响应示例:**
 ```json
@@ -633,6 +653,32 @@ GET /flow/query-token?ws_id=my_workspace&email=user@example.com
 |----------|--------|------|
 | `CODE_CACHE_SIZE` | 100 | LRU代码缓存大小 |
 
+### SSRF 防护配置 🛡️
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `ENABLE_SSRF_PROTECTION` | （智能判断） | 是否启用 SSRF 防护 |
+| `ALLOW_PRIVATE_IP` | （智能判断） | 是否允许访问私有 IP |
+
+**智能判断规则**：
+- `production` 环境：默认启用防护，禁止私有 IP
+- `development` 环境：默认禁用防护，允许私有 IP
+- 可通过环境变量显式覆盖
+
+**使用场景**：
+```bash
+# 公有云部署（推荐）
+ENABLE_SSRF_PROTECTION=true
+ALLOW_PRIVATE_IP=false
+
+# 本地/私有云部署
+ENABLE_SSRF_PROTECTION=true
+ALLOW_PRIVATE_IP=true
+
+# 开发环境
+ENABLE_SSRF_PROTECTION=false
+```
+
 ### Fetch API配置
 
 | 环境变量 | 默认值 | 说明 |
@@ -696,7 +742,7 @@ GET /flow/query-token?ws_id=my_workspace&email=user@example.com
 | `TEST_TOOL_APPLY_URL` | https://qingflow.com/... | 申请服务链接 |
 | `TEST_TOOL_EXAMPLE_URL` | https://exiao.yuque.com/... | 示例文档链接 |
 
-**配置说明**：所有链接均可自定义，详见 `TEST_TOOL_CONFIG.md`
+**配置说明**：所有链接均可自定义
 
 ### 推荐配置场景
 
@@ -809,7 +855,7 @@ go run load_test.go
 - Date-fns (日期处理)
 - Lodash (工具函数)
 - QS (查询字符串)
-- Pinyin (拼音转换)
+- Pinyin (拼音转换)，不嵌入使用
 - UUID (UUID生成)
 - XLSX (Excel文件处理，Go原生实现)
 
@@ -825,6 +871,7 @@ go run load_test.go
 - 友好错误提示
 - 执行超时保护
 - 6层沙箱防护
+- SSRF 防护（v2.5.1+）
 
 ## 🛠️ 开发计划
 
@@ -876,44 +923,31 @@ go run load_test.go
 - [x] 公开Token查询API
 - [x] 静态资源本地化（Ace Editor ~960KB）
 
-### 第五阶段 (长期规划)
+### 第五阶段 ✅ (已完成 - v2.5)
+- [x] 📊 统计分析功能
+  - [x] 模块使用统计（按天/范围）
+  - [x] 用户活跃度分析
+  - [x] 执行详情记录
+  - [x] 智能聚合和查询
+  - [x] 完整的统计API接口
+- [x] 🛡️ SSRF 防护功能（v2.5.1）
+  - [x] 私有 IP 拦截（127.0.0.1, 10.x, 172.16-31.x, 192.168.x）
+  - [x] 云平台元数据服务保护（AWS/阿里云/腾讯云）
+  - [x] DNS 重绑定防护
+  - [x] 智能环境判断（公有云/本地自动适配）
+  - [x] 灵活配置（支持本地部署允许内网）
+- [x] 模块解析器（自动识别代码中的require）
+- [x] 统一API响应格式
+- [x] 请求ID追踪系统
+
+### 第六阶段 (长期规划)
 - [ ] 性能持续优化
 - [ ] 监控和日志系统完善
+- [ ] 统计数据可视化仪表盘
 - [ ] 分布式执行支持
 - [ ] WebAssembly模块支持
 - [ ] 测试工具功能增强（代码版本管理、历史记录等）
 
-## 📚 文档
-
-### 核心文档
-- **[ENHANCED_MODULES.md](ENHANCED_MODULES.md)** - 完整的模块增强文档
-- **[认证和限流快速开始](认证和限流快速开始指南.md)** ⭐ 认证和限流功能使用指南
-- **[认证和限流实施方案](认证和限流实现方案评估.md)** - 详细的技术架构文档（37页）
-- **[env.example](env.example)** - 环境变量配置示例
-
-### 测试工具文档 ⭐ (v2.3+)
-- **[TEST_TOOL_CONFIG.md](TEST_TOOL_CONFIG.md)** - 在线测试工具配置说明
-- **[TESTTOOL_DEPLOYMENT_SUMMARY.md](TESTTOOL_DEPLOYMENT_SUMMARY.md)** - 测试工具部署总结
-- **[ACE_EDITOR_LOCAL_DEPLOYMENT.md](ACE_EDITOR_LOCAL_DEPLOYMENT.md)** - Ace编辑器本地部署指南
-
-### 优化和架构文档 ⭐ (v2.2+)
-- **[PINYIN_REMOVAL_SUCCESS.md](PINYIN_REMOVAL_SUCCESS.md)** - Pinyin 移除报告（节省 95.7% 内存）
-- **[MEMORY_ANALYSIS.md](MEMORY_ANALYSIS.md)** - 内存占用详细分析
-- **[SHARED_COMPILATION_CACHE_EXPLAINED.md](SHARED_COMPILATION_CACHE_EXPLAINED.md)** - 共享编译缓存详解
-- **[PRODUCTION_200_RUNTIME_OPTIMIZATION.md](PRODUCTION_200_RUNTIME_OPTIMIZATION.md)** - 200 Runtime 生产优化方案
-- **[CONSTRUCTOR_WHITELIST_STRATEGY.md](CONSTRUCTOR_WHITELIST_STRATEGY.md)** - Constructor 白名单策略
-- **[ISSUE_RESOLUTION_SUMMARY.md](ISSUE_RESOLUTION_SUMMARY.md)** - 问题解决总结
-
-### 模块文档
-- **[XLSX README](test/xlsx/README.md)** - ⭐ XLSX模块使用指南
-- **[Axios测试套件](test/axios/)** - Axios完整测试用例
-
-### 测试文档
-- **[测试报告](测试报告.md)** - 功能测试报告（20个测试，100%通过）
-- **[压力测试完整报告](压力测试完整报告.md)** - 压力测试详细分析
-- **[高并发测试报告](高并发测试报告.md)** - 500和1000并发测试报告
-- **[测试用例](test/)** - 完整的功能测试示例
-- **[XLSX测试套件](test/xlsx/)** - XLSX模块测试(31个测试，100%通过)
 
 ## 🔐 认证和限流使用
 
@@ -1031,6 +1065,9 @@ X-RateLimit-Burst-Limit: 10
 | DELETE | `/flow/tokens/:token` | 删除Token |
 | GET | `/flow/cache/stats` | 缓存统计 |
 | GET | `/flow/rate-limit/stats` | 限流统计 |
+| GET | `/flow/stats/modules` | 📊 模块使用统计 |
+| GET | `/flow/stats/modules/:module_name` | 📊 特定模块详细统计 |
+| GET | `/flow/stats/users` | 📊 用户活跃度统计 |
 
 ### 性能指标
 
@@ -1047,6 +1084,85 @@ X-RateLimit-Burst-Limit: 10
 **多实例扩展：**
 - 10实例：3000-5000 QPS
 - 20实例：6000-10000 QPS
+
+---
+
+## 📊 统计功能使用
+
+### 快速开始
+
+统计功能可以帮助你了解代码执行的各项指标，包括模块使用情况和用户活跃度。
+
+#### 1. 查询模块使用统计
+
+```bash
+# 查询单日模块使用情况
+curl -X GET "http://localhost:3002/flow/stats/modules?date=2025-10-15" \
+  -H "accessToken: qingflow7676"
+
+# 查询日期范围内的模块使用情况
+curl -X GET "http://localhost:3002/flow/stats/modules?start_date=2025-10-01&end_date=2025-10-15" \
+  -H "accessToken: qingflow7676"
+```
+
+**响应示例：**
+```json
+{
+  "success": true,
+  "data": {
+    "summary": {
+      "total_executions": 5526,
+      "total_modules": 8,
+      "require_usage_rate": "38.1"
+    },
+    "modules": [
+      {
+        "module": "axios",
+        "usage_count": 1250,
+        "success_count": 1232,
+        "success_rate": "98.5",
+        "percentage": "22.6"
+      }
+    ]
+  }
+}
+```
+
+#### 2. 查询用户活跃度统计
+
+```bash
+# 查询用户活跃度（支持分页）
+curl -X GET "http://localhost:3002/flow/stats/users?date=2025-10-15&page=1&page_size=20" \
+  -H "accessToken: qingflow7676"
+
+# 查询特定工作空间的用户活跃度
+curl -X GET "http://localhost:3002/flow/stats/users?ws_id=my_workspace&start_date=2025-10-01&end_date=2025-10-15" \
+  -H "accessToken: qingflow7676"
+```
+
+#### 3. 查询特定模块的详细统计
+
+```bash
+# 查询 axios 模块的详细使用情况
+curl -X GET "http://localhost:3002/flow/stats/modules/axios?start_date=2025-10-01&end_date=2025-10-15" \
+  -H "accessToken: qingflow7676"
+```
+
+### 统计数据说明
+
+- **模块使用统计**: 显示各模块的使用次数、成功率、占比等
+- **用户活跃度**: 显示每个用户的调用次数、模块使用情况
+- **执行详情**: 记录每次执行的完整信息（模块、耗时、状态等）
+
+### 数据库表结构
+
+统计功能使用三张表：
+
+1. **code_execution_stats** - 执行详情表（每次执行的完整记录）
+2. **module_usage_stats** - 模块使用聚合表（按天统计）
+3. **user_activity_stats** - 用户活跃度聚合表（按天统计）
+
+详见 `scripts/stats_tables.sql` 和 `STATS_FEATURE.md`
 
 ---
 
@@ -1224,11 +1340,11 @@ return await fetchUserData();
 - 检查 `RUNTIME_POOL_SIZE` 和 `MAX_RUNTIME_POOL_SIZE` 配置
 - 减少初始池大小，依赖动态扩展
 - 调整 `RUNTIME_IDLE_TIMEOUT_MIN` 加快空闲Runtime释放
-- **检查预加载策略**: 移除不需要的大库（如 pinyin 可节省 1.6GB）
+- **检查预加载策略**: 移除不需要的大库（v2.2+ 已默认移除 pinyin 等大型库）
 
 **问题：内存使用率接近 100%，容器 OOM**
-- ⚠️ **关键**: 检查是否预加载了 pinyin 库（占用 73% 内存）
-- 移除不需要的模块注册（参考 `PINYIN_REMOVAL_SUCCESS.md`）
+- ⚠️ **关键**: 检查是否预加载了大型库（如已移除的 pinyin 库曾占用 73% 内存）
+- 移除不需要的模块注册（v2.2+ 已移除 pinyin 模块）
 - 增加 Docker 内存限制
 - 优化预加载策略：只预加载常用小库（date-fns, qs, crypto-js）
 - 大库改为按需加载（lodash, uuid）
@@ -1323,6 +1439,38 @@ MIT License
 ---
 
 ## 📝 版本更新记录
+
+### v2.5.1 (2025-10-15) - SSRF 防护功能 🛡️
+- ✨ 新增 SSRF (Server-Side Request Forgery) 防护功能
+  - **私有 IP 拦截**: 阻止访问内网地址（127.0.0.1, 10.x, 172.16-31.x, 192.168.x）
+  - **云平台保护**: 阻止访问云平台元数据服务（AWS 169.254.169.254, 阿里云 100.100.100.200）
+  - **DNS 重绑定防护**: 域名解析后再次检查 IP，防止绕过
+- 🧠 智能环境判断
+  - production 环境：自动启用防护，禁止私有 IP（公有云部署）
+  - development 环境：自动禁用防护，允许私有 IP（本地开发）
+- 🔧 灵活配置
+  - `ENABLE_SSRF_PROTECTION`: 显式控制是否启用防护
+  - `ALLOW_PRIVATE_IP`: 本地/私有云部署可配置允许内网访问
+- 🧪 完整测试覆盖（15+ 测试用例，100% 通过）
+- 📚 详细文档：`SSRF_PROTECTION.md`、`SSRF_DEPLOYMENT_GUIDE.md`
+
+### v2.5.0 (2025-10-15) - 统计分析功能 📊
+- ✨ 新增完整的统计分析系统
+  - **模块使用统计**: 追踪各模块使用频率、成功率、活跃天数
+  - **用户活跃度分析**: 统计用户调用次数、模块偏好
+  - **执行详情记录**: 完整记录每次执行的详细信息
+- 📊 三个新的统计API接口
+  - `GET /flow/stats/modules` - 模块使用统计（支持单日/范围查询）
+  - `GET /flow/stats/modules/:module_name` - 特定模块详细统计
+  - `GET /flow/stats/users` - 用户活跃度统计（支持分页）
+- 🗄️ 新增三张统计数据表
+  - `code_execution_stats` - 执行详情表
+  - `module_usage_stats` - 模块使用聚合表
+  - `user_activity_stats` - 用户活跃度聚合表
+- 🔧 模块解析器（自动识别代码中使用的模块）
+- 🎯 统一API响应格式（`model.StatsAPIResponse`）
+- ⚡ 异步统计记录（零性能影响）
+- 📚 完整的统计功能文档
 
 ### v2.4.6 (2025-10-09) - 错误行号定位修复
 - 🐛 修复错误行号定位不准确问题：同步和异步代码错误行号现在完全准确

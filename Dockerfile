@@ -37,6 +37,9 @@ COPY --from=builder /app/flow-codeblock-go .
 # 复制 templates 目录（测试工具页面）
 COPY --from=builder /app/templates ./templates
 
+# 🆕 复制 assets/elements 目录（Logo等静态资源）
+COPY --from=builder /app/assets/elements ./assets/elements
+
 # 注意：所有外部库（crypto-js, lodash, uuid等）都已通过 go:embed 嵌入到二进制文件中
 # 不需要再复制 external-libs 目录
 

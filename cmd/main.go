@@ -97,18 +97,23 @@ func main() {
 	// 执行器服务
 	executor := service.NewJSExecutor(cfg)
 
+	// 🆕 统计服务
+	statsService := service.NewStatsService(db)
+
 	// ==================== 管理员Token ====================
 	// 🔒 从配置中获取已验证的管理员Token（验证逻辑在 config.LoadConfig 中）
 	adminToken := cfg.Auth.AdminToken
 
 	// ==================== 初始化Controller ====================
-	executorController := controller.NewExecutorController(executor, cfg, tokenService)
+	executorController := controller.NewExecutorController(executor, cfg, tokenService, statsService)
 	tokenController := controller.NewTokenController(tokenService, rateLimiterService, cacheWritePool, adminToken)
+	statsController := controller.NewStatsController(statsService)
 
 	// ==================== 设置路由 ====================
 	ginRouter, routerResources := router.SetupRouter(
 		executorController,
 		tokenController,
+		statsController, // 🆕 统计控制器
 		tokenService,
 		rateLimiterService,
 		adminToken,

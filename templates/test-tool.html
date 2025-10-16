@@ -3,11 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Flow-CodeBlock 代码执行测试工具</title>
+    <title>Flow-CodeBlock 代码执行在线工具</title>
     
     <!-- Ace Editor 本地资源 -->
     <script src="/flow/assets/ace.js"></script>
     <script src="/flow/assets/mode-javascript.js"></script>
+    <script src="/flow/assets/mode-json.js"></script>
     <script src="/flow/assets/theme-monokai.js"></script>
     
     <style>
@@ -19,7 +20,7 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #e3f2fd 0%, #1976d2 100%);
             min-height: 100vh;
             padding: 20px;
         }
@@ -34,20 +35,65 @@
         }
 
         .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
+            background: #ffffff;
+            color: #1976d2;
+            padding: 25px 30px 20px;
             text-align: center;
+            border-bottom: 4px solid #1976d2;
+            box-shadow: 0 2px 8px rgba(25, 118, 210, 0.1);
+        }
+
+        .header-logo-link {
+            display: inline-block;
+            margin-bottom: 15px;
+            padding: 8px 20px;
+            border-radius: 12px;
+            transition: all 0.3s ease;
+            outline: none;
+            text-decoration: none;
+            background: transparent;
+        }
+
+        .header-logo-link:hover {
+            transform: translateY(-2px);
+            background: rgba(25, 118, 210, 0.05);
+            box-shadow: 0 4px 12px rgba(25, 118, 210, 0.15);
+        }
+
+        .header-logo-link:focus {
+            outline: none;
+            background: rgba(25, 118, 210, 0.08);
+            box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.2);
+        }
+
+        .header-logo-link:active {
+            transform: translateY(0);
+        }
+
+        .header-logo {
+            max-height: 70px;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+            border-radius: 12px;
+            transition: transform 0.3s ease;
+        }
+
+        .header-logo-link:hover .header-logo {
+            transform: scale(1.03);
         }
 
         .header h1 {
             font-size: 28px;
             margin-bottom: 10px;
+            color: #1976d2;
+            font-weight: 700;
         }
 
         .header p {
             font-size: 14px;
-            opacity: 0.9;
+            color: #666;
+            font-weight: 500;
         }
 
         .main-content {
@@ -102,8 +148,8 @@
 
         .form-input:focus {
             outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            border-color: #1976d2;
+            box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.1);
         }
 
         textarea.form-input {
@@ -126,27 +172,29 @@
 
         .btn {
             flex: 1;
-            padding: 12px 24px;
+            padding: 10px 20px;
             border: none;
             border-radius: 8px;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.3s;
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
+            gap: 6px;
         }
 
         .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1976d2 0%, #42a5f5 100%);
             color: white;
         }
 
         .btn-primary:hover {
+            background: linear-gradient(135deg, #ffd740 0%, #ffb300 100%);
+            color: #1976d2;
             transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 4px 12px rgba(25, 118, 210, 0.4);
         }
 
         .btn-secondary {
@@ -160,23 +208,27 @@
         }
 
         .btn-success {
-            background: #28a745;
+            background: linear-gradient(135deg, #1976d2 0%, #42a5f5 100%);
             color: white;
+            box-shadow: 0 2px 6px rgba(25, 118, 210, 0.25);
         }
 
         .btn-success:hover {
-            background: #218838;
+            background: linear-gradient(135deg, #1565c0 0%, #1976d2 100%);
             transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(25, 118, 210, 0.35);
         }
 
         .btn-info {
-            background: #17a2b8;
+            background: linear-gradient(135deg, #00acc1 0%, #26c6da 100%);
             color: white;
+            box-shadow: 0 2px 6px rgba(0, 172, 193, 0.25);
         }
 
         .btn-info:hover {
-            background: #138496;
+            background: linear-gradient(135deg, #00838f 0%, #00acc1 100%);
             transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0, 172, 193, 0.35);
         }
 
         .btn-warning {
@@ -190,24 +242,18 @@
         }
 
         .btn-danger {
-            background: #dc3545;
+            background: linear-gradient(135deg, #90a4ae 0%, #78909c 100%);
             color: white;
+            box-shadow: 0 2px 6px rgba(120, 144, 156, 0.25);
         }
 
         .btn-danger:hover {
-            background: #c82333;
+            background: linear-gradient(135deg, #78909c 0%, #607d8b 100%);
             transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(120, 144, 156, 0.35);
         }
 
-        .btn-primary {
-            background: #007bff;
-            color: white;
-        }
-
-        .btn-primary:hover {
-            background: #0056b3;
-            transform: translateY(-2px);
-        }
+        /* 主蓝色按钮已在上方定义 */
 
         .btn:disabled {
             opacity: 0.6;
@@ -264,6 +310,33 @@
 
         .copy-result-btn.copied {
             background: linear-gradient(135deg, #17a2b8 0%, #138496 100%);
+        }
+
+        /* 全屏编辑按钮样式 */
+        .fullscreen-edit-btn {
+            padding: 8px 16px;
+            background: linear-gradient(135deg, #1976d2 0%, #42a5f5 100%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 8px rgba(25, 118, 210, 0.3);
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .fullscreen-edit-btn:hover {
+            background: linear-gradient(135deg, #1565c0 0%, #1e88e5 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(25, 118, 210, 0.5);
+        }
+
+        .fullscreen-edit-btn:active {
+            transform: translateY(0);
         }
 
         .result-section {
@@ -408,7 +481,7 @@
         .stat-value {
             font-size: 24px;
             font-weight: 700;
-            color: #667eea;
+            color: #1976d2;
             margin-bottom: 5px;
         }
 
@@ -430,7 +503,7 @@
 
         .spinner {
             border: 3px solid #f3f3f3;
-            border-top: 3px solid #667eea;
+            border-top: 3px solid #1976d2;
             border-radius: 50%;
             width: 40px;
             height: 40px;
@@ -480,9 +553,9 @@
         }
 
         .example-link:hover {
-            background: #667eea;
+            background: #1976d2;
             color: white;
-            border-color: #667eea;
+            border-color: #1976d2;
         }
 
         .config-section {
@@ -674,7 +747,7 @@
         }
 
         .fullscreen-editor-textarea:focus {
-            border-color: #667eea;
+            border-color: #1976d2;
         }
 
         .fullscreen-btn {
@@ -727,7 +800,22 @@
         }
 
         #codeEditorContainer:focus-within {
-            outline: 2px solid #667eea;
+            outline: 2px solid #1976d2;
+            outline-offset: 2px;
+        }
+
+        /* Input 编辑器样式 */
+        #inputEditorContainer {
+            margin-top: 10px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            min-height: 250px;
+            height: 250px;
+            font-size: 14px;
+        }
+
+        #inputEditorContainer:focus-within {
+            outline: 2px solid #1976d2;
             outline-offset: 2px;
         }
 
@@ -760,7 +848,17 @@
 
             /* 头部适配 */
             .header {
-                padding: 20px 15px;
+                padding: 20px 15px 15px;
+                border-bottom-width: 3px;
+            }
+
+            .header-logo {
+                max-height: 50px;
+            }
+
+            .header-logo-link {
+                margin-bottom: 10px;
+                padding: 6px 15px;
             }
 
             .header h1 {
@@ -803,7 +901,7 @@
 
             .btn {
                 width: 100%;
-                padding: 12px;
+                padding: 10px;
                 font-size: 13px;
             }
 
@@ -811,6 +909,13 @@
             #codeEditorContainer {
                 min-height: 300px;
                 height: 300px;
+                font-size: 13px;
+            }
+
+            /* Input 编辑器高度调整 */
+            #inputEditorContainer {
+                min-height: 200px;
+                height: 200px;
                 font-size: 13px;
             }
 
@@ -851,8 +956,14 @@
 
             /* 复制结果按钮适配 */
             .copy-result-btn {
-                font-size: 12px;
-                padding: 6px 12px;
+                font-size: 11px;
+                padding: 5px 10px;
+            }
+
+            /* 全屏编辑按钮适配 */
+            .fullscreen-edit-btn {
+                font-size: 11px;
+                padding: 5px 10px;
             }
 
             /* 全屏编辑器适配 */
@@ -864,6 +975,10 @@
                 flex-direction: column;
                 gap: 10px;
                 align-items: flex-start;
+            }
+
+            .fullscreen-editor-title {
+                font-size: 16px;
             }
 
             .fullscreen-editor-actions {
@@ -893,6 +1008,18 @@
                 height: 400px;
             }
 
+            .header {
+                padding: 22px 20px 18px;
+            }
+
+            .header-logo {
+                max-height: 60px;
+            }
+
+            .header-logo-link {
+                padding: 7px 18px;
+            }
+
             .header h1 {
                 font-size: 24px;
             }
@@ -905,7 +1032,17 @@
             }
 
             .header {
-                padding: 15px 10px;
+                padding: 15px 10px 12px;
+                border-bottom-width: 2px;
+            }
+
+            .header-logo {
+                max-height: 45px;
+            }
+
+            .header-logo-link {
+                margin-bottom: 8px;
+                padding: 5px 12px;
             }
 
             .header h1 {
@@ -926,9 +1063,26 @@
                 padding: 10px;
             }
 
+            /* 超小屏幕按钮适配 */
+            .copy-result-btn {
+                font-size: 10px;
+                padding: 4px 8px;
+            }
+
+            .fullscreen-edit-btn {
+                font-size: 10px;
+                padding: 4px 8px;
+            }
+
             #codeEditorContainer {
                 min-height: 250px;
                 height: 250px;
+                font-size: 12px;
+            }
+
+            #inputEditorContainer {
+                min-height: 180px;
+                height: 180px;
                 font-size: 12px;
             }
 
@@ -942,8 +1096,11 @@
     <div class="container">
         <!-- Header -->
         <div class="header">
-            <h1>🚀 Flow-CodeBlock 代码执行测试工具</h1>
-            <p>支持 JavaScript ES6+、异步操作、HTTP 请求、加密等功能</p>
+            <a href="{{.LogoUrl}}" target="_blank" class="header-logo-link" title="访问轻流官网">
+                <img src="/flow/assets/logo.png" alt="轻流 Logo" class="header-logo">
+            </a>
+            <h1> Flow-CodeBlock 代码执行测试工具</h1>
+            <p>支持 数据处理、异步操作、HTTP 请求、加密等功能</p>
         </div>
 
         <!-- Main Content -->
@@ -980,7 +1137,7 @@
                                 <div style="margin-bottom: 6px;">1️⃣ 输入 <span style="color: #dc3545; font-weight: 600;">Access Token</span>（必需）</div>
                                 <div style="margin-bottom: 6px;">2️⃣ 填写 <span style="color: #17a2b8; font-weight: 600;">Input 参数</span>（JSON 格式）</div>
                                 <div style="margin-bottom: 6px;">3️⃣ 编写 <span style="color: #28a745; font-weight: 600;">JavaScript 代码</span></div>
-                                <div style="margin-bottom: 6px;">4️⃣ 点击 <span style="color: #667eea; font-weight: 600;">"运行代码"</span> 执行测试</div>
+                                <div style="margin-bottom: 6px;">4️⃣ 点击 <span style="color: #1976d2; font-weight: 600;">"运行代码"</span> 执行测试</div>
                                 <div style="margin-bottom: 6px;">5️⃣ 查看 <span style="color: #fd7e14; font-weight: 600;">执行结果</span> 或报错信息</div>
                             </div>
                         </div>
@@ -1019,7 +1176,7 @@
 
                 <!-- 按钮组 -->
                 <div style="margin-top: 8px; display: flex; gap: 10px;">
-                    <a href="{{.ApplyServiceUrl}}" target="_blank" style="flex: 1; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; font-weight: bold; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4); transition: all 0.3s ease; font-size: 14px; text-align: center;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(102, 126, 234, 0.6)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(102, 126, 234, 0.4)';">🎯 申请试用服务</a>
+                    <a href="{{.ApplyServiceUrl}}" target="_blank" style="flex: 1; background: linear-gradient(135deg, #1976d2 0%, #42a5f5 100%); color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; font-weight: bold; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 15px rgba(25, 118, 210, 0.4); transition: all 0.3s ease; font-size: 14px; text-align: center;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(25, 118, 210, 0.6)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(25, 118, 210, 0.4)';">🎯 申请试用服务</a>
                     <button onclick="showTokenQuery()" style="flex: 1; background: linear-gradient(135deg, #20b2aa 0%, #008b8b 100%); color: white; padding: 12px 20px; border: none; border-radius: 8px; font-weight: bold; box-shadow: 0 4px 15px rgba(32, 178, 170, 0.4); transition: all 0.3s ease; font-size: 14px; cursor: pointer;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(32, 178, 170, 0.6)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(32, 178, 170, 0.4)';">🔍 查询 Token</button>
                 </div>
 
@@ -1038,7 +1195,7 @@
                             <span style="color: #666;">您的访问凭证（必填），用于身份验证和权限控制</span>
                         </div>
                         <div style="margin-bottom: 6px;">
-                            <strong style="color: #667eea;">🎯 申请试用服务：</strong>
+                            <strong style="color: #1976d2;">🎯 申请试用服务：</strong>
                             <span style="color: #666;">首次使用可申请试用 Token，点击跳转到申请页面</span>
                         </div>
                         <div style="margin-bottom: 6px;">
@@ -1060,9 +1217,14 @@
                         <span class="icon">📥</span>
                         Input 参数
                     </div>
-                    <button id="copyInputBtn" class="copy-result-btn" onclick="copyInputData()" title="复制 Input 参数">
-                        📋 复制内容
-                    </button>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <button onclick="openFullscreenInputEditor()" class="fullscreen-edit-btn" title="全屏编辑 Input 参数">
+                            🖥️ 全屏编辑
+                        </button>
+                        <button id="copyInputBtn" class="copy-result-btn" onclick="copyInputData()" title="复制 Input 参数">
+                            📋 复制内容
+                        </button>
+                    </div>
                 </div>
 
                 <div id="inputAlertBox" class="alert"></div>
@@ -1073,7 +1235,7 @@
                         💡 <strong>完整示例：</strong>点击下方按钮同时加载 Input 数据和代码
                     </small>
                     <div class="example-links" style="margin-bottom: 15px;">
-                        <div class="example-link" onclick="loadCompleteExample('simple')" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; font-weight: bold;">✨ 简单计算</div>
+                        <div class="example-link" onclick="loadCompleteExample('simple')" style="background: linear-gradient(135deg, #1976d2 0%, #42a5f5 100%); color: white; font-weight: bold;">✨ 简单计算</div>
                         <div class="example-link" onclick="loadCompleteExample('async')" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; font-weight: bold;">✨ Axios 请求</div>
                         <div class="example-link" onclick="loadCompleteExample('fetch')" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); color: white; font-weight: bold;">✨ Fetch 请求</div>
                         <div class="example-link" onclick="loadCompleteExample('lodash')" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; font-weight: bold;">✨ Lodash 工具</div>
@@ -1081,10 +1243,10 @@
                         <div class="example-link" onclick="loadCompleteExample('datefns')" style="background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%); color: white; font-weight: bold;">✨ 日期处理</div>
                         <div class="example-link" onclick="loadCompleteExample('xlsx')" style="background: linear-gradient(135deg, #ff9a56 0%, #ffcd39 100%); color: white; font-weight: bold;">✨ Excel 处理</div>
                     </div>
-                    <textarea id="inputData" 
-                              class="form-input"
-                              style="min-height: 200px; font-size: 15px;"
-                              placeholder='{"name": "张三", "age": 25}'>{
+                    <!-- Input 数据编辑器容器 -->
+                    <div id="inputEditorContainer" style="min-height: 250px; height: 250px; border: 1px solid #ddd; border-radius: 8px;"></div>
+                    <!-- 隐藏的 textarea 用于数据存储 -->
+                    <textarea id="inputData" style="display: none;">{
   "name": "张三",
   "age": 25,
   "items": [1, 2, 3, 4, 5]
@@ -1100,25 +1262,23 @@
 
             <!-- JavaScript 代码 -->
             <div class="section">
-                <div class="section-title">
-                    <span class="icon">💻</span>
-                    JavaScript 代码
+                <div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <span class="icon">💻</span>
+                        JavaScript 代码
+                    </div>
+                    <button onclick="openFullscreenEditor()" class="fullscreen-edit-btn" title="全屏编辑代码">
+                        🖥️ 全屏编辑
+                    </button>
                 </div>
 
                 <div id="jsAlertBox" class="alert"></div>
 
                 <div class="form-group">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <div>
-                            <label class="form-label">请编写符合项目规则的代码</label>
-                            <small style="color: #6c757d; font-size: 12px; display: block;">
-                                💡 提示：在上方 Input 参数区域点击<strong>完整示例</strong>按钮，可同时加载 Input 和代码
-                            </small>
-                        </div>
-                        <button onclick="openFullscreenEditor()" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: bold; box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3); transition: all 0.3s ease;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 12px rgba(102, 126, 234, 0.5)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 2px 8px rgba(102, 126, 234, 0.3)';">
-                            🖥️ 全屏编辑
-                        </button>
-                    </div>
+                    <label class="form-label">请编写符合项目规则的代码</label>
+                    <small style="color: #6c757d; font-size: 12px; display: block; margin-bottom: 8px;">
+                        💡 提示：在上方 Input 参数区域点击<strong>完整示例</strong>按钮，可同时加载 Input 和代码
+                    </small>
                     <!-- CodeMirror 编辑器容器 -->
                     <div id="codeEditorContainer"></div>
                     <!-- 隐藏的 textarea 用于表单提交 -->
@@ -1135,7 +1295,7 @@ return {
                         🗑️ 清空代码
                     </button>
                     <button class="btn btn-info" onclick="encodeToBase64()">
-                        🔒 编码为 Base64
+                        🔒 Base64编码并复制
                     </button>
                     <button class="btn btn-success" onclick="executeCode()" id="runBtn">
                         ▶️ 运行代码
@@ -1181,46 +1341,6 @@ return {
                     </div>
                 </div>
             </div>
-
-            <!-- Base64 结果 -->
-            <div class="section result-section">
-                <div class="section-title">
-                    <span class="icon">🔐</span>
-                    Base64 编码结果
-                </div>
-
-                <div id="base64AlertBox" class="alert"></div>
-
-                <div class="form-group">
-                    <label class="form-label">Base64 编码内容</label>
-                    <textarea id="base64Output" 
-                              class="form-input"
-                              style="min-height: 200px; font-size: 15px;"
-                              readonly
-                              placeholder="点击'编码为 Base64'后，编码结果会显示在这里..."></textarea>
-                </div>
-
-                <div class="button-group">
-                    <button class="btn btn-info" onclick="copyBase64()">
-                        📋 复制 Base64
-                    </button>
-                    <button class="btn btn-success" onclick="decodeBase64()">
-                        🔓 解码验证
-                    </button>
-                    <button class="btn btn-danger" onclick="clearBase64()">
-                        🗑️ 清空
-                    </button>
-                </div>
-
-                <div class="form-group" style="margin-top: 20px;">
-                    <label class="form-label">解码验证结果</label>
-                    <textarea id="decodeResult" 
-                              class="form-input"
-                              style="min-height: 200px; font-size: 15px;"
-                              readonly
-                              placeholder="点击'解码验证'后，解码结果会显示在这里..."></textarea>
-                </div>
-            </div>
         </div>
     </div>
 
@@ -1229,7 +1349,7 @@ return {
         let currentAbortController = null; // 用于取消请求的 AbortController
         let isExecuting = false; // 标记是否正在执行代码
 
-        // ==================== Base64 编码/解码 ====================
+        // ==================== Base64 编码并复制 ====================
         function encodeToBase64() {
             const code = document.getElementById('jsCode').value;
             
@@ -1251,76 +1371,27 @@ return {
                 }
                 const base64 = btoa(binary);
                 
-                document.getElementById('base64Output').value = base64;
-                showAlertInArea('base64AlertBox', `✅ 编码成功！原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`, 'success');
+                // 自动复制到剪贴板
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(base64)
+                        .then(() => {
+                            showAlertInArea('jsAlertBox', `✅ Base64 编码成功并已复制到剪贴板！\n原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`, 'success');
+                        })
+                        .catch(err => {
+                            // 降级方案：使用传统方法
+                            fallbackCopyToClipboard(base64);
+                            showAlertInArea('jsAlertBox', `✅ Base64 编码成功并已复制到剪贴板！\n原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`, 'success');
+                        });
+                } else {
+                    // 降级方案：使用传统方法
+                    fallbackCopyToClipboard(base64);
+                    showAlertInArea('jsAlertBox', `✅ Base64 编码成功并已复制到剪贴板！\n原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`, 'success');
+                }
             } catch (error) {
                 showAlertInArea('jsAlertBox', '编码失败: ' + error.message, 'error');
             }
         }
 
-        function decodeBase64() {
-            const base64String = document.getElementById('base64Output').value;
-            
-            if (!base64String.trim()) {
-                showAlertInArea('base64AlertBox', 'Base64 字符串为空', 'warning');
-                return;
-            }
-
-            try {
-                // 解码 base64
-                const binaryString = atob(base64String);
-                const len = binaryString.length;
-                const bytes = new Uint8Array(len);
-                for (let i = 0; i < len; i++) {
-                    bytes[i] = binaryString.charCodeAt(i);
-                }
-                
-                // 使用 TextDecoder 解码 UTF-8
-                const decoder = new TextDecoder('utf-8');
-                const decoded = decoder.decode(bytes);
-                
-                // 显示解码结果
-                document.getElementById('decodeResult').value = decoded;
-                
-                // 验证是否与原始代码匹配
-                const original = document.getElementById('jsCode').value;
-                if (original && original === decoded) {
-                    showAlertInArea('base64AlertBox', '✅ 解码验证通过！编码/解码完全一致', 'success');
-                } else if (original) {
-                    showAlertInArea('base64AlertBox', '⚠️ 警告：解码结果与原始代码不匹配！', 'warning');
-                } else {
-                    showAlertInArea('base64AlertBox', '✅ 解码成功！', 'success');
-                }
-            } catch (error) {
-                showAlertInArea('base64AlertBox', '解码失败: ' + error.message, 'error');
-                document.getElementById('decodeResult').value = '解码失败: ' + error.message;
-            }
-        }
-
-        function copyBase64() {
-            const base64Text = document.getElementById('base64Output').value;
-            
-            if (!base64Text.trim()) {
-                showAlertInArea('base64AlertBox', '⚠️ Base64 字符串为空，无法复制', 'warning');
-                return;
-            }
-            
-            // 使用现代的 Clipboard API
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(base64Text)
-                    .then(() => {
-                        showAlertInArea('base64AlertBox', '✅ Base64 已复制到剪贴板！', 'success');
-                    })
-                    .catch(err => {
-                        // 降级方案：使用传统方法
-                        fallbackCopyToClipboard(base64Text);
-                    });
-            } else {
-                // 降级方案：使用传统方法
-                fallbackCopyToClipboard(base64Text);
-            }
-        }
-        
         // 降级复制方案（兼容旧浏览器）
         function fallbackCopyToClipboard(text) {
             const textArea = document.createElement('textarea');
@@ -1332,9 +1403,8 @@ return {
             
             try {
                 document.execCommand('copy');
-                showAlertInArea('base64AlertBox', '✅ Base64 已复制到剪贴板！', 'success');
             } catch (err) {
-                showAlertInArea('base64AlertBox', '❌ 复制失败，请手动复制', 'error');
+                console.error('复制失败:', err);
             }
             
             document.body.removeChild(textArea);
@@ -1534,7 +1604,6 @@ return {
                     binary += String.fromCharCode(utf8Bytes[i]);
                 }
                 base64Code = btoa(binary);
-                document.getElementById('base64Output').value = base64Code;
             } catch (error) {
                 showAlert('❌ Base64 编码失败: ' + error.message, 'error');
                 return;
@@ -1793,6 +1862,9 @@ return {
 
         // 清空输入框
         function clearInput() {
+            if (inputEditor) {
+                inputEditor.setValue('{}', -1);
+            }
             document.getElementById('inputData').value = '{}';
             showAlertInArea('inputAlertBox', '✅ 输入已清空', 'success');
         }
@@ -1801,13 +1873,6 @@ return {
         function clearCode() {
             document.getElementById('jsCode').value = '';
             showAlertInArea('jsAlertBox', '✅ 代码已清空', 'success');
-        }
-
-        // 清空 Base64
-        function clearBase64() {
-            document.getElementById('base64Output').value = '';
-            document.getElementById('decodeResult').value = '';
-            showAlertInArea('base64AlertBox', '✅ Base64 和解码结果已清空', 'success');
         }
 
         function loadInputExample(type) {
@@ -1833,7 +1898,14 @@ return {
                 }
             };
 
-            document.getElementById('inputData').value = JSON.stringify(examples[type] || examples.simple, null, 2);
+            const inputStr = JSON.stringify(examples[type] || examples.simple, null, 2);
+            document.getElementById('inputData').value = inputStr;
+            
+            // 更新 Input 编辑器
+            if (inputEditor) {
+                inputEditor.setValue(inputStr, -1);
+            }
+            
             showAlertInArea('inputAlertBox', '✅ 示例 Input 已加载', 'success');
         }
 
@@ -2217,10 +2289,16 @@ return readExcelFromUrl();`
             const example = examples[type] || examples.simple;
             
             // 同时加载 Input 和代码
-            document.getElementById('inputData').value = JSON.stringify(example.input, null, 2);
+            const inputStr = JSON.stringify(example.input, null, 2);
+            document.getElementById('inputData').value = inputStr;
             document.getElementById('jsCode').value = example.code;
             
-            // 更新 Ace 编辑器
+            // 更新 Input 编辑器
+            if (inputEditor) {
+                inputEditor.setValue(inputStr, -1);
+            }
+            
+            // 更新代码编辑器
             if (mainEditor) {
                 mainEditor.setValue(example.code, -1);
             }
@@ -2270,23 +2348,8 @@ return readExcelFromUrl();`
 
         // ==================== 页面加载时的初始化 ====================
         window.addEventListener('DOMContentLoaded', () => {
-            // 页面加载完成，静默编码初始代码（不显示提示）
-            const code = document.getElementById('jsCode').value;
-            if (code.trim()) {
-                try {
-                    const encoder = new TextEncoder();
-                    const utf8Bytes = encoder.encode(code);
-                    let binary = '';
-                    const len = utf8Bytes.byteLength;
-                    for (let i = 0; i < len; i++) {
-                        binary += String.fromCharCode(utf8Bytes[i]);
-                    }
-                    const base64 = btoa(binary);
-                    document.getElementById('base64Output').value = base64;
-                } catch (error) {
-                    console.error('初始编码失败:', error);
-                }
-            }
+            // 页面加载完成
+            console.log('Flow-CodeBlock 测试工具已加载');
         });
 
         // ==================== Token 查询功能 ====================
@@ -2653,11 +2716,11 @@ return readExcelFromUrl();`
             <div class="fullscreen-editor-header">
                 <div class="fullscreen-editor-title">🖥️ 全屏代码编辑器</div>
                 <div class="fullscreen-editor-actions">
-                    <button class="fullscreen-btn fullscreen-btn-save" onclick="saveFullscreenCode()">
-                        ✅ 保存并关闭
-                    </button>
-                    <button class="fullscreen-btn fullscreen-btn-close" onclick="closeFullscreenEditor()">
+                    <button class="fullscreen-btn fullscreen-btn-close" onclick="closeFullscreenEditorBtn()">
                         ❌ 取消
+                    </button>
+                    <button class="fullscreen-btn fullscreen-btn-save" onclick="saveFullscreenCodeBtn()">
+                        ✅ 保存并关闭
                     </button>
                 </div>
             </div>
@@ -2669,6 +2732,7 @@ return readExcelFromUrl();`
     <script>
         // Ace Editor 编辑器实例
         let mainEditor = null;
+        let inputEditor = null;
         let fullscreenEditor = null;
 
         // 初始化 Ace Editor
@@ -2681,12 +2745,16 @@ return readExcelFromUrl();`
             // 配置 Ace 的 worker 路径
             ace.config.set('workerPath', '/flow/assets');
             ace.config.set('basePath', '/flow/assets');
+            
+            // 配置 JSON 相关文件路径
+            ace.config.setModuleUrl('ace/mode/json', '/flow/assets/mode-json.js');
+            ace.config.setModuleUrl('ace/mode/json_worker', '/flow/assets/worker-json.js');
 
-            // 初始化主编辑器
+            // 初始化代码编辑器
             mainEditor = ace.edit('codeEditorContainer');
             const startCode = document.getElementById('jsCode').value;
             
-            // 设置编辑器选项
+            // 设置代码编辑器选项
             mainEditor.setTheme('ace/theme/textmate'); // 亮色主题
             mainEditor.session.setMode('ace/mode/javascript');
             mainEditor.setValue(startCode, -1); // -1 表示光标移到开始
@@ -2698,15 +2766,44 @@ return readExcelFromUrl();`
                 enableSnippets: true,
                 tabSize: 2,
                 useSoftTabs: true,
-                wrap: true
+                wrap: true,
+                useWorker: true  // 🔍 启用 worker，支持实时 JavaScript 语法检查
             });
+            
+            // 🔍 启用实时语法验证
+            mainEditor.session.setUseWorker(true);
 
             // 监听内容变化，同步到隐藏的 textarea
             mainEditor.session.on('change', function() {
                 document.getElementById('jsCode').value = mainEditor.getValue();
             });
 
-            console.log('✅ Ace Editor 初始化成功');
+            // 🆕 初始化 Input 参数编辑器（JSON 模式）
+            inputEditor = ace.edit('inputEditorContainer');
+            const startInput = document.getElementById('inputData').value;
+            
+            // 设置 Input 编辑器选项
+            inputEditor.setTheme('ace/theme/textmate'); // 亮色主题
+            inputEditor.session.setMode('ace/mode/json'); // JSON 模式
+            inputEditor.setValue(startInput, -1);
+            inputEditor.setOptions({
+                fontSize: '14px',
+                showPrintMargin: false,
+                enableBasicAutocompletion: true,
+                enableLiveAutocompletion: true,
+                enableSnippets: true,
+                tabSize: 2,
+                useSoftTabs: true,
+                wrap: true,
+                useWorker: true  // 启用 worker，实时语法检查
+            });
+
+            // 监听内容变化，同步到隐藏的 textarea
+            inputEditor.session.on('change', function() {
+                document.getElementById('inputData').value = inputEditor.getValue();
+            });
+
+            console.log('✅ Ace Editor 初始化成功（代码编辑器 + Input 编辑器）');
         }
 
         // 页面加载完成后初始化
@@ -2741,8 +2838,12 @@ return readExcelFromUrl();`
                 enableSnippets: true,
                 tabSize: 2,
                 useSoftTabs: true,
-                wrap: true
+                wrap: true,
+                useWorker: true  // 🔍 启用 worker，支持实时语法检查
             });
+            
+            // 🔍 启用实时语法验证
+            fullscreenEditor.session.setUseWorker(true);
             fullscreenEditor.commands.addCommand({
                 name: 'save',
                 bindKey: {win: 'Ctrl-S', mac: 'Command-S'},
@@ -2764,8 +2865,34 @@ return readExcelFromUrl();`
             if (!fullscreenEditor) return;
             
             // 获取全屏编辑器的代码
-            const code = fullscreenEditor.getValue();
+            const code = fullscreenEditor.getValue().trim();
             
+            // 🔍 检查 JavaScript 语法错误（通过 Ace Editor 的 annotations）
+            const annotations = fullscreenEditor.session.getAnnotations();
+            const errors = annotations.filter(ann => ann.type === 'error');
+            
+            if (errors.length > 0) {
+                // 构建错误信息
+                let errorMsg = '❌ JavaScript 代码存在语法错误，无法保存！\n\n';
+                errorMsg += '错误列表：\n';
+                errors.forEach((err, index) => {
+                    errorMsg += `${index + 1}. 第 ${err.row + 1} 行: ${err.text}\n`;
+                });
+                errorMsg += '\n请修复错误后再保存。';
+                
+                // 显示错误提示
+                alert(errorMsg);
+                
+                // 聚焦到第一个错误行
+                if (errors[0]) {
+                    fullscreenEditor.gotoLine(errors[0].row + 1, 0, true);
+                    fullscreenEditor.focus();
+                }
+                
+                return; // 阻止保存
+            }
+            
+            // ✅ 没有错误，继续保存
             // 更新主编辑器
             if (mainEditor) {
                 mainEditor.setValue(code, -1);
@@ -2778,7 +2905,7 @@ return readExcelFromUrl();`
             closeFullscreenEditor();
             
             // 显示成功提示
-            showAlert('✅ 代码已保存', 'success');
+            showAlert('✅ 代码已保存（语法检查通过）', 'success');
         }
 
         function closeFullscreenEditor() {
@@ -2792,12 +2919,150 @@ return readExcelFromUrl();`
             }
         }
 
+
+        // ==================== Input 全屏编辑器 ====================
+        let fullscreenInputEditor = null;
+
+        function openFullscreenInputEditor() {
+            const editorOverlay = document.getElementById('fullscreenEditor');
+            const container = document.getElementById('fullscreenEditorContainer');
+            
+            if (typeof ace === 'undefined') {
+                alert('编辑器正在加载中，请稍候...');
+                return;
+            }
+            
+            // 获取当前 Input 数据（优先从编辑器获取）
+            const currentInput = inputEditor ? inputEditor.getValue() : document.getElementById('inputData').value;
+            
+            // 清空容器并创建新的编辑器容器
+            container.innerHTML = '<div id="fullscreenInputAceEditor" style="width: 100%; height: 100%;"></div>';
+            
+            // 创建全屏编辑器（使用深色主题，JSON 模式）
+            fullscreenInputEditor = ace.edit('fullscreenInputAceEditor');
+            fullscreenInputEditor.setTheme('ace/theme/monokai'); // 深色主题
+            fullscreenInputEditor.session.setMode('ace/mode/json'); // JSON 模式
+            fullscreenInputEditor.setValue(currentInput, -1);
+            fullscreenInputEditor.setOptions({
+                fontSize: '16px',
+                showPrintMargin: false,
+                enableBasicAutocompletion: true,
+                enableLiveAutocompletion: true,
+                enableSnippets: true,
+                tabSize: 2,
+                useSoftTabs: true,
+                wrap: true,
+                useWorker: true  // 🔍 启用 worker，支持实时 JSON 语法检查
+            });
+            
+            // 🔍 启用实时语法验证
+            fullscreenInputEditor.session.setUseWorker(true);
+            
+            // 🔍 监听语法错误
+            fullscreenInputEditor.session.on("changeAnnotation", function(){
+                const annotations = fullscreenInputEditor.session.getAnnotations();
+                const hasErrors = annotations.some(ann => ann.type === 'error');
+                
+                // 在编辑器下方显示错误提示（可选）
+                if (hasErrors) {
+                    console.log('JSON 格式错误:', annotations);
+                }
+            });
+            fullscreenInputEditor.commands.addCommand({
+                name: 'save',
+                bindKey: {win: 'Ctrl-S', mac: 'Command-S'},
+                exec: function(editor) {
+                    saveFullscreenInputCode();
+                }
+            });
+            
+            // 显示编辑器
+            editorOverlay.style.display = 'block';
+            
+            // 更新标题
+            const title = document.querySelector('.fullscreen-editor-title');
+            if (title) {
+                title.textContent = '🖥️ Input 参数全屏编辑器';
+            }
+            
+            // 聚焦
+            setTimeout(() => {
+                fullscreenInputEditor.focus();
+            }, 100);
+        }
+
+        function saveFullscreenInputCode() {
+            if (!fullscreenInputEditor) return;
+            
+            // 获取全屏编辑器的内容
+            const inputData = fullscreenInputEditor.getValue().trim();
+            
+            // 🔍 JSON 格式验证
+            if (inputData) {
+                try {
+                    JSON.parse(inputData);
+                    // JSON 格式正确
+                } catch (error) {
+                    // JSON 格式错误，显示错误提示
+                    const errorMsg = error.message || 'JSON 格式错误';
+                    const errorLine = error.message.match(/position (\d+)/);
+                    
+                    let alertMsg = `❌ JSON 格式错误: ${errorMsg}\n\n`;
+                    alertMsg += '请检查:\n';
+                    alertMsg += '• 括号、引号是否匹配\n';
+                    alertMsg += '• 键名是否使用双引号\n';
+                    alertMsg += '• 最后一项是否有多余逗号\n';
+                    alertMsg += '• 是否有非法字符';
+                    
+                    // 在编辑器中显示错误提示
+                    alert(alertMsg);
+                    
+                    // 聚焦回编辑器
+                    fullscreenInputEditor.focus();
+                    return; // 不保存，停留在编辑器
+                }
+            }
+            
+            // 更新 Input textarea 和编辑器
+            document.getElementById('inputData').value = inputData;
+            if (inputEditor) {
+                inputEditor.setValue(inputData, -1);
+            }
+            
+            // 关闭编辑器
+            closeFullscreenInputEditor();
+            
+            // 显示成功提示
+            showAlertInArea('inputAlertBox', '✅ Input 数据已保存（JSON 格式正确）', 'success');
+        }
+
+        function closeFullscreenInputEditor() {
+            const editorOverlay = document.getElementById('fullscreenEditor');
+            editorOverlay.style.display = 'none';
+            
+            // 恢复标题
+            const title = document.querySelector('.fullscreen-editor-title');
+            if (title) {
+                title.textContent = '🖥️ 全屏代码编辑器';
+            }
+            
+            // 销毁全屏编辑器实例
+            if (fullscreenInputEditor) {
+                fullscreenInputEditor.destroy();
+                fullscreenInputEditor = null;
+            }
+        }
+
         // 支持 ESC 键关闭全屏编辑器
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
                 const editorOverlay = document.getElementById('fullscreenEditor');
                 if (editorOverlay.style.display === 'block') {
-                    closeFullscreenEditor();
+                    if (fullscreenInputEditor) {
+                        closeFullscreenInputEditor();
+                    } else {
+                        closeFullscreenEditor();
+                    }
                 }
             }
         });
@@ -2809,6 +3074,25 @@ return readExcelFromUrl();`
             }
             document.getElementById('jsCode').value = '';
             showAlertInArea('jsAlertBox', '✅ 代码已清空', 'success');
+        }
+
+        // ==================== 全屏编辑器按钮统一处理 ====================
+        // 智能保存：根据当前编辑器类型调用对应的保存函数
+        function saveFullscreenCodeBtn() {
+            if (fullscreenInputEditor) {
+                saveFullscreenInputCode();
+            } else if (fullscreenEditor) {
+                saveFullscreenCode();
+            }
+        }
+
+        // 智能关闭：根据当前编辑器类型调用对应的关闭函数
+        function closeFullscreenEditorBtn() {
+            if (fullscreenInputEditor) {
+                closeFullscreenInputEditor();
+            } else if (fullscreenEditor) {
+                closeFullscreenEditor();
+            }
         }
     </script>
 </body>

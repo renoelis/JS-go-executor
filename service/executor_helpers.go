@@ -362,7 +362,7 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 
 	// 🔥 从 Context 中获取 requestID 作为 executionId（复用 requestID）
 	var executionId string
-	if reqID := ctx.Value("request_id"); reqID != nil {
+	if reqID := ctx.Value(utils.RequestIDKey); reqID != nil {
 		if reqIDStr, ok := reqID.(string); ok && reqIDStr != "" {
 			// 使用 requestID 作为 executionId
 			executionId = reqIDStr
@@ -524,7 +524,7 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 
 	// 🔥 从 Context 中获取 requestID 作为 executionId（复用 requestID）
 	var executionId string
-	if reqID := ctx.Value("request_id"); reqID != nil {
+	if reqID := ctx.Value(utils.RequestIDKey); reqID != nil {
 		if reqIDStr, ok := reqID.(string); ok && reqIDStr != "" {
 			// 使用 requestID 作为 executionId
 			executionId = reqIDStr

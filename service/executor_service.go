@@ -285,6 +285,10 @@ func (e *JSExecutor) registerModules(cfg *config.Config) {
 			ForceHTTP2:            cfg.Fetch.HTTPForceHTTP2,
 		},
 		cfg.Fetch.ResponseBodyIdleTimeout, // 🔥 v2.4.3: 响应体空闲超时（防止资源泄漏）
+		&enhance_modules.SSRFProtectionConfig{ // 🛡️ SSRF 防护配置（新增）
+			Enabled:        cfg.Fetch.EnableSSRFProtection,
+			AllowPrivateIP: cfg.Fetch.AllowPrivateIP,
+		},
 	)
 	e.moduleRegistry.Register(fetchEnhancer)
 
@@ -613,6 +617,11 @@ func (e *JSExecutor) GetMaxInputSize() int {
 // GetMaxResultSize 获取最大结果大小配置
 func (e *JSExecutor) GetMaxResultSize() int {
 	return e.maxResultSize
+}
+
+// GetAnalyzer 获取代码分析器
+func (e *JSExecutor) GetAnalyzer() *utils.CodeAnalyzer {
+	return e.analyzer
 }
 
 // initRuntimePool 初始化Runtime池

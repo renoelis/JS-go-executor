@@ -95,6 +95,12 @@ services:
       - MAX_RESULT_SIZE=5242880          # 5MB
       - EXECUTION_TIMEOUT_MS=300000       # 🔧 开发环境30秒超时
 
+      # ==================== 🛡️ SSRF 防护配置（开发环境）====================
+      # 开发环境默认：禁用 SSRF 防护（允许访问内网服务）
+      # 原因：本地开发需要访问数据库、微服务等内网资源
+      - ENABLE_SSRF_PROTECTION=${ENABLE_SSRF_PROTECTION:-false}   # 开发环境默认禁用
+      - ALLOW_PRIVATE_IP=${ALLOW_PRIVATE_IP:-true}                # 开发环境默认允许私有IP
+
        # ==================== 🔥 并发控制超时配置 ====================
       # 说明：控制系统繁忙时的等待行为
       - CONCURRENCY_WAIT_TIMEOUT_SEC=10  # 并发槽位等待超时(秒) - 默认 10 秒
@@ -192,7 +198,8 @@ services:
       # ==================== 🔧 测试工具配置 ====================
       # 测试工具页面配置 - 访问地址: http://localhost:3002/flow/test-tool
       # 开发环境使用本地地址
-      - TEST_TOOL_API_URL=http://localhost:3002                                           # API服务地址
+      - TEST_TOOL_API_URL=http://localhost:3002 
+      - TEST_TOOL_LOGO_URL=https://qingflow.com/                                          # API服务地址
       - TEST_TOOL_HELP_URL=https://exiao.yuque.com/rlf3k1/oanb79/fa3tqkxk1h2n912q         # Flow CodeBlock 帮助文档
       - TEST_TOOL_API_DOC_URL=https://exiao.yuque.com/rlf3k1/oanb79/ybd2nfdshmhaihc2      # Flow CodeBlock API 接口文档
       - TEST_TOOL_GUIDE_URL=https://exiao.yuque.com/rlf3k1/oanb79/olsa9bvc6vm2m26c        # Flow CodeBlock 在线测试工具使用指南
