@@ -90,7 +90,13 @@ ALLOWED_ORIGINS=https://your-frontend.com,https://admin.your-company.com
 
 #### 核心模块
 - **Buffer**: 100% Node.js Buffer API兼容，无缝数据转换
-- **Crypto**: Go原生crypto + crypto-js双模块(77+方法)，支持RSA/AES/HMAC等
+- **Crypto**: 🔥 **完全兼容 Node.js 18+**，Go原生crypto + crypto-js双模块(77+方法)
+  - ✅ RSA 加密/解密/签名/验签（支持 PKCS1、OAEP、PSS）
+  - ✅ KeyObject API（createPublicKey、createPrivateKey）
+  - ✅ 多种密钥格式（PKCS#1、PKCS#8、SPKI、PEM、DER）
+  - ✅ 哈希算法（MD5、SHA-1、SHA-256、SHA-384、SHA-512）
+  - ✅ HMAC、随机数生成、UUID
+  - ✅ 严格的安全验证（PSS 密钥大小检查等）
 - **Fetch API**: 完整的现代Fetch API实现，支持所有HTTP方法
 - **Axios**: 基于Fetch的axios兼容层(95%+ API兼容)，推荐用于文件操作
 
@@ -109,10 +115,19 @@ ALLOWED_ORIGINS=https://your-frontend.com,https://admin.your-company.com
   - 支持：读写、流式读写、分批处理、公式计算
 
 #### 高级功能
-- **FormData**: 流式处理，支持大文件上传(最大500MB可配置)
+- **FormData**: 🔥 **完整 Node.js form-data 兼容** - 流式处理，支持大文件上传(最大500MB可配置)
+  - ✅ 完整实现所有 Node.js form-data API（append/getHeaders/getBoundary/hasKnownLength/getLength/getBuffer）
+  - ✅ 智能文件类型判断（字符串 + filename 参数自动作为文件上传）
+  - ✅ 双模式支持：缓冲模式（Buffer/Blob，1MB限制）+ 流式模式（Stream，100MB限制）
 - **Blob/File**: Web标准Blob和File对象，完整实现
 - **AbortController**: 请求取消功能
-- **URLSearchParams**: 完整的迭代器支持
+- **URLSearchParams**: 🔥 **完整迭代器协议支持**
+  - ✅ 完整实现 Web API 标准（append/delete/get/getAll/has/set/entries/keys/values/forEach）
+  - ✅ 迭代器本身可迭代（`for...of params.entries()` 完整支持）
+  - ✅ Symbol.iterator 支持（`for...of params` 直接遍历）
+- **Request**: 🔥 **完整 Request 对象支持**
+  - ✅ fetch 可接受 Request 对象作为第一个参数（符合 Web API 标准）
+  - ✅ Request 对象保留 FormData 等特殊 body 类型
 
 ### 🔧 架构设计
 
@@ -325,6 +340,7 @@ Flow-codeblock_goja/
 ├── docker-compose.yml       # Docker编排配置
 ├── env.example              # 环境变量示例
 ├── ENHANCED_MODULES.md      # 模块增强文档
+├── NODEJS18_CRYPTO_COMPATIBILITY.md # 🔥 Node.js 18+ Crypto 兼容性文档
 ├── CONSOLE_CONTROL_FEATURE.md # Console控制功能文档
 ├── GRACEFUL_SHUTDOWN_FINAL_REPORT.md # 优雅关闭实施报告
 └── README.md                # 项目文档
@@ -841,14 +857,15 @@ go run load_test.go
 
 ✅ **核心模块**
 - Buffer (100% Node.js API兼容)
-- Crypto (Go原生 + crypto-js双模块)
+- Crypto (🔥 **完全兼容 Node.js 18+**，包括 KeyObject API、异步方法、多种密钥格式)
 - URL/URLSearchParams
 - Process (受限版本)
 
 ✅ **HTTP客户端**
-- Fetch API (完整实现)
+- Fetch API (完整实现，包括 Request 对象支持)
 - Axios (95%+ API兼容)
-- FormData (流式处理)
+- FormData (完整 Node.js form-data 兼容，流式处理)
+- URLSearchParams (完整迭代器协议支持)
 - AbortController (请求取消)
 
 ✅ **工具库**
@@ -871,7 +888,7 @@ go run load_test.go
 - 友好错误提示
 - 执行超时保护
 - 6层沙箱防护
-- SSRF 防护（v2.5.1+）
+- git commit -m "前端页面优化、增加分析接口、增加SSRF防护"（v2.5.1+）
 
 ## 🛠️ 开发计划
 
@@ -1177,7 +1194,7 @@ return {
 };
 ```
 
-### 2. 使用Crypto模块
+### 2. 使用Crypto模块（Node.js 18+ 完整支持）
 ```javascript
 const crypto = require('crypto');
 
@@ -1191,16 +1208,61 @@ const hmac = crypto.createHmac('sha256', 'secret-key')
   .update('message')
   .digest('hex');
 
-// RSA加密
+// 🔥 Node.js 18+ KeyObject API
 const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
   modulusLength: 2048
+  // 不指定 encoding，返回 KeyObject
 });
 
-const encrypted = crypto.publicEncrypt(publicKey, Buffer.from('secret'));
-const decrypted = crypto.privateDecrypt(privateKey, encrypted);
+// KeyObject 属性
+console.log(publicKey.type);  // 'public'
+console.log(privateKey.asymmetricKeyType);  // 'rsa'
 
-return { hash, hmac, decrypted: decrypted.toString() };
+// 导出为不同格式
+const publicPem = publicKey.export({ type: 'spki', format: 'pem' });
+const privateDer = privateKey.export({ type: 'pkcs8', format: 'der' });
+
+// RSA 加密（OAEP 推荐）
+const encrypted = crypto.publicEncrypt({
+  key: publicKey,
+  padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+  oaepHash: 'sha256'
+}, Buffer.from('secret message'));
+
+const decrypted = crypto.privateDecrypt({
+  key: privateKey,
+  padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+  oaepHash: 'sha256'
+}, encrypted);
+
+// PSS 签名（推荐）
+const sign = crypto.createSign('sha256');
+sign.update('message to sign');
+const signature = sign.sign({
+  key: privateKey,
+  padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+  saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST
+});
+
+// 验证签名
+const verify = crypto.createVerify('sha256');
+verify.update('message to sign');
+const isValid = verify.verify({
+  key: publicKey,
+  padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+  saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST
+}, signature);
+
+return { 
+  hash, 
+  hmac, 
+  encrypted: encrypted.toString('base64'),
+  decrypted: decrypted.toString(),
+  signatureValid: isValid
+};
 ```
+
+> 💡 **更多 Crypto 功能**: 查看 [NODEJS18_CRYPTO_COMPATIBILITY.md](NODEJS18_CRYPTO_COMPATIBILITY.md) 了解完整的 Node.js 18+ 兼容性说明、API 参考和安全建议。
 
 ### 3. 使用Axios发送HTTP请求
 ```javascript
@@ -1233,17 +1295,35 @@ return {
 };
 ```
 
-### 5. FormData文件上传
+### 5. FormData文件上传（Node.js form-data 完整兼容）
 ```javascript
 const axios = require('axios');
 const FormData = require('form-data');
 
 const formData = new FormData();
+// 普通字段
 formData.append('name', 'document');
 formData.append('type', 'pdf');
 
+// 🔥 字符串 + filename 参数 → 自动作为文件上传
+formData.append('file', 'This is file content', {
+  filename: 'test.txt',
+  contentType: 'text/plain'
+});
+
+// Buffer 文件上传
+formData.append('image', Buffer.from('...'), {
+  filename: 'photo.jpg',
+  contentType: 'image/jpeg'
+});
+
+// 🔥 完整的 form-data API
+console.log(formData.hasKnownLength());  // true (所有数据都在内存中)
+console.log(formData.getBoundary());     // 获取边界字符串
+const headers = formData.getHeaders();   // 获取完整 headers
+
 return axios.post('https://api.example.com/upload', formData, {
-  headers: formData.getHeaders()
+  headers: headers
 }).then(response => response.data);
 ```
 
@@ -1421,6 +1501,40 @@ return await fetchUserData();
 - 如需查看详细关闭日志，使用 `docker-compose logs`
 - 参考 [优雅关闭实施报告](GRACEFUL_SHUTDOWN_FINAL_REPORT.md)
 
+### Crypto/RSA 相关
+
+**问题：1024 位密钥签名失败**
+- 检查是否使用了 PSS + SHA-512 组合（空间不足）
+- 推荐使用 2048 位或更高的密钥
+- 或改用 SHA-256（哈希长度更短）
+
+**问题：KeyObject 使用**
+- ✅ 不指定 encoding 参数时，返回 KeyObject
+- ✅ 使用 `export()` 方法导出为 PEM/DER
+- ✅ 查看 [NODEJS18_CRYPTO_COMPATIBILITY.md](NODEJS18_CRYPTO_COMPATIBILITY.md)
+
+**推荐的 RSA 配置：**
+```javascript
+// ✅ 推荐：2048 位 + OAEP + SHA-256
+const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+  modulusLength: 2048
+});
+
+// 加密使用 OAEP
+crypto.publicEncrypt({
+  key: publicKey,
+  padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+  oaepHash: 'sha256'
+}, data);
+
+// 签名使用 PSS
+sign.sign({
+  key: privateKey,
+  padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+  saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST
+});
+```
+
 ## 📄 许可证
 
 MIT License
@@ -1439,6 +1553,209 @@ MIT License
 ---
 
 ## 📝 版本更新记录
+
+### v2.6.1 (2025-10-18) - Web API 完整性增强 🌐
+
+**🎯 核心升级：FormData、URLSearchParams、Request 全面增强**
+
+#### ✨ 新增功能
+
+**1. FormData 完整 Node.js form-data 兼容**
+- ✅ `hasKnownLength()` 方法 - 检查是否有流式数据（未知长度）
+- ✅ 智能文件类型判断 - 字符串 + filename 参数自动作为文件上传
+  ```javascript
+  formData.append('file', 'content', { filename: 'test.txt' }); // ✅ 作为文件上传
+  formData.append('field', 'value');  // ✅ 作为普通字段
+  ```
+- ✅ 完整实现所有 Node.js form-data API
+  - `append()` / `getHeaders()` / `getBoundary()` / `setBoundary()`
+  - `hasKnownLength()` / `getLength()` / `getLengthSync()` / `getBuffer()`
+- ✅ 双模式支持
+  - 缓冲模式：Buffer/Blob（1MB 限制）
+  - 流式模式：Stream/Reader（100MB 限制）
+
+**2. URLSearchParams 完整迭代器协议支持**
+- ✅ 修复 `Symbol.iterator` 实现 - 直接返回 `entries()` 迭代器
+- ✅ `entries()` / `keys()` / `values()` 返回的迭代器本身可迭代
+  ```javascript
+  const params = new URLSearchParams('a=1&b=2');
+  for (const [key, value] of params.entries()) {  // ✅ 迭代器可迭代
+    console.log(key, value);
+  }
+  for (const [key, value] of params) {  // ✅ 直接迭代
+    console.log(key, value);
+  }
+  ```
+- ✅ 符合 Web API 迭代器协议标准
+
+**3. Request 对象完整支持**
+- ✅ `fetch()` 可接受 Request 对象作为第一个参数
+  ```javascript
+  const request = new Request('https://api.example.com/data', {
+    method: 'POST',
+    body: formData
+  });
+  const response = await fetch(request);  // ✅ 完整支持
+  ```
+- ✅ Request 构造函数保留 FormData 等特殊 body 类型
+- ✅ 从 Request 对象提取 url、method、headers、body
+- ✅ 支持第二个参数覆盖 Request 对象配置
+
+**4. Fetch API redirect 选项支持**
+- ✅ `redirect: 'manual'` - 不自动跟随重定向（返回 3xx 状态码）
+- ✅ `redirect: 'follow'` - 自动跟随重定向（默认行为）
+- ✅ `redirect: 'error'` - 遇到重定向时抛出错误
+  ```javascript
+  // 手动处理重定向
+  const response = await fetch(url, { redirect: 'manual' });
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get('location');
+    // 自定义处理重定向逻辑
+  }
+  ```
+
+**5. AbortController 增强**
+- ✅ 独立的 `AbortError` 类型（符合 Web API 标准）
+- ✅ abort 监听器在独立 goroutine 中运行
+- ✅ 立即响应 abort 信号（< 1ms 延迟）
+
+**6. Axios 兼容性增强**
+- ✅ `maxRedirects` 配置支持
+  ```javascript
+  axios.get(url, { maxRedirects: 0 });  // 不跟随重定向
+  axios.get(url, { maxRedirects: 5 });  // 最多跟随5次重定向
+  ```
+- ✅ `validateStatus` 默认接受 2xx 和 3xx 状态码
+- ✅ `request.path` 属性（包含重定向后的最终 URL）
+- ✅ Headers 深拷贝（避免污染原始配置）
+- ✅ 空响应处理优化（返回空字符串而非 null）
+
+#### 🐛 Bug 修复
+
+1. **FormData 文件上传** - 修复字符串 + filename 被当作普通字段的问题
+2. **URLSearchParams 迭代** - 修复 `for...of params.entries()` 报错 "object is not iterable"
+3. **Request body 类型** - 修复 Request 对象 body 被转换为字符串导致 FormData 丢失
+4. **Fetch redirect 处理** - 添加 redirect 选项支持（manual/follow/error 三种模式）
+5. **AbortError 类型** - 区分 AbortError 和普通错误，符合 Web API 标准
+
+#### 🧪 测试覆盖
+- ✅ FormData 文件上传测试（字符串/Buffer/文件混合）
+- ✅ URLSearchParams 迭代器测试（entries/keys/values/Symbol.iterator）
+- ✅ Request 对象测试（与 FormData 集成）
+
+#### 📚 相关文件
+- `enhance_modules/formdata_nodejs.go` - FormData 增强（hasKnownLength + 智能文件判断）
+- `enhance_modules/body_types.go` - URLSearchParams 迭代器修复（Symbol.iterator）
+- `enhance_modules/fetch_enhancement.go` - Fetch API 增强（Request 对象 + redirect 选项 + AbortError）
+- `assets/axios.js` - Axios 兼容性增强（maxRedirects + validateStatus + request.path）
+
+**现在与浏览器 Web API 和 Node.js form-data 完全兼容！** 🎉
+
+---
+
+### v2.6.0 (2025-10-16) - Node.js 18+ Crypto 完全兼容 🔐
+
+**🎯 核心升级：Crypto 模块完全兼容 Node.js 18+**
+
+#### ✨ 新增功能
+
+**1. KeyObject API（Node.js 18+ 标准）**
+- ✅ `generateKeyPairSync()` 无 encoding 参数时返回 KeyObject
+- ✅ `generateKeyPair()` 异步版本（支持回调）
+- ✅ `createPublicKey()` 和 `createPrivateKey()` 创建密钥对象
+- ✅ `KeyObject.export()` 支持格式转换（PKCS#1/PKCS#8/SPKI，PEM/DER）
+- ✅ `KeyObject.type` 和 `KeyObject.asymmetricKeyType` 属性
+- ✅ 所有加密/签名方法支持 KeyObject 参数
+
+**2. 多种密钥格式支持**
+- ✅ 公钥：SPKI (`PUBLIC KEY`) 和 PKCS#1 (`RSA PUBLIC KEY`)
+- ✅ 私钥：PKCS#8 (`PRIVATE KEY`) 和 PKCS#1 (`RSA PRIVATE KEY`)
+- ✅ 编码：PEM（字符串）和 DER（Buffer）
+- ✅ 加密私钥支持（passphrase + cipher）
+- ✅ DER 格式输入：`{ key: Buffer, format: 'der', type: 'spki' }`
+
+**3. 哈希算法命名兼容**
+- ✅ 支持多种命名格式：`sha256`, `SHA256`, `SHA-256`, `RSA-SHA256`
+- ✅ 自动标准化处理，完全兼容 Node.js 行为
+- ✅ 新增 SHA-224 和 MD5 支持
+
+**4. 密钥长度支持**
+- ✅ 从严格限制（1024/2048/4096）扩展到 512-8192 位
+- ✅ 支持常用长度：1024, 2048, 3072, 4096 位
+- ✅ 必须是 8 的倍数
+
+**5. Buffer.isBuffer() 全局方法**
+- ✅ 实现全局 `Buffer.isBuffer()` 方法
+- ✅ DER 格式密钥返回的 Buffer 可被正确识别
+- ✅ 添加 `_isBuffer` 内部标识
+
+**6. 其他 Crypto API 增强**
+- ✅ `randomUUID()` 支持 `options` 参数（`{ disableEntropyCache }`）
+- ✅ 新增 SHA-384 哈希算法支持
+- ✅ `randomBytes()` 返回标准 Buffer 对象（包含 `equals` 方法）
+- ✅ 所有哈希/签名方法支持多种输入编码（hex/base64/latin1/ascii/utf8）
+- ✅ 更严格的错误检查（rand.Read 错误处理等）
+
+#### 🔒 安全性增强
+
+**1. PSS 签名严格验证（与 Node.js 一致）**
+- ✅ 验证密钥大小是否足够容纳 (hash + salt + 2)
+- ✅ 1024位 + SHA-512 + PSS 组合会被正确拒绝
+- ✅ 错误消息与 Node.js 保持一致
+
+**2. 参数类型严格检查**
+- ✅ `publicKeyEncoding` 和 `privateKeyEncoding` 不接受数组
+- ✅ `createPublicKey()` 拒绝 PrivateKeyObject
+- ✅ `createPrivateKey()` 拒绝 PublicKeyObject
+- ✅ 错误消息与 Node.js 完全一致
+
+**3. 签名验证增强**
+- ✅ 支持 base64/hex 编码的签名字符串
+- ✅ 第三个参数指定编码格式
+- ✅ 完整的 OAEP label 支持
+
+#### 🐛 Bug 修复
+
+1. **KeyObject 返回类型** - 修复未指定 encoding 时仍返回字符串的问题
+2. **PKCS#1 公钥解析** - 修复无法解析 `RSA PUBLIC KEY` 格式的问题
+3. **DER 格式支持** - 修复 DER 格式密钥无法使用的问题
+4. **签名验证编码** - 修复 base64 签名无法验证的问题
+5. **哈希算法命名** - 修复 `RSA-SHA256` 等命名不被识别的问题
+6. **密钥长度限制** - 修复 3072 位密钥无法生成的问题
+7. **PSS 空间验证** - 添加与 Node.js 一致的密钥大小检查
+8. **nil pointer** - 修复参数验证中的空指针问题
+
+#### 📚 新增文档
+- ✅ `NODEJS18_CRYPTO_COMPATIBILITY.md` - 完整的兼容性文档
+- ✅ 包含 API 参考、使用示例、安全建议、迁移指南
+
+#### 🧪 测试覆盖
+- ✅ Node.js 18+ RSA API 兼容性测试（9个测试场景，100% 通过）
+- ✅ RSA 完整功能测试（多密钥长度、多格式、多签名方案）
+- ✅ PSS 密钥大小验证测试
+- ✅ 哈希算法命名测试
+
+#### 🎯 兼容性对比
+
+| 功能 | Node.js 18+ | v2.5.1 | v2.6.0 |
+|------|-------------|--------|--------|
+| KeyObject API | ✅ | ❌ | ✅ |
+| 异步 generateKeyPair | ✅ | ❌ | ✅ |
+| Buffer.isBuffer() | ✅ | ❌ | ✅ |
+| PKCS#1 公钥 | ✅ | ❌ | ✅ |
+| DER 格式 | ✅ | 部分 | ✅ |
+| RSA-SHA256 命名 | ✅ | ❌ | ✅ |
+| 3072 位密钥 | ✅ | ❌ | ✅ |
+| PSS 大小验证 | ✅ | ❌ | ✅ |
+
+#### 📚 相关文件
+- `enhance_modules/crypto_enhancement.go` - Crypto 模块完整重构（+3784 行，KeyObject API + 多格式支持 + 安全增强）
+- `enhance_modules/buffer_enhancement.go` - Buffer.isBuffer() 全局方法
+- `NODEJS18_CRYPTO_COMPATIBILITY.md` - 完整的 API 文档和迁移指南
+
+**现在与 Node.js 18+ 完全兼容！** 🎉
+
+---
 
 ### v2.5.1 (2025-10-15) - SSRF 防护功能 🛡️
 - ✨ 新增 SSRF (Server-Side Request Forgery) 防护功能

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
-	"runtime"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -409,9 +409,20 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
+				// 🔥 获取完整的堆栈信息
+				buf := make([]byte, 8192)
+				stackSize := goruntime.Stack(buf, false)
+				stackTrace := string(buf[:stackSize])
+
+				// 记录详细的panic信息
+				utils.Error("捕获到panic",
+					zap.Any("panic_value", r),
+					zap.String("stack_trace", stackTrace))
+
 				errorChan <- &model.ExecutionError{
 					Type:    "RuntimeError",
 					Message: fmt.Sprintf("代码执行panic: %v", r),
+					Stack:   stackTrace,
 				}
 			}
 		}()
@@ -2079,7 +2090,7 @@ func (e *JSExecutor) GetStats() *model.ExecutorStats {
 	e.mutex.RLock()
 	defer e.mutex.RUnlock()
 
-	runtime.ReadMemStats(&e.stats.MemStats)
+	goruntime.ReadMemStats(&e.stats.MemStats)
 	e.stats.CurrentExecutions = atomic.LoadInt64(&e.currentExecs)
 
 	stats := *e.stats

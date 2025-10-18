@@ -590,6 +590,14 @@ func RegisterURLSearchParams(runtime *goja.Runtime) error {
 				return result
 			})
 
+			// 🔥 添加 Symbol.iterator，使迭代器本身可迭代（返回自身）
+			script := `(function(iter) { iter[Symbol.iterator] = function() { return this; }; })`
+			if fn, err := runtime.RunString(script); err == nil {
+				if callable, ok := goja.AssertFunction(fn); ok {
+					callable(goja.Undefined(), iterator)
+				}
+			}
+
 			return iterator
 		})
 
@@ -620,6 +628,14 @@ func RegisterURLSearchParams(runtime *goja.Runtime) error {
 				return result
 			})
 
+			// 🔥 添加 Symbol.iterator，使迭代器本身可迭代（返回自身）
+			script := `(function(iter) { iter[Symbol.iterator] = function() { return this; }; })`
+			if fn, err := runtime.RunString(script); err == nil {
+				if callable, ok := goja.AssertFunction(fn); ok {
+					callable(goja.Undefined(), iterator)
+				}
+			}
+
 			return iterator
 		})
 
@@ -647,6 +663,14 @@ func RegisterURLSearchParams(runtime *goja.Runtime) error {
 				}
 				return result
 			})
+
+			// 🔥 添加 Symbol.iterator，使迭代器本身可迭代（返回自身）
+			script := `(function(iter) { iter[Symbol.iterator] = function() { return this; }; })`
+			if fn, err := runtime.RunString(script); err == nil {
+				if callable, ok := goja.AssertFunction(fn); ok {
+					callable(goja.Undefined(), iterator)
+				}
+			}
 
 			return iterator
 		})
@@ -681,19 +705,11 @@ func RegisterURLSearchParams(runtime *goja.Runtime) error {
 		// 例如：for (const [key, value] of params) { ... }
 
 		// 通过 JS 代码设置 Symbol.iterator
-		// 将 entries 方法作为默认迭代器
+		// 将 entries 方法作为默认迭代器（符合 Web API 标准）
 		script := `(function(urlSearchParamsObj) {
 			urlSearchParamsObj[Symbol.iterator] = function() {
-				const entries = this.entries();
-				let index = 0;
-				return {
-					next: function() {
-						if (index < entries.length) {
-							return { value: entries[index++], done: false };
-						}
-						return { done: true };
-					}
-				};
+				// ✅ 直接返回 entries() 迭代器
+				return this.entries();
 			};
 		})`
 

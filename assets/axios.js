@@ -577,8 +577,15 @@
     // 构建完整 URL（带安全验证）
     var fullURL = buildURL(config.baseURL, config.url, config.params);
 
-    // 准备 headers
-    var headers = config.headers || {};
+    // 🔥 修复：创建 headers 的副本,避免污染原始配置
+    var headers = {};
+    if (config.headers) {
+      for (var key in config.headers) {
+        if (config.headers.hasOwnProperty(key)) {
+          headers[key] = config.headers[key];
+        }
+      }
+    }
 
     // 处理 auth（避免密码泄漏）
     if (config.auth) {
@@ -614,6 +621,17 @@
     // 🔥 添加流式标记（内部使用）
     if (config.responseType === 'stream') {
       fetchOptions.__streaming = true;
+    }
+
+    // 🔥 处理 maxRedirects 配置
+    // maxRedirects: 0 -> redirect: 'manual' (不跟随重定向)
+    // maxRedirects: > 0 -> redirect: 'follow' (自动跟随重定向)
+    if (config.maxRedirects !== undefined) {
+      if (config.maxRedirects === 0) {
+        fetchOptions.redirect = 'manual';
+      } else {
+        fetchOptions.redirect = 'follow';
+      }
     }
 
     // 添加 AbortSignal
@@ -659,17 +677,17 @@
           // 🔥 修复: 先读取为 text,再尝试解析 JSON
           // 避免 json() 失败后流已关闭导致无法降级到 text()
           dataPromise = response.text().then(function(text) {
-            // 如果响应体为空，返回 null
+            // 🔥 修复：空响应应该返回空字符串，与 Node.js 行为一致
             if (!text || text.trim() === '') {
-              return null;
+              return '';
             }
-            
             // 尝试解析 JSON
             try {
               return JSON.parse(text);
             } catch (jsonError) {
               // JSON 解析失败时，返回原始文本
-              console.warn('Failed to parse JSON response, returning raw text:', jsonError.message);
+              // 这是正常行为(例如 HTML/XML/文本响应)
+              // console.warn('Failed to parse JSON response, returning raw text:', jsonError.message);
               return text;
             }
           });
@@ -690,13 +708,21 @@
             transformedData = applyTransformers(data, parseHeaders(response.headers), config.transformResponse);
           }
 
+          // 🔥 构建 request 对象(兼容 axios 结构)
+          // 使用 response.url 获取最终 URL(包含重定向后的 URL)
+          var requestObj = {
+            path: response.url || fullURL,
+            url: response.url || fullURL,
+            method: config.method.toUpperCase()
+          };
+
           var axiosResponse = {
             data: transformedData,
             status: response.status,
             statusText: response.statusText,
             headers: parseHeaders(response.headers),
             config: sanitizeConfig(config), // 净化配置
-            request: fullURL
+            request: requestObj
           };
 
           // 🔥 检查 HTTP 错误（修复 validateStatus 逻辑）
@@ -715,8 +741,12 @@
               );
             }
           } else {
-            // 默认验证：2xx 为成功
-            if (!response.ok) {
+            // 🔥 修复：默认验证逻辑
+            // - 2xx: 成功
+            // - 3xx: 重定向(不应该抛出错误，特别是 maxRedirects: 0 时)
+            // - 4xx/5xx: 错误
+            var status = response.status;
+            if (status < 200 || status >= 400) {
               throw createError(
                 'Request failed with status code ' + response.status,
                 config,
@@ -762,6 +792,7 @@
 
   /**
    * 解析 Headers（性能优化：减少不必要的遍历）
+   * 🔥 修复: 正确处理多值 header（如 Set-Cookie）
    * @param {Headers} headers - Headers 对象
    * @returns {Object} 解析后的对象
    */
@@ -774,7 +805,15 @@
     
     // 直接遍历，无需缓存（因为每次响应的 headers 都不同）
     headers.forEach(function(value, key) {
-      result[key.toLowerCase()] = value;
+      var keyLower = key.toLowerCase();
+      
+      // 🔥 修复: Set-Cookie 可能是数组（多个 cookie）
+      // 保持数组形式，让 axios 用户代码可以正确处理多个 cookie
+      if (Array.isArray(value)) {
+        result[keyLower] = value;
+      } else {
+        result[keyLower] = value;
+      }
     });
     
     return result;
@@ -880,7 +919,11 @@
     },
     timeout: CONSTANTS.DEFAULT_TIMEOUT,
     validateStatus: function(status) {
-      return status >= 200 && status < 300;
+      // 🔥 修复：接受 2xx 和 3xx 状态码
+      // - 2xx: 成功
+      // - 3xx: 重定向(不应该抛出错误，特别是 maxRedirects: 0 时)
+      // - 4xx/5xx: 错误
+      return status >= 200 && status < 400;
     }
   };
 

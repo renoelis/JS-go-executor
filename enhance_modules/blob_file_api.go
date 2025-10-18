@@ -3,7 +3,11 @@ package enhance_modules
 import (
 	"bytes"
 	"fmt"
+	goRuntime "runtime"
+	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dop251/goja"
 )
@@ -19,6 +23,130 @@ type JSFile struct {
 	JSBlob
 	name         string // 文件名
 	lastModified int64  // 最后修改时间（Unix 毫秒）
+}
+
+// decodeUTF8WithReplacement 解码 UTF-8 字节序列，对不合法序列使用 U+FFFD 替换
+// 符合 WHATWG Encoding Standard 的 UTF-8 解码行为
+func decodeUTF8WithReplacement(data []byte) string {
+	var result strings.Builder
+	result.Grow(len(data)) // 预分配空间
+
+	for len(data) > 0 {
+		r, size := utf8.DecodeRune(data)
+		if r == utf8.RuneError && size == 1 {
+			// 不合法的 UTF-8 序列，使用替换字符
+			result.WriteRune('\uFFFD')
+		} else {
+			// 合法的 rune
+			result.WriteRune(r)
+		}
+		data = data[size:]
+	}
+
+	return result.String()
+}
+
+// normalizeType 规范化 MIME 类型
+// 符合 W3C File API 规范：
+// 1. 如果包含 U+0020-U+007E 范围外的字符，返回空字符串
+// 2. 否则转换为 ASCII 小写
+func normalizeType(typ string) string {
+	// 检查字符范围 U+0020 (空格) 到 U+007E (~)
+	for _, r := range typ {
+		if r < 0x0020 || r > 0x007E {
+			return "" // 包含非法字符，返回空字符串
+		}
+	}
+	// 转换为 ASCII 小写
+	return strings.ToLower(typ)
+}
+
+// isTypedArray 检查对象是否是 TypedArray
+func isTypedArray(obj *goja.Object) bool {
+	if constructor := obj.Get("constructor"); constructor != nil && !goja.IsUndefined(constructor) {
+		if constructorObj, ok := constructor.(*goja.Object); ok {
+			if nameVal := constructorObj.Get("name"); nameVal != nil && !goja.IsUndefined(nameVal) {
+				typeName := nameVal.String()
+				return typeName == "Uint8Array" ||
+					typeName == "Int8Array" ||
+					typeName == "Uint16Array" ||
+					typeName == "Int16Array" ||
+					typeName == "Uint32Array" ||
+					typeName == "Int32Array" ||
+					typeName == "Float32Array" ||
+					typeName == "Float64Array" ||
+					typeName == "Uint8ClampedArray" ||
+					typeName == "BigInt64Array" ||
+					typeName == "BigUint64Array"
+			}
+		}
+	}
+	return false
+}
+
+// isDataView 检查对象是否是 DataView
+func isDataView(obj *goja.Object) bool {
+	if constructor := obj.Get("constructor"); constructor != nil && !goja.IsUndefined(constructor) {
+		if constructorObj, ok := constructor.(*goja.Object); ok {
+			if nameVal := constructorObj.Get("name"); nameVal != nil && !goja.IsUndefined(nameVal) {
+				return nameVal.String() == "DataView"
+			}
+		}
+	}
+	return false
+}
+
+// extractBufferSourceBytes 从 BufferSource (ArrayBuffer/TypedArray/DataView) 提取字节
+func extractBufferSourceBytes(runtime *goja.Runtime, obj *goja.Object) ([]byte, error) {
+	// 尝试 TypedArray 或 DataView
+	if isTypedArray(obj) || isDataView(obj) {
+		// 获取底层 ArrayBuffer
+		bufferVal := obj.Get("buffer")
+		if bufferVal == nil || goja.IsUndefined(bufferVal) {
+			return nil, fmt.Errorf("TypedArray/DataView 缺少 buffer 属性")
+		}
+
+		bufferObj := bufferVal.ToObject(runtime)
+		if bufferObj == nil {
+			return nil, fmt.Errorf("无法获取 buffer 对象")
+		}
+
+		// 导出 ArrayBuffer
+		if ab, ok := bufferObj.Export().(goja.ArrayBuffer); ok {
+			// 获取 byteOffset 和 byteLength
+			byteOffset := int64(0)
+			if offsetVal := obj.Get("byteOffset"); offsetVal != nil && !goja.IsUndefined(offsetVal) {
+				byteOffset = offsetVal.ToInteger()
+			}
+
+			byteLength := int64(len(ab.Bytes()))
+			if lengthVal := obj.Get("byteLength"); lengthVal != nil && !goja.IsUndefined(lengthVal) {
+				byteLength = lengthVal.ToInteger()
+			}
+
+			// 防御：检查负长度
+			if byteLength < 0 {
+				return nil, fmt.Errorf("byteLength 非法")
+			}
+
+			// 切片提取
+			allBytes := ab.Bytes()
+			if byteOffset < 0 || byteOffset > int64(len(allBytes)) {
+				return nil, fmt.Errorf("byteOffset 越界")
+			}
+			end := byteOffset + byteLength
+			if end > int64(len(allBytes)) {
+				end = int64(len(allBytes))
+			}
+
+			// 转换为 int（安全，因为已经钳制到 len(allBytes)）
+			start := int(byteOffset)
+			stop := int(end)
+			return allBytes[start:stop], nil
+		}
+	}
+
+	return nil, fmt.Errorf("不是有效的 BufferSource")
 }
 
 // createBlobConstructor 创建 Blob 构造器
@@ -41,62 +169,105 @@ func (fe *FetchEnhancer) createBlobConstructor(runtime *goja.Runtime) func(goja.
 			maxBlobSize = fe.maxBlobFileSize
 		}
 
+		// 🔥 P2-1: 获取 endings 选项（默认 "transparent"，白名单处理）
+		endings := "transparent"
+		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
+			if optionsObj := call.Arguments[1].ToObject(runtime); optionsObj != nil {
+				if endingsVal := optionsObj.Get("endings"); endingsVal != nil && !goja.IsUndefined(endingsVal) {
+					if endingsVal.String() == "native" {
+						endings = "native"
+					}
+					// 其他任何值都保持 "transparent"
+				}
+			}
+		}
+
 		// 解析参数：new Blob([parts], options)
+		// 🔥 规范修复：支持 BufferSource (ArrayBuffer/TypedArray/DataView)、Blob、USVString
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			// 第一个参数：数据parts数组
+			// 第一个参数：数据parts数组（必须是 goja.Value 才能调用 JS 方法）
 			if partsVal := call.Arguments[0]; partsVal != nil {
-				parts := partsVal.Export()
-				if partsArray, ok := parts.([]interface{}); ok {
-					// 🔥 提前检查数组长度（防止巨大稀疏数组）
-					// 即使数组元素是 undefined，过大的数组长度也会消耗内存
-					arrayLen := int64(len(partsArray))
-					if arrayLen > maxBlobSize {
-						panic(runtime.NewTypeError(fmt.Sprintf("Blob parts 数组过大：%d 元素 > %d 字节限制", arrayLen, maxBlobSize)))
+				// 尝试作为数组对象处理
+				partsObj, ok := partsVal.(*goja.Object)
+				if !ok {
+					// 不是对象（例如数字、字符串等）
+					panic(runtime.NewTypeError("Failed to construct 'Blob': The provided value cannot be converted to a sequence"))
+				}
+
+				// 获取数组长度
+				lengthVal := partsObj.Get("length")
+				if lengthVal == nil || goja.IsUndefined(lengthVal) {
+					// 不是 array-like（没有 length 属性）
+					panic(runtime.NewTypeError("Failed to construct 'Blob': The provided value cannot be converted to a sequence"))
+				}
+
+				arrayLen := int(lengthVal.ToInteger())
+
+				// 🔥 只检查累计字节数，不检查元素个数
+				// （元素多但每个很小不应该误判）
+				var buffer bytes.Buffer
+				var accumulatedSize int64 = 0
+
+				// 遍历数组元素
+				for i := 0; i < arrayLen; i++ {
+					partVal := partsObj.Get(strconv.Itoa(i))
+					var partBytes []byte
+
+					// 1. 检查是否是 Blob/File
+					if partObj, ok := partVal.(*goja.Object); ok {
+						if isBlob := partObj.Get("__isBlob"); isBlob != nil && !goja.IsUndefined(isBlob) && isBlob.ToBoolean() {
+							// 提取 Blob 数据
+							if blobDataVal := partObj.Get("__blobData"); blobDataVal != nil && !goja.IsUndefined(blobDataVal) {
+								if blobData, ok := blobDataVal.Export().(*JSBlob); ok {
+									partBytes = blobData.data
+								}
+							}
+						} else if exported := partVal.Export(); exported != nil {
+							// 2. 检查是否是 ArrayBuffer
+							if ab, ok := exported.(goja.ArrayBuffer); ok {
+								partBytes = ab.Bytes()
+							} else if partObj != nil {
+								// 3. 检查是否是 TypedArray 或 DataView
+								if bytes, err := extractBufferSourceBytes(runtime, partObj); err == nil {
+									partBytes = bytes
+								}
+								// 如果提取失败，partBytes 保持 nil，会走到 toString() 逻辑
+							}
+						}
 					}
 
-					var buffer bytes.Buffer
-					var accumulatedSize int64 = 0
+					// 4. 如果不是 BufferSource 或 Blob，使用 JS ToString 语义
+					if partBytes == nil {
+						// 调用 JS 的 toString 方法
+						str := partVal.String()
 
-					for _, part := range partsArray {
-						var partSize int
+						// 🔥 P2-1: 应用 endings 选项
+						if endings == "native" {
+							// 转换换行符为本地平台格式
+							// Windows: \r\n, 其他平台: \n
+							str = strings.ReplaceAll(str, "\r\n", "\n") // 先统一为 \n
+							str = strings.ReplaceAll(str, "\r", "\n")   // 处理单独的 \r
 
-						switch v := part.(type) {
-						case string:
-							partSize = len(v)
-							// 🔥 检查累积大小（写入前）
-							if accumulatedSize+int64(partSize) > maxBlobSize {
-								panic(runtime.NewTypeError(fmt.Sprintf("Blob 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+int64(partSize), maxBlobSize)))
+							// 根据平台选择行尾（使用 Go 的 runtime 包）
+							if goRuntime.GOOS == "windows" {
+								str = strings.ReplaceAll(str, "\n", "\r\n")
 							}
-							buffer.WriteString(v)
-						case []byte:
-							partSize = len(v)
-							// 🔥 检查累积大小（写入前）
-							if accumulatedSize+int64(partSize) > maxBlobSize {
-								panic(runtime.NewTypeError(fmt.Sprintf("Blob 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+int64(partSize), maxBlobSize)))
-							}
-							buffer.Write(v)
-						case goja.ArrayBuffer:
-							partSize = len(v.Bytes())
-							// 🔥 检查累积大小（写入前）
-							if accumulatedSize+int64(partSize) > maxBlobSize {
-								panic(runtime.NewTypeError(fmt.Sprintf("Blob 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+int64(partSize), maxBlobSize)))
-							}
-							buffer.Write(v.Bytes())
-						default:
-							// 其他类型转为字符串
-							str := fmt.Sprintf("%v", v)
-							partSize = len(str)
-							// 🔥 检查累积大小（写入前）
-							if accumulatedSize+int64(partSize) > maxBlobSize {
-								panic(runtime.NewTypeError(fmt.Sprintf("Blob 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+int64(partSize), maxBlobSize)))
-							}
-							buffer.WriteString(str)
+							// 其他平台保持 \n
 						}
 
-						accumulatedSize += int64(partSize)
+						partBytes = []byte(str)
 					}
-					blob.data = buffer.Bytes()
+
+					// 检查累积大小
+					partSize := int64(len(partBytes))
+					if accumulatedSize+partSize > maxBlobSize {
+						panic(runtime.NewTypeError(fmt.Sprintf("Blob 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+partSize, maxBlobSize)))
+					}
+
+					buffer.Write(partBytes)
+					accumulatedSize += partSize
 				}
+				blob.data = buffer.Bytes()
 			}
 		}
 
@@ -108,9 +279,9 @@ func (fe *FetchEnhancer) createBlobConstructor(runtime *goja.Runtime) func(goja.
 		// 第二个参数：options {type: "text/plain"}
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
 			if optionsObj := call.Arguments[1].ToObject(runtime); optionsObj != nil {
-				// 🔥 修复：同时检查 nil 和 undefined
+				// 🔥 修复：同时检查 nil 和 undefined，并规范化 type
 				if typeVal := optionsObj.Get("type"); typeVal != nil && !goja.IsUndefined(typeVal) {
-					blob.typ = typeVal.String()
+					blob.typ = normalizeType(typeVal.String())
 				}
 			}
 		}
@@ -132,81 +303,22 @@ func (fe *FetchEnhancer) createBlobObject(runtime *goja.Runtime, blob *JSBlob) *
 		}
 	}
 
-	// size 属性
-	obj.Set("size", int64(len(blob.data)))
+	// size 属性（只读、不可配置）
+	obj.DefineDataProperty("size", runtime.ToValue(int64(len(blob.data))),
+		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE) // writable=false, enumerable=false, configurable=false
 
-	// type 属性
-	obj.Set("type", blob.typ)
+	// type 属性（只读、不可配置）
+	obj.DefineDataProperty("type", runtime.ToValue(blob.typ),
+		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE) // writable=false, enumerable=false, configurable=false
 
-	// slice(start, end, contentType) 方法
-	obj.Set("slice", func(call goja.FunctionCall) goja.Value {
-		dataLen := int64(len(blob.data))
-		start := int64(0)
-		end := dataLen
+	// 标记为 Blob 对象（内部使用，不可枚举、不可配置）
+	obj.DefineDataProperty("__isBlob", runtime.ToValue(true),
+		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE)
+	obj.DefineDataProperty("__blobData", runtime.ToValue(blob),
+		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE)
 
-		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			start = call.Arguments[0].ToInteger()
-			if start < 0 {
-				start = dataLen + start
-				if start < 0 {
-					start = 0
-				}
-			}
-			if start > dataLen {
-				start = dataLen
-			}
-		}
-
-		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			end = call.Arguments[1].ToInteger()
-			if end < 0 {
-				end = dataLen + end
-				if end < 0 {
-					end = 0
-				}
-			}
-			if end > dataLen {
-				end = dataLen
-			}
-		}
-
-		// 确保 start <= end
-		if start > end {
-			start = end
-		}
-
-		// 创建新的 Blob
-		slicedBlob := &JSBlob{
-			data: blob.data[start:end],
-			typ:  blob.typ,
-		}
-
-		// 第三个参数可以覆盖类型
-		if len(call.Arguments) > 2 && !goja.IsUndefined(call.Arguments[2]) {
-			slicedBlob.typ = call.Arguments[2].String()
-		}
-
-		return fe.createBlobObject(runtime, slicedBlob)
-	})
-
-	// arrayBuffer() 方法 - 返回 Promise<ArrayBuffer>
-	obj.Set("arrayBuffer", func(call goja.FunctionCall) goja.Value {
-		promise, resolve, _ := runtime.NewPromise()
-		// 同步返回（因为数据已在内存中）
-		resolve(runtime.NewArrayBuffer(blob.data))
-		return runtime.ToValue(promise)
-	})
-
-	// text() 方法 - 返回 Promise<string>
-	obj.Set("text", func(call goja.FunctionCall) goja.Value {
-		promise, resolve, _ := runtime.NewPromise()
-		resolve(runtime.ToValue(string(blob.data)))
-		return runtime.ToValue(promise)
-	})
-
-	// 标记为 Blob 对象
-	obj.Set("__isBlob", true)
-	obj.Set("__blobData", blob)
+	// 🔥 方法已在 Blob.prototype 上定义，不需要在实例上重复设置
+	// 🔥 Symbol.toStringTag 也已在 Blob.prototype 上定义
 
 	return obj
 }
@@ -237,58 +349,75 @@ func (fe *FetchEnhancer) createFileConstructor(runtime *goja.Runtime) func(goja.
 		}
 
 		// 第一个参数：数据parts数组
+		// 🔥 规范修复：支持 BufferSource (ArrayBuffer/TypedArray/DataView)、Blob、USVString
 		if partsVal := call.Arguments[0]; partsVal != nil {
-			parts := partsVal.Export()
-			if partsArray, ok := parts.([]interface{}); ok {
-				// 🔥 提前检查数组长度（防止巨大稀疏数组）
-				// 即使数组元素是 undefined，过大的数组长度也会消耗内存
-				arrayLen := int64(len(partsArray))
-				if arrayLen > maxFileSize {
-					panic(runtime.NewTypeError(fmt.Sprintf("File parts 数组过大：%d 元素 > %d 字节限制", arrayLen, maxFileSize)))
-				}
-
-				var buffer bytes.Buffer
-				var accumulatedSize int64 = 0
-
-				for _, part := range partsArray {
-					var partSize int
-
-					switch v := part.(type) {
-					case string:
-						partSize = len(v)
-						// 🔥 检查累积大小（写入前）
-						if accumulatedSize+int64(partSize) > maxFileSize {
-							panic(runtime.NewTypeError(fmt.Sprintf("File 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+int64(partSize), maxFileSize)))
-						}
-						buffer.WriteString(v)
-					case []byte:
-						partSize = len(v)
-						// 🔥 检查累积大小（写入前）
-						if accumulatedSize+int64(partSize) > maxFileSize {
-							panic(runtime.NewTypeError(fmt.Sprintf("File 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+int64(partSize), maxFileSize)))
-						}
-						buffer.Write(v)
-					case goja.ArrayBuffer:
-						partSize = len(v.Bytes())
-						// 🔥 检查累积大小（写入前）
-						if accumulatedSize+int64(partSize) > maxFileSize {
-							panic(runtime.NewTypeError(fmt.Sprintf("File 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+int64(partSize), maxFileSize)))
-						}
-						buffer.Write(v.Bytes())
-					default:
-						str := fmt.Sprintf("%v", v)
-						partSize = len(str)
-						// 🔥 检查累积大小（写入前）
-						if accumulatedSize+int64(partSize) > maxFileSize {
-							panic(runtime.NewTypeError(fmt.Sprintf("File 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+int64(partSize), maxFileSize)))
-						}
-						buffer.WriteString(str)
-					}
-
-					accumulatedSize += int64(partSize)
-				}
-				file.data = buffer.Bytes()
+			// 尝试作为数组对象处理
+			partsObj, ok := partsVal.(*goja.Object)
+			if !ok {
+				// 不是对象（例如数字、字符串等）
+				panic(runtime.NewTypeError("Failed to construct 'File': The provided value cannot be converted to a sequence"))
 			}
+
+			// 获取数组长度
+			lengthVal := partsObj.Get("length")
+			if lengthVal == nil || goja.IsUndefined(lengthVal) {
+				// 不是 array-like（没有 length 属性）
+				panic(runtime.NewTypeError("Failed to construct 'File': The provided value cannot be converted to a sequence"))
+			}
+
+			arrayLen := int(lengthVal.ToInteger())
+
+			// 🔥 只检查累计字节数，不检查元素个数
+			var buffer bytes.Buffer
+			var accumulatedSize int64 = 0
+
+			// 遍历数组元素
+			for i := 0; i < arrayLen; i++ {
+				partVal := partsObj.Get(strconv.Itoa(i))
+				// 🔥 不跳过 undefined/null，让它们走 toString 路径
+				// undefined → "undefined", null → "null"
+				
+				var partBytes []byte
+
+				// 1. 检查是否是 Blob/File
+				if partObj, ok := partVal.(*goja.Object); ok {
+					if isBlob := partObj.Get("__isBlob"); isBlob != nil && !goja.IsUndefined(isBlob) && isBlob.ToBoolean() {
+						// 提取 Blob 数据
+						if blobDataVal := partObj.Get("__blobData"); blobDataVal != nil && !goja.IsUndefined(blobDataVal) {
+							if blobData, ok := blobDataVal.Export().(*JSBlob); ok {
+								partBytes = blobData.data
+							}
+						}
+					} else if exported := partVal.Export(); exported != nil {
+						// 2. 检查是否是 ArrayBuffer
+						if ab, ok := exported.(goja.ArrayBuffer); ok {
+							partBytes = ab.Bytes()
+						} else if partObj != nil {
+							// 3. 检查是否是 TypedArray 或 DataView
+							if bytes, err := extractBufferSourceBytes(runtime, partObj); err == nil {
+								partBytes = bytes
+							}
+						}
+					}
+				}
+
+				// 4. 如果不是 BufferSource 或 Blob，使用 JS ToString 语义
+				if partBytes == nil {
+					// 调用 JS 的 toString 方法
+					str := partVal.String()
+					partBytes = []byte(str)
+				}
+
+				// 检查累积大小
+				partSize := int64(len(partBytes))
+				if accumulatedSize+partSize > maxFileSize {
+					panic(runtime.NewTypeError(fmt.Sprintf("File 大小超过限制：%d > %d 字节（构建过程中）", accumulatedSize+partSize, maxFileSize)))
+				}
+
+				buffer.Write(partBytes)
+				accumulatedSize += partSize
+			}
+			file.data = buffer.Bytes()
 		}
 
 		// 🔥 最后再次检查（防御性编程）
@@ -303,10 +432,15 @@ func (fe *FetchEnhancer) createFileConstructor(runtime *goja.Runtime) func(goja.
 		if len(call.Arguments) > 2 && !goja.IsUndefined(call.Arguments[2]) {
 			if optionsObj := call.Arguments[2].ToObject(runtime); optionsObj != nil {
 				if typeVal := optionsObj.Get("type"); typeVal != nil && !goja.IsUndefined(typeVal) {
-					file.typ = typeVal.String()
+					file.typ = normalizeType(typeVal.String())
 				}
 				if lastModVal := optionsObj.Get("lastModified"); lastModVal != nil && !goja.IsUndefined(lastModVal) {
-					file.lastModified = lastModVal.ToInteger()
+					lastMod := lastModVal.ToInteger()
+					// 可选：将负值 clamp 到 0
+					if lastMod < 0 {
+						lastMod = 0
+					}
+					file.lastModified = lastMod
 				}
 			}
 		}
@@ -329,21 +463,101 @@ func (fe *FetchEnhancer) createFileObject(runtime *goja.Runtime, file *JSFile) *
 		}
 	}
 
-	// Blob 属性
-	obj.Set("size", int64(len(file.data)))
-	obj.Set("type", file.typ)
+	// Blob 属性（只读、不可配置）
+	obj.DefineDataProperty("size", runtime.ToValue(int64(len(file.data))),
+		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE) // writable=false, enumerable=false, configurable=false
+	obj.DefineDataProperty("type", runtime.ToValue(file.typ),
+		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE) // writable=false, enumerable=false, configurable=false
 
-	// File 特有属性
-	obj.Set("name", file.name)
-	obj.Set("lastModified", file.lastModified)
-	obj.Set("lastModifiedDate", time.UnixMilli(file.lastModified).Format(time.RFC3339))
+	// File 特有属性（只读、不可配置）
+	obj.DefineDataProperty("name", runtime.ToValue(file.name),
+		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE) // writable=false, enumerable=false, configurable=false
+	obj.DefineDataProperty("lastModified", runtime.ToValue(file.lastModified),
+		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE) // writable=false, enumerable=false, configurable=false
 
-	// Blob 方法（需要手动添加，因为没有通过 createBlobObject）
-	obj.Set("slice", func(call goja.FunctionCall) goja.Value {
-		dataLen := int64(len(file.data))
+	// 🔥 P1-3: 删除非标准的 lastModifiedDate（已废弃）
+	// obj.Set("lastModifiedDate", ...) - 已移除
+
+	// 标记（内部使用，不可枚举、不可配置）
+	obj.DefineDataProperty("__isBlob", runtime.ToValue(true),
+		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE)
+	obj.DefineDataProperty("__isFile", runtime.ToValue(true),
+		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE)
+	obj.DefineDataProperty("__blobData", runtime.ToValue(&file.JSBlob),
+		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE)
+	obj.DefineDataProperty("__fileData", runtime.ToValue(file),
+		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE)
+
+	// 🔥 方法已在 Blob.prototype 上定义（File 继承自 Blob）
+	// 🔥 Symbol.toStringTag 已在 File.prototype 上定义
+
+	return obj
+}
+
+// RegisterBlobFileAPI 注册 Blob 和 File API
+func (fe *FetchEnhancer) RegisterBlobFileAPI(runtime *goja.Runtime) error {
+	// 🔥 P1-4: 缓存 Uint8Array 工厂函数（避免每次 bytes() 都 RunString）
+	var uint8ArrayFactory goja.Callable
+	factorySrc := `(function(ab){ return new Uint8Array(ab); })`
+	if fnVal, err := runtime.RunString(factorySrc); err == nil {
+		if factory, ok := goja.AssertFunction(fnVal); ok {
+			uint8ArrayFactory = factory
+		}
+	}
+
+	// 🔥 创建 Blob 构造器并设置原型
+	blobConstructor := runtime.ToValue(fe.createBlobConstructor(runtime)).ToObject(runtime)
+	blobPrototype := runtime.NewObject()
+
+	// 🔥 在 Blob.prototype 上定义方法（而不是在实例上）
+	// arrayBuffer() 方法
+	blobPrototype.Set("arrayBuffer", func(call goja.FunctionCall) goja.Value {
+		this := call.This.ToObject(runtime)
+		blobDataVal := this.Get("__blobData")
+		if blobDataVal == nil || goja.IsUndefined(blobDataVal) {
+			panic(runtime.NewTypeError("arrayBuffer called on non-Blob object"))
+		}
+		blob, _ := blobDataVal.Export().(*JSBlob)
+
+		promise, resolve, _ := runtime.NewPromise()
+		// 🔥 返回拷贝，确保 Blob 不可变
+		buf := make([]byte, len(blob.data))
+		copy(buf, blob.data)
+		resolve(runtime.NewArrayBuffer(buf))
+		return runtime.ToValue(promise)
+	})
+
+	// text() 方法
+	blobPrototype.Set("text", func(call goja.FunctionCall) goja.Value {
+		this := call.This.ToObject(runtime)
+		blobDataVal := this.Get("__blobData")
+		if blobDataVal == nil || goja.IsUndefined(blobDataVal) {
+			panic(runtime.NewTypeError("text called on non-Blob object"))
+		}
+		blob, _ := blobDataVal.Export().(*JSBlob)
+
+		promise, resolve, _ := runtime.NewPromise()
+		// 🔥 使用 UTF-8 解码容错，对不合法序列使用 U+FFFD 替换
+		// 符合 WHATWG Encoding Standard
+		decodedText := decodeUTF8WithReplacement(blob.data)
+		resolve(runtime.ToValue(decodedText))
+		return runtime.ToValue(promise)
+	})
+
+	// slice() 方法
+	blobPrototype.Set("slice", func(call goja.FunctionCall) goja.Value {
+		this := call.This.ToObject(runtime)
+		blobDataVal := this.Get("__blobData")
+		if blobDataVal == nil || goja.IsUndefined(blobDataVal) {
+			panic(runtime.NewTypeError("slice called on non-Blob object"))
+		}
+		blob, _ := blobDataVal.Export().(*JSBlob)
+
+		dataLen := int64(len(blob.data))
 		start := int64(0)
 		end := dataLen
 
+		// 第一个参数：start
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
 			start = call.Arguments[0].ToInteger()
 			if start < 0 {
@@ -357,6 +571,7 @@ func (fe *FetchEnhancer) createFileObject(runtime *goja.Runtime, file *JSFile) *
 			}
 		}
 
+		// 第二个参数：end
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
 			end = call.Arguments[1].ToInteger()
 			if end < 0 {
@@ -370,52 +585,118 @@ func (fe *FetchEnhancer) createFileObject(runtime *goja.Runtime, file *JSFile) *
 			}
 		}
 
+		// 确保 start <= end
 		if start > end {
 			start = end
 		}
 
+		// 转换为 int（安全，因为已经钳制到 dataLen）
+		s := int(start)
+		e := int(end)
+
+		// 创建新的 Blob
 		slicedBlob := &JSBlob{
-			data: file.data[start:end],
-			typ:  file.typ,
+			data: blob.data[s:e],
+			typ:  "", // 默认空字符串
 		}
 
+		// 第三个参数：contentType
 		if len(call.Arguments) > 2 && !goja.IsUndefined(call.Arguments[2]) {
-			slicedBlob.typ = call.Arguments[2].String()
+			slicedBlob.typ = normalizeType(call.Arguments[2].String())
 		}
 
 		return fe.createBlobObject(runtime, slicedBlob)
 	})
 
-	obj.Set("arrayBuffer", func(call goja.FunctionCall) goja.Value {
+	// bytes() 方法（扩展 API）
+	blobPrototype.Set("bytes", func(call goja.FunctionCall) goja.Value {
+		this := call.This.ToObject(runtime)
+		blobDataVal := this.Get("__blobData")
+		if blobDataVal == nil || goja.IsUndefined(blobDataVal) {
+			panic(runtime.NewTypeError("bytes called on non-Blob object"))
+		}
+		blob, _ := blobDataVal.Export().(*JSBlob)
+
 		promise, resolve, _ := runtime.NewPromise()
-		resolve(runtime.NewArrayBuffer(file.data))
+		// 返回拷贝
+		buf := make([]byte, len(blob.data))
+		copy(buf, blob.data)
+		arrayBuffer := runtime.NewArrayBuffer(buf)
+
+		// 🔥 使用缓存的 Uint8Array 工厂函数
+		if uint8ArrayFactory != nil {
+			if uint8Array, err := uint8ArrayFactory(goja.Undefined(), runtime.ToValue(arrayBuffer)); err == nil {
+				resolve(uint8Array)
+				return runtime.ToValue(promise)
+			}
+		}
+
+		// 降级：返回 ArrayBuffer
+		resolve(arrayBuffer)
 		return runtime.ToValue(promise)
 	})
 
-	obj.Set("text", func(call goja.FunctionCall) goja.Value {
-		promise, resolve, _ := runtime.NewPromise()
-		resolve(runtime.ToValue(string(file.data)))
-		return runtime.ToValue(promise)
+	// stream() 方法（占位符）
+	blobPrototype.Set("stream", func(call goja.FunctionCall) goja.Value {
+		panic(runtime.NewTypeError("Blob.stream() 需要 Streams API 支持，当前未实现"))
 	})
 
-	// 标记
-	obj.Set("__isBlob", true)
-	obj.Set("__isFile", true)
-	obj.Set("__blobData", &file.JSBlob)
-	obj.Set("__fileData", file)
+	// 🔥 P2-2: 在原型上设置 Symbol.toStringTag（不可配置）
+	script := `(function(proto) {
+		if (typeof Symbol !== 'undefined' && Symbol.toStringTag) {
+			Object.defineProperty(proto, Symbol.toStringTag, {
+				value: 'Blob',
+				writable: false,
+				enumerable: false,
+				configurable: false
+			});
+		}
+	})`
+	if setterVal, err := runtime.RunString(script); err == nil {
+		if setter, ok := goja.AssertFunction(setterVal); ok {
+			setter(goja.Undefined(), runtime.ToValue(blobPrototype))
+		}
+	}
 
-	return obj
-}
+	// 🔥 P1-3: 设置原型方法为不可枚举
+	makeNonEnumerableScript := `(function(proto, names){
+		names.forEach(function(n){
+			var d = Object.getOwnPropertyDescriptor(proto, n);
+			if (d && d.enumerable) {
+				Object.defineProperty(proto, n, {
+					value: d.value,
+					writable: true,
+					enumerable: false,
+					configurable: true
+				});
+			}
+		});
+	})`
+	if makeNonEnumVal, err := runtime.RunString(makeNonEnumerableScript); err == nil {
+		if makeNonEnum, ok := goja.AssertFunction(makeNonEnumVal); ok {
+			methodNames := []string{"arrayBuffer", "text", "slice", "bytes", "stream"}
+			makeNonEnum(goja.Undefined(), runtime.ToValue(blobPrototype), runtime.ToValue(methodNames))
+		}
+	}
 
-// RegisterBlobFileAPI 注册 Blob 和 File API
-func (fe *FetchEnhancer) RegisterBlobFileAPI(runtime *goja.Runtime) error {
-	// 🔥 创建 Blob 构造器并设置原型
-	blobConstructor := runtime.ToValue(fe.createBlobConstructor(runtime)).ToObject(runtime)
-	blobPrototype := runtime.NewObject()
-
-	// 设置 Blob.prototype.constructor
+	// 设置 Blob.prototype.constructor（不可枚举）
 	blobPrototype.Set("constructor", blobConstructor)
 	blobConstructor.Set("prototype", blobPrototype)
+	
+	// 🔥 将 constructor 设为不可枚举
+	defineCtorScript := `(function(proto, ctor){
+		Object.defineProperty(proto, "constructor", {
+			value: ctor,
+			writable: true,
+			enumerable: false,
+			configurable: true
+		});
+	})`
+	if defineCtorVal, err := runtime.RunString(defineCtorScript); err == nil {
+		if defineCtorFunc, ok := goja.AssertFunction(defineCtorVal); ok {
+			defineCtorFunc(goja.Undefined(), runtime.ToValue(blobPrototype), runtime.ToValue(blobConstructor))
+		}
+	}
 
 	// 注册 Blob 构造器
 	runtime.Set("Blob", blobConstructor)
@@ -426,8 +707,33 @@ func (fe *FetchEnhancer) RegisterBlobFileAPI(runtime *goja.Runtime) error {
 
 	// File 的原型指向 Blob 的原型（继承关系）
 	filePrototype.SetPrototype(blobPrototype)
+
+	// 🔥 在 File.prototype 上设置 Symbol.toStringTag（不可配置）
+	fileScript := `(function(proto) {
+		if (typeof Symbol !== 'undefined' && Symbol.toStringTag) {
+			Object.defineProperty(proto, Symbol.toStringTag, {
+				value: 'File',
+				writable: false,
+				enumerable: false,
+				configurable: false
+			});
+		}
+	})`
+	if fileSetterVal, err := runtime.RunString(fileScript); err == nil {
+		if fileSetter, ok := goja.AssertFunction(fileSetterVal); ok {
+			fileSetter(goja.Undefined(), runtime.ToValue(filePrototype))
+		}
+	}
+
 	filePrototype.Set("constructor", fileConstructor)
 	fileConstructor.Set("prototype", filePrototype)
+	
+	// 🔥 将 File.prototype.constructor 设为不可枚举
+	if defineCtorVal, err := runtime.RunString(defineCtorScript); err == nil {
+		if defineCtorFunc, ok := goja.AssertFunction(defineCtorVal); ok {
+			defineCtorFunc(goja.Undefined(), runtime.ToValue(filePrototype), runtime.ToValue(fileConstructor))
+		}
+	}
 
 	// 注册 File 构造器
 	runtime.Set("File", fileConstructor)

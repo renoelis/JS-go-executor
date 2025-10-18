@@ -21,6 +21,15 @@ import (
 	"go.uber.org/zap"
 )
 
+// AbortError 表示请求被中止
+type AbortError struct {
+	message string
+}
+
+func (e *AbortError) Error() string {
+	return e.message
+}
+
 // bodyWithCancel 包装 io.ReadCloser，提供多层超时保护
 // 🔥 v2.4.3: 增加空闲超时机制，防止资源泄漏
 // 🔥 v2.5.0: 动态超时 - 根据响应大小智能调整超时时间
@@ -460,29 +469,84 @@ func (fe *FetchEnhancer) fetch(runtime *goja.Runtime, call goja.FunctionCall) go
 		panic(runtime.NewTypeError("fetch: 至少需要 1 个参数"))
 	}
 
-	url := call.Arguments[0].String()
+	var url string
+	var options map[string]interface{}
+
+	// 🔥 检查第一个参数是否是 Request 对象
+	if firstArg := call.Arguments[0]; firstArg != nil {
+		if firstArgObj, ok := firstArg.(*goja.Object); ok {
+			// 检查是否有 url 属性（Request 对象的标志）
+			urlVal := firstArgObj.Get("url")
+			if !goja.IsUndefined(urlVal) && urlVal != nil {
+				// 这是一个 Request 对象，提取其属性
+				url = urlVal.String()
+				
+				// 从 Request 对象提取选项
+				options = make(map[string]interface{})
+				
+				// 提取 method
+				if methodVal := firstArgObj.Get("method"); !goja.IsUndefined(methodVal) {
+					options["method"] = methodVal.String()
+				}
+				
+				// 提取 headers
+				if headersVal := firstArgObj.Get("headers"); !goja.IsUndefined(headersVal) {
+					options["headers"] = headersVal
+				}
+				
+				// 提取 body（保留原始对象）
+				if bodyVal := firstArgObj.Get("body"); !goja.IsUndefined(bodyVal) && !goja.IsNull(bodyVal) {
+					if bodyObj, ok := bodyVal.(*goja.Object); ok {
+						options["__rawBodyObject"] = bodyObj
+					} else {
+						// 字符串或其他基本类型
+						options["body"] = bodyVal.Export()
+					}
+				}
+				
+				// 如果有第二个参数，合并选项（第二个参数优先级更高）
+				if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
+					if secondArgObj := call.Arguments[1].ToObject(runtime); secondArgObj != nil {
+						secondOptions := call.Arguments[1].Export().(map[string]interface{})
+						for k, v := range secondOptions {
+							options[k] = v
+						}
+					}
+				}
+			} else {
+				// 不是 Request 对象，按普通字符串处理
+				url = firstArg.String()
+			}
+		} else {
+			// 基本类型，直接转字符串
+			url = firstArg.String()
+		}
+	}
+
 	if url == "" {
 		panic(runtime.NewTypeError("fetch: URL 不能为空"))
 	}
 
-	// 2. 解析选项参数
-	options := make(map[string]interface{})
-	if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-		if obj := call.Arguments[1].ToObject(runtime); obj != nil {
-			options = call.Arguments[1].Export().(map[string]interface{})
+	// 2. 解析选项参数（如果还没有从 Request 对象中提取）
+	if options == nil {
+		options = make(map[string]interface{})
+		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
+			if obj := call.Arguments[1].ToObject(runtime); obj != nil {
+				options = call.Arguments[1].Export().(map[string]interface{})
 
-			// 🔥 关键修复: 保留特殊对象的原始 goja.Object 引用
-			// 保留 signal 对象
-			if signalVal := obj.Get("signal"); !goja.IsUndefined(signalVal) && signalVal != nil {
-				if signalObj, ok := signalVal.(*goja.Object); ok {
-					options["signal"] = signalObj // 保持原始类型
+				// 🔥 关键修复: 保留特殊对象的原始 goja.Object 引用
+				// 保留 signal 对象
+				if signalVal := obj.Get("signal"); !goja.IsUndefined(signalVal) && signalVal != nil {
+					if signalObj, ok := signalVal.(*goja.Object); ok {
+						options["signal"] = signalObj // 保持原始类型
+					}
 				}
-			}
 
-			// 保留 body 对象 (可能是 FormData) 但延迟处理
-			if bodyVal := obj.Get("body"); !goja.IsUndefined(bodyVal) && bodyVal != nil {
-				if bodyObj, ok := bodyVal.(*goja.Object); ok {
-					options["__rawBodyObject"] = bodyObj // 暂存原始 body 对象
+				// 保留 body 对象 (可能是 FormData) 但延迟处理
+				if bodyVal := obj.Get("body"); !goja.IsUndefined(bodyVal) && bodyVal != nil {
+					if bodyObj, ok := bodyVal.(*goja.Object); ok {
+						options["__rawBodyObject"] = bodyObj // 暂存原始 body 对象
+					}
 				}
 			}
 		}
@@ -701,7 +765,12 @@ func (fe *FetchEnhancer) fetch(runtime *goja.Runtime, call goja.FunctionCall) go
 		// Promise 的 resolve/reject 会在微任务队列中异步执行,这里同步等待是安全的
 		result := <-req.resultCh
 		if result.err != nil {
-			reject(fe.createErrorObject(runtime, result.err))
+			// 🔥 检查是否为 AbortError
+			if _, isAbortError := result.err.(*AbortError); isAbortError {
+				reject(fe.createAbortErrorObject(runtime, result.err))
+			} else {
+				reject(fe.createErrorObject(runtime, result.err))
+			}
 		} else {
 			resolve(fe.recreateResponse(runtime, result.response))
 		}
@@ -851,6 +920,37 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 		return
 	}
 
+	// 6.5 🔥 处理 redirect 选项（支持 fetch API 的 redirect 模式）
+	// redirect: 'manual' -> 不自动跟随重定向（返回 3xx 状态码）
+	// redirect: 'follow' -> 自动跟随重定向（默认行为）
+	// redirect: 'error' -> 遇到重定向时抛出错误
+	httpClient := fe.client // 默认使用共享 client
+	if redirectMode, ok := req.options["redirect"].(string); ok {
+		switch redirectMode {
+		case "manual":
+			// 不跟随重定向：创建新的 client，禁用自动重定向
+			httpClient = &http.Client{
+				Timeout:   fe.client.Timeout,
+				Transport: fe.client.Transport,
+				CheckRedirect: func(req *http.Request, via []*http.Request) error {
+					// 返回 http.ErrUseLastResponse 表示不跟随重定向
+					return http.ErrUseLastResponse
+				},
+			}
+		case "error":
+			// 遇到重定向时抛出错误
+			httpClient = &http.Client{
+				Timeout:   fe.client.Timeout,
+				Transport: fe.client.Transport,
+				CheckRedirect: func(req *http.Request, via []*http.Request) error {
+					return fmt.Errorf("redirect not allowed")
+				},
+			}
+		case "follow":
+			// 默认行为，使用共享 client
+		}
+	}
+
 	// 7. 启动请求 (在独立的 goroutine 中)
 	// 🔥 Goroutine 生命周期保证：
 	//   - http.NewRequestWithContext 确保 Context 取消时中断请求
@@ -863,7 +963,19 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 
 	go func() {
 		defer close(done) // 🔥 确保 done 总会关闭（防御异常情况）
-		resp, reqErr = fe.client.Do(httpReq)
+		resp, reqErr = httpClient.Do(httpReq) // 🔥 使用选择的 client
+	}()
+
+	// 6.6 🔥 启动 abort 监听器 (在独立的 goroutine 中)
+	// 当 abortCh 被关闭时，立即取消请求 context
+	go func() {
+		select {
+		case <-req.abortCh:
+			// abort 被调用，立即取消请求 context
+			reqCancel()
+		case <-done:
+			// 请求已完成，退出监听
+		}
 	}()
 
 	// 🔥 资源清理策略
@@ -958,7 +1070,7 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 		// defer 会清理资源
 
 		select {
-		case req.resultCh <- FetchResult{nil, fmt.Errorf("请求已中止")}:
+		case req.resultCh <- FetchResult{nil, &AbortError{message: "The operation was aborted"}}:
 		default:
 			// channel 已满或已关闭,忽略
 		}
@@ -994,7 +1106,12 @@ func (fe *FetchEnhancer) pollResult(runtime *goja.Runtime, req *FetchRequest, re
 		case result := <-req.resultCh:
 			// 有结果了
 			if result.err != nil {
-				reject(fe.createErrorObject(runtime, result.err))
+				// 🔥 检查是否为 AbortError
+				if _, isAbortError := result.err.(*AbortError); isAbortError {
+					reject(fe.createAbortErrorObject(runtime, result.err))
+				} else {
+					reject(fe.createErrorObject(runtime, result.err))
+				}
 			} else {
 				resolve(fe.recreateResponse(runtime, result.response))
 			}
@@ -1013,14 +1130,24 @@ func (fe *FetchEnhancer) pollResult(runtime *goja.Runtime, req *FetchRequest, re
 // createErrorObject 创建标准的 JavaScript Error 对象
 // 🔥 修复: 错误对象有正确的 message 和 toString 方法
 func (fe *FetchEnhancer) createErrorObject(runtime *goja.Runtime, err error) goja.Value {
+	return fe.createErrorObjectWithName(runtime, err, "TypeError")
+}
+
+// createAbortErrorObject 创建 AbortError 对象
+func (fe *FetchEnhancer) createAbortErrorObject(runtime *goja.Runtime, err error) goja.Value {
+	return fe.createErrorObjectWithName(runtime, err, "AbortError")
+}
+
+// createErrorObjectWithName 创建指定类型的 Error 对象
+func (fe *FetchEnhancer) createErrorObjectWithName(runtime *goja.Runtime, err error, errorName string) goja.Value {
 	errorObj := runtime.NewObject()
 	errorMsg := err.Error()
 	errorObj.Set("message", errorMsg)
-	errorObj.Set("name", "TypeError")
+	errorObj.Set("name", errorName)
 
 	// 🔥 添加 toString 方法,确保错误信息正确显示
 	errorObj.Set("toString", func(call goja.FunctionCall) goja.Value {
-		return runtime.ToValue("TypeError: " + errorMsg)
+		return runtime.ToValue(errorName + ": " + errorMsg)
 	})
 
 	return errorObj
@@ -1034,6 +1161,7 @@ func (fe *FetchEnhancer) createResponseHeaders(runtime *goja.Runtime, httpHeader
 	headersObj := runtime.NewObject()
 
 	// headers.get(name) - 获取指定头部值
+	// 🔥 修复: Set-Cookie 返回数组，其他 header 返回字符串
 	headersObj.Set("get", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
 			return goja.Null()
@@ -1041,6 +1169,10 @@ func (fe *FetchEnhancer) createResponseHeaders(runtime *goja.Runtime, httpHeader
 		name := strings.ToLower(call.Arguments[0].String())
 		for key, values := range httpHeaders {
 			if strings.ToLower(key) == name && len(values) > 0 {
+				// 🔥 Set-Cookie 特殊处理：返回数组
+				if name == "set-cookie" && len(values) > 1 {
+					return runtime.ToValue(values)
+				}
 				return runtime.ToValue(values[0])
 			}
 		}
@@ -1062,6 +1194,7 @@ func (fe *FetchEnhancer) createResponseHeaders(runtime *goja.Runtime, httpHeader
 	})
 
 	// headers.forEach(callback) - 遍历所有头部
+	// 🔥 修复: Set-Cookie 等多值 header 应该返回数组
 	headersObj.Set("forEach", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
 			return goja.Undefined()
@@ -1072,7 +1205,18 @@ func (fe *FetchEnhancer) createResponseHeaders(runtime *goja.Runtime, httpHeader
 		}
 
 		for key, values := range httpHeaders {
-			if len(values) > 0 {
+			if len(values) == 0 {
+				continue
+			}
+
+			// 🔥 特殊处理: Set-Cookie 必须返回数组（HTTP 规范允许多个同名 header）
+			// 其他多值 header 也可能需要数组（如 Vary, Accept-Encoding 等）
+			keyLower := strings.ToLower(key)
+			if keyLower == "set-cookie" && len(values) > 1 {
+				// Set-Cookie 有多个值时，返回数组
+				callback(goja.Undefined(), runtime.ToValue(values), runtime.ToValue(key), headersObj)
+			} else {
+				// 其他 header 返回第一个值（或用逗号连接的字符串）
 				callback(goja.Undefined(), runtime.ToValue(values[0]), runtime.ToValue(key), headersObj)
 			}
 		}
@@ -1274,9 +1418,20 @@ func (fe *FetchEnhancer) createRequestConstructor(runtime *goja.Runtime) func(go
 		url := call.Arguments[0].String()
 		options := make(map[string]interface{})
 
+		// 🔥 修复：在 Export 之前先保存 body 对象（避免 FormData 被转换成字符串）
+		var bodyVal goja.Value
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
 			if optionsObj := call.Arguments[1].ToObject(runtime); optionsObj != nil {
+				// 先提取 body（保持原始类型）
+				bodyVal = optionsObj.Get("body")
+				
+				// 再 Export 其他选项
 				options = call.Arguments[1].Export().(map[string]interface{})
+				
+				// 恢复 body 为 goja.Value
+				if !goja.IsUndefined(bodyVal) && bodyVal != nil {
+					options["body"] = bodyVal
+				}
 			}
 		}
 
@@ -1293,16 +1448,24 @@ func (fe *FetchEnhancer) createRequestConstructor(runtime *goja.Runtime) func(go
 			}
 		}
 
-		var body string
+		// 🔥 修复：保留 body 的原始类型（特别是 FormData 对象）
+		var body interface{}
 		if b, ok := options["body"]; ok && b != nil {
-			body = fmt.Sprintf("%v", b)
+			body = b // 保持原始类型，不转换为字符串
 		}
 
 		// 创建 Request 对象
 		requestObj := runtime.NewObject()
 		requestObj.Set("url", runtime.ToValue(url))
 		requestObj.Set("method", runtime.ToValue(method))
-		requestObj.Set("body", runtime.ToValue(body))
+		// 🔥 如果 body 是 goja.Value，直接设置；否则转换
+		if gojaVal, ok := body.(goja.Value); ok {
+			requestObj.Set("body", gojaVal)
+		} else if body != nil {
+			requestObj.Set("body", runtime.ToValue(body))
+		} else {
+			requestObj.Set("body", goja.Null())
+		}
 
 		// 创建 headers 对象
 		headersObj := runtime.NewObject()

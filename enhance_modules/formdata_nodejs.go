@@ -149,6 +149,27 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 			return goja.Undefined()
 		})
 
+		// hasKnownLength() - 检查是否有已知长度（不包含流式数据）
+		formDataObj.Set("hasKnownLength", func(call goja.FunctionCall) goja.Value {
+			// 遍历所有 entries，检查是否有流式数据（io.Reader）
+			hasStream := false
+			if streamingFormData.entries != nil {
+				for _, entry := range streamingFormData.entries {
+					// 检查 Value 是否为 io.Reader（流式数据）
+					if _, isReader := entry.Value.(io.Reader); isReader {
+						// 🔥 进一步排除 bytes.Reader（这是从 []byte 创建的，有已知长度）
+						if _, isBytesReader := entry.Value.(*bytes.Reader); !isBytesReader {
+							// 找到真正的流式 Reader（如 StreamReader、PipeReader、文件流等）
+							hasStream = true
+							break
+						}
+					}
+				}
+			}
+			// 返回 true 表示有已知长度（即没有流式数据）
+			return runtime.ToValue(!hasStream)
+		})
+
 		// getLengthSync() - 同步获取内容长度
 		formDataObj.Set("getLengthSync", func(call goja.FunctionCall) goja.Value {
 			totalSize := streamingFormData.GetTotalSize()
@@ -467,7 +488,17 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 
 	switch v := exported.(type) {
 	case string:
-		// 字符串类型 - 作为文本字段
+		// 🔥 修复：如果提供了 filename，将字符串作为文件处理
+		if filename != "" {
+			// 字符串转为字节数组，作为文件上传
+			data := []byte(v)
+			if contentType == "" {
+				contentType = "text/plain"
+			}
+			nfm.appendFile(streamingFormData, name, filename, contentType, data)
+			return nil
+		}
+		// 否则作为普通文本字段
 		nfm.appendField(streamingFormData, name, v)
 		return nil
 	case int, int32, int64, float32, float64, bool:
