@@ -48,6 +48,7 @@ func TokenAuthMiddleware(tokenService *service.TokenService) gin.HandlerFunc {
 
 		// 3. 将Token信息存入上下文
 		c.Set("tokenInfo", tokenInfo)
+		c.Set("token", token)  // 🔥 添加token，供配额服务使用
 		c.Set("wsId", tokenInfo.WsID)
 		c.Set("userEmail", tokenInfo.Email)
 
@@ -88,6 +89,7 @@ func OptionalAuthMiddleware(tokenService *service.TokenService) gin.HandlerFunc 
 
 		// 将Token信息存入上下文
 		c.Set("tokenInfo", tokenInfo)
+		c.Set("token", token)  // 🔥 添加token，供配额服务使用
 		c.Set("wsId", tokenInfo.WsID)
 		c.Set("userEmail", tokenInfo.Email)
 

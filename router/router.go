@@ -179,6 +179,14 @@ func SetupRouter(
 			adminGroup.PUT("/tokens/:token", tokenController.UpdateToken)
 			adminGroup.DELETE("/tokens/:token", tokenController.DeleteToken)
 			adminGroup.GET("/tokens", tokenController.GetTokenInfo)
+			
+			// 🔥 配额查询接口
+			adminGroup.GET("/tokens/:token/quota", tokenController.GetQuota)
+			adminGroup.GET("/tokens/:token/quota/logs", tokenController.GetQuotaLogs)
+			
+			// 🔥 配额清理接口
+			adminGroup.GET("/quota/cleanup/stats", tokenController.GetQuotaCleanupStats)
+			adminGroup.POST("/quota/cleanup/trigger", tokenController.TriggerQuotaCleanup)
 
 			// 缓存和统计接口
 			adminGroup.GET("/cache/stats", tokenController.GetCacheStats)

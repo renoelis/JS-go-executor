@@ -67,6 +67,17 @@ func main() {
 		cfg.Cache.WritePoolQueueSize, // queueSize: 从配置读取（默认：1500）
 	)
 
+	// 🔥 Redis配置检查和优化（自动启用AOF）
+	redisConfigService := service.NewRedisConfigService(redisClient)
+	if err := redisConfigService.EnsureAOFEnabled(context.Background()); err != nil {
+		utils.Error("Redis AOF配置检查失败", zap.Error(err))
+		utils.Warn("⚠️  配额系统可能在Redis重启后丢失数据，建议手动配置AOF")
+	}
+	// 可选：优化AOF配置
+	if err := redisConfigService.OptimizeAOFConfig(context.Background()); err != nil {
+		utils.Warn("Redis AOF配置优化失败", zap.Error(err))
+	}
+
 	// 缓存服务（使用统一配置）
 	cacheService := service.NewCacheService(
 		cfg.Cache.HotCacheSize,  // 热缓存大小
@@ -75,12 +86,35 @@ func main() {
 		cfg.Cache.RedisCacheTTL, // Redis TTL
 	)
 
+	// 🔥 配额服务（先初始化，因为TokenService需要）
+	quotaService := service.NewQuotaService(
+		redisClient,
+		tokenRepo,
+		cfg.QuotaSync.SyncQueueSize,
+		cfg.QuotaSync.LogQueueSize,
+		cfg.QuotaSync.SyncBatch,
+		cfg.QuotaSync.SyncInterval,
+	)
+
+	// 🔥 配额日志清理服务（可选，根据配置启用）
+	var quotaCleanupService *service.QuotaCleanupService
+	if cfg.QuotaCleanup.Enabled {
+		quotaCleanupService = service.NewQuotaCleanupService(
+			tokenRepo,
+			cfg.QuotaCleanup.RetentionDays,
+			cfg.QuotaCleanup.CleanupInterval,
+		)
+	} else {
+		utils.Info("配额日志自动清理已禁用，请手动执行清理脚本")
+	}
+
 	// Token服务
 	tokenService := service.NewTokenService(
 		tokenRepo,
 		cacheService,
 		cacheWritePool,
 		cfg.Cache.WritePoolSubmitTimeout, // 🔥 写入池提交超时
+		quotaService,                     // 🔥 配额服务
 	)
 
 	// 限流服务（使用统一配置）
@@ -105,8 +139,8 @@ func main() {
 	adminToken := cfg.Auth.AdminToken
 
 	// ==================== 初始化Controller ====================
-	executorController := controller.NewExecutorController(executor, cfg, tokenService, statsService)
-	tokenController := controller.NewTokenController(tokenService, rateLimiterService, cacheWritePool, adminToken)
+	executorController := controller.NewExecutorController(executor, cfg, tokenService, statsService, quotaService)
+	tokenController := controller.NewTokenController(tokenService, rateLimiterService, cacheWritePool, adminToken, quotaService, quotaCleanupService)
 	statsController := controller.NewStatsController(statsService)
 
 	// ==================== 设置路由 ====================
@@ -146,33 +180,51 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		// 🔥 优化资源清理顺序（修复问题3.3）
+		
 		// 1. 停止接受新请求
+		utils.Info("步骤1: 停止接受新请求")
 		if err := server.Shutdown(ctx); err != nil {
 			utils.Error("服务器关闭失败", zap.Error(err))
 			_ = utils.Sync()
 		}
 
-		// 2. 停止执行器
+		// 2. 等待正在处理的请求完成（给予额外时间处理配额等操作）
+		utils.Info("步骤2: 等待正在处理的请求完成")
+		time.Sleep(2 * time.Second)
+		_ = utils.Sync()
+
+		// 3. 停止配额服务（刷新队列，确保配额数据同步）
+		utils.Info("步骤3: 停止配额服务（刷新配额队列）")
+		quotaService.Stop()
+		_ = utils.Sync()
+
+		// 4. 停止执行器
+		utils.Info("步骤4: 停止JavaScript执行器")
 		executor.Shutdown()
 		_ = utils.Sync()
 
-		// 🔥 3. 关闭缓存写入池（等待所有缓存写入完成）
+		// 5. 关闭缓存写入池（等待所有缓存写入完成）
+		utils.Info("步骤5: 关闭缓存写入池")
 		cacheWritePool.Shutdown(5 * time.Second)
 		_ = utils.Sync()
 
-		// 🔥 4. 关闭限流服务（新增）
+		// 6. 关闭限流服务
+		utils.Info("步骤6: 关闭限流服务")
 		if err := rateLimiterService.Close(); err != nil {
 			utils.Warn("关闭限流服务失败", zap.Error(err))
 		}
 		_ = utils.Sync()
 
-		// 🔥 5. 关闭缓存服务（新增）
+		// 7. 关闭缓存服务
+		utils.Info("步骤7: 关闭缓存服务")
 		if err := cacheService.Close(); err != nil {
 			utils.Warn("关闭缓存服务失败", zap.Error(err))
 		}
 		_ = utils.Sync()
 
-		// 🔥 6. 关闭路由器中的限流器（新增）
+		// 8. 关闭路由器中的限流器
+		utils.Info("步骤8: 关闭IP限流器")
 		if routerResources != nil {
 			if routerResources.SmartIPLimiter != nil {
 				if err := routerResources.SmartIPLimiter.Close(); err != nil {
@@ -186,6 +238,13 @@ func main() {
 			}
 		}
 		_ = utils.Sync()
+
+		// 9. 关闭配额清理服务
+		utils.Info("步骤9: 关闭配额清理服务")
+		if quotaCleanupService != nil {
+			quotaCleanupService.Stop()
+			_ = utils.Sync()
+		}
 
 		utils.Info("服务关闭完成")
 		_ = utils.Sync()

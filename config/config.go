@@ -23,10 +23,12 @@ type Config struct {
 	RateLimit   RateLimitConfig  // 🔥 IP 限流配置
 	Database    DatabaseConfig   // 数据库配置
 	Redis       RedisConfig      // Redis配置
-	Cache       CacheConfig      // 缓存配置
-	TokenLimit  TokenLimitConfig // Token限流配置
-	XLSX        XLSXConfig       // 🔥 XLSX 模块配置
-	TestTool    TestToolConfig   // 🔧 测试工具页面配置
+	Cache        CacheConfig        // 缓存配置
+	TokenLimit   TokenLimitConfig   // Token限流配置
+	QuotaCleanup QuotaCleanupConfig // 🔥 配额日志清理配置
+	QuotaSync    QuotaSyncConfig    // 🔥 配额同步配置
+	XLSX         XLSXConfig         // 🔥 XLSX 模块配置
+	TestTool     TestToolConfig     // 🔧 测试工具页面配置
 }
 
 // ServerConfig HTTP服务器配置
@@ -162,6 +164,22 @@ type TokenLimitConfig struct {
 	HotTierSize int           // 热数据层大小（默认：500）
 	RedisTTL    time.Duration // Redis TTL（默认：1小时）
 	BatchSize   int           // 批量写入大小（默认：100）
+}
+
+// QuotaCleanupConfig 配额日志清理配置
+type QuotaCleanupConfig struct {
+	Enabled         bool          // 是否启用自动清理（默认：true）
+	RetentionDays   int           // 日志保留天数（默认：180天，即6个月）
+	CleanupInterval time.Duration // 清理间隔（默认：24小时）
+	BatchSize       int           // 每批删除数量（默认：10000）
+}
+
+// QuotaSyncConfig 配额同步配置
+type QuotaSyncConfig struct {
+	SyncQueueSize int           // 同步队列容量（默认：10000）
+	LogQueueSize  int           // 日志队列容量（默认：10000）
+	SyncBatch     int           // 同步批次大小（默认：500）
+	SyncInterval  time.Duration // 同步间隔（默认：1秒）
 }
 
 // XLSXConfig XLSX 模块配置
@@ -496,6 +514,22 @@ func LoadConfig() *Config {
 		HotTierSize: getEnvInt("RATE_LIMIT_HOT_SIZE", 500),
 		RedisTTL:    time.Duration(getEnvInt("RATE_LIMIT_REDIS_TTL_MINUTES", 60)) * time.Minute,
 		BatchSize:   getEnvInt("RATE_LIMIT_BATCH_SIZE", 100),
+	}
+
+	// 🔥 加载配额日志清理配置
+	cfg.QuotaCleanup = QuotaCleanupConfig{
+		Enabled:         getEnvBool("QUOTA_CLEANUP_ENABLED", true),                                              // 默认启用
+		RetentionDays:   getEnvInt("QUOTA_CLEANUP_RETENTION_DAYS", 180),                                         // 默认保留180天（6个月）
+		CleanupInterval: time.Duration(getEnvInt("QUOTA_CLEANUP_INTERVAL_HOURS", 24)) * time.Hour,              // 默认每24小时清理一次
+		BatchSize:       getEnvInt("QUOTA_CLEANUP_BATCH_SIZE", 10000),                                           // 默认每批删除1万条
+	}
+
+	// 🔥 加载配额同步配置
+	cfg.QuotaSync = QuotaSyncConfig{
+		SyncQueueSize: getEnvInt("QUOTA_SYNC_QUEUE_SIZE", 10000),                                                // 默认队列容量1万
+		LogQueueSize:  getEnvInt("QUOTA_LOG_QUEUE_SIZE", 10000),                                                 // 默认日志队列1万
+		SyncBatch:     getEnvInt("QUOTA_SYNC_BATCH_SIZE", 500),                                                  // 默认批次500条
+		SyncInterval:  time.Duration(getEnvInt("QUOTA_SYNC_INTERVAL_MS", 1000)) * time.Millisecond,             // 默认1秒（1000毫秒）
 	}
 
 	// 🔥 加载 XLSX 配置

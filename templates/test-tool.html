@@ -2356,6 +2356,15 @@ return readExcelFromUrl();`
         function showTokenQuery() {
             document.getElementById('tokenModal').classList.add('show');
             document.getElementById('tokenResult').style.display = 'none';
+            
+            // 🔥 自动填充已有的Token（如果存在）
+            const currentToken = document.getElementById('accessToken').value.trim();
+            if (currentToken) {
+                document.getElementById('queryTokenDirect').value = currentToken;
+            } else {
+                document.getElementById('queryTokenDirect').value = '';
+            }
+            
             document.getElementById('queryWsId').value = '';
             document.getElementById('queryEmail').value = '';
         }
@@ -2365,18 +2374,26 @@ return readExcelFromUrl();`
         }
 
         async function queryToken() {
+            const tokenDirect = document.getElementById('queryTokenDirect').value.trim();
             const wsId = document.getElementById('queryWsId').value.trim();
             const email = document.getElementById('queryEmail').value.trim();
             const apiUrl = document.getElementById('apiUrl').value.trim();
 
-            // 验证必填项
-            if (!wsId) {
-                showAlertInModal('❌ 请输入 Workspace ID', 'error');
-                return;
-            }
-
-            if (!email) {
-                showAlertInModal('❌ 请输入 Email', 'error');
+            // 🔥 智能判断查询方式（统一使用 /flow/query-token 接口）
+            let queryUrl = '';
+            let queryMethod = '';
+            
+            if (tokenDirect) {
+                // 方式1：直接通过Token查询
+                queryUrl = `${apiUrl}/flow/query-token?token=${encodeURIComponent(tokenDirect)}`;
+                queryMethod = 'token';
+            } else if (wsId && email) {
+                // 方式2：通过ws_id + email查询
+                queryUrl = `${apiUrl}/flow/query-token?ws_id=${encodeURIComponent(wsId)}&email=${encodeURIComponent(email)}`;
+                queryMethod = 'wsid_email';
+            } else {
+                // 验证必填项
+                showAlertInModal('❌ 请输入 Token，或者同时输入 Workspace ID 和 Email', 'error');
                 return;
             }
 
@@ -2386,7 +2403,7 @@ return readExcelFromUrl();`
             document.getElementById('tokenResult').style.display = 'none';
 
             try {
-                const response = await fetch(`${apiUrl}/flow/query-token?ws_id=${encodeURIComponent(wsId)}&email=${encodeURIComponent(email)}`, {
+                const response = await fetch(queryUrl, {
                     method: 'GET',
                     headers: {
                         'Content-Type': 'application/json'
@@ -2399,8 +2416,9 @@ return readExcelFromUrl();`
                 document.getElementById('queryBtn').textContent = '🔍 查询';
 
                 if (response.ok && result.success && result.data) {
-                    // 处理返回的数据
-                    const tokens = Array.isArray(result.data) ? result.data : (result.data.tokens || []);
+                    // 🔥 统一处理返回数据（两种查询方式返回格式相同）
+                    // 返回格式：{ data: { count: 1, tokens: [...] } }
+                    let tokens = result.data.tokens || [];
                     
                     // 🔥 根据用户选择决定是否过滤已过期的 Token
                     const includeExpired = document.getElementById('includeExpiredTokens').checked;
@@ -2536,6 +2554,54 @@ return readExcelFromUrl();`
             const isExpired = expiresAt && expiresAt < now;
             const isActive = tokenData.is_active !== undefined ? tokenData.is_active : true;
             const tokenStr = tokenData.access_token || tokenData.token || '';
+            
+            // 🔥 配额信息
+            const quotaType = tokenData.quota_type || 'time';
+            const totalQuota = tokenData.total_quota;
+            const remainingQuota = tokenData.remaining_quota;
+            
+            // 🔥 生成配额类型说明
+            let quotaTypeText = '';
+            let quotaTypeColor = '';
+            if (quotaType === 'time') {
+                quotaTypeText = '⏰ 时间限制（不限次数）';
+                quotaTypeColor = '#00acc1';
+            } else if (quotaType === 'count') {
+                quotaTypeText = '🔢 次数限制（永久有效）';
+                quotaTypeColor = '#ff9800';
+            } else if (quotaType === 'hybrid') {
+                quotaTypeText = '⚡ 时间+次数双重限制';
+                quotaTypeColor = '#e91e63';
+            }
+            
+            // 🔥 生成配额状态HTML
+            let quotaStatusHTML = '';
+            if (quotaType === 'count' || quotaType === 'hybrid') {
+                const quotaPercent = totalQuota > 0 ? (remainingQuota / totalQuota * 100).toFixed(1) : 0;
+                let quotaColor = '#28a745';
+                if (quotaPercent < 20) quotaColor = '#dc3545';
+                else if (quotaPercent < 50) quotaColor = '#ffc107';
+                
+                quotaStatusHTML = `
+                    <div class="token-item">
+                        <div class="token-label">配额使用情况</div>
+                        <div class="token-value">
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                                <span style="font-size: 20px; font-weight: bold; color: ${quotaColor};">
+                                    ${remainingQuota || 0} / ${totalQuota || 0}
+                                </span>
+                                <span style="color: #6c757d; font-size: 13px;">次</span>
+                            </div>
+                            <div style="background: #e9ecef; height: 8px; border-radius: 4px; overflow: hidden;">
+                                <div style="background: ${quotaColor}; height: 100%; width: ${quotaPercent}%; transition: width 0.3s;"></div>
+                            </div>
+                            <div style="margin-top: 5px; font-size: 12px; color: #6c757d;">
+                                剩余 ${quotaPercent}% · 已使用 ${(totalQuota || 0) - (remainingQuota || 0)} 次
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
 
             targetDiv.innerHTML = `
                 <div style="margin-top: 15px; padding: 15px; background: white; border-radius: 8px; border: 1px solid #e9ecef;">
@@ -2550,6 +2616,13 @@ return readExcelFromUrl();`
                         </div>
                     </div>
                     <div class="token-item">
+                        <div class="token-label">配额类型</div>
+                        <div class="token-value" style="color: ${quotaTypeColor}; font-weight: 600;">
+                            ${quotaTypeText}
+                        </div>
+                    </div>
+                    ${quotaStatusHTML}
+                    <div class="token-item">
                         <div class="token-label">失效时间</div>
                         <div class="token-value ${isExpired ? 'expired' : ''}">
                             ${expiresAt ? expiresAt.toLocaleString('zh-CN') : '永久有效'}
@@ -2558,11 +2631,11 @@ return readExcelFromUrl();`
                     </div>
                     <div class="token-item">
                         <div class="token-label">每分钟请求限制</div>
-                        <div class="token-value">${tokenData.rate_limit_per_minute || '-'} 次/分钟</div>
+                        <div class="token-value">${tokenData.rate_limit_per_minute || '无限制'}</div>
                     </div>
                     <div class="token-item">
                         <div class="token-label">突发请求限制</div>
-                        <div class="token-value">${tokenData.rate_limit_burst || '-'} 次</div>
+                        <div class="token-value">${tokenData.rate_limit_burst || '无限制'}</div>
                     </div>
                     <div class="token-item">
                         <div class="token-label">创建时间</div>
@@ -2596,6 +2669,54 @@ return readExcelFromUrl();`
             const isExpired = expiresAt && expiresAt < now;
             const isActive = tokenData.is_active !== undefined ? tokenData.is_active : true;
             const tokenStr = tokenData.access_token || tokenData.token || '';
+            
+            // 🔥 配额信息
+            const quotaType = tokenData.quota_type || 'time';
+            const totalQuota = tokenData.total_quota;
+            const remainingQuota = tokenData.remaining_quota;
+            
+            // 🔥 生成配额类型说明
+            let quotaTypeText = '';
+            let quotaTypeColor = '';
+            if (quotaType === 'time') {
+                quotaTypeText = '⏰ 时间限制（不限次数）';
+                quotaTypeColor = '#00acc1';
+            } else if (quotaType === 'count') {
+                quotaTypeText = '🔢 次数限制（永久有效）';
+                quotaTypeColor = '#ff9800';
+            } else if (quotaType === 'hybrid') {
+                quotaTypeText = '⚡ 时间+次数双重限制';
+                quotaTypeColor = '#e91e63';
+            }
+            
+            // 🔥 生成配额状态HTML
+            let quotaStatusHTML = '';
+            if (quotaType === 'count' || quotaType === 'hybrid') {
+                const quotaPercent = totalQuota > 0 ? (remainingQuota / totalQuota * 100).toFixed(1) : 0;
+                let quotaColor = '#28a745';
+                if (quotaPercent < 20) quotaColor = '#dc3545';
+                else if (quotaPercent < 50) quotaColor = '#ffc107';
+                
+                quotaStatusHTML = `
+                    <div class="token-item">
+                        <div class="token-label">配额使用情况</div>
+                        <div class="token-value">
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                                <span style="font-size: 20px; font-weight: bold; color: ${quotaColor};">
+                                    ${remainingQuota || 0} / ${totalQuota || 0}
+                                </span>
+                                <span style="color: #6c757d; font-size: 13px;">次</span>
+                            </div>
+                            <div style="background: #e9ecef; height: 8px; border-radius: 4px; overflow: hidden;">
+                                <div style="background: ${quotaColor}; height: 100%; width: ${quotaPercent}%; transition: width 0.3s;"></div>
+                            </div>
+                            <div style="margin-top: 5px; font-size: 12px; color: #6c757d;">
+                                剩余 ${quotaPercent}% · 已使用 ${(totalQuota || 0) - (remainingQuota || 0)} 次
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
 
             resultDiv.innerHTML = `
                 <div class="token-item">
@@ -2609,6 +2730,13 @@ return readExcelFromUrl();`
                     </div>
                 </div>
                 <div class="token-item">
+                    <div class="token-label">配额类型</div>
+                    <div class="token-value" style="color: ${quotaTypeColor}; font-weight: 600;">
+                        ${quotaTypeText}
+                    </div>
+                </div>
+                ${quotaStatusHTML}
+                <div class="token-item">
                     <div class="token-label">失效时间</div>
                     <div class="token-value ${isExpired ? 'expired' : ''}">
                         ${expiresAt ? expiresAt.toLocaleString('zh-CN') : '永久有效'}
@@ -2617,11 +2745,11 @@ return readExcelFromUrl();`
                 </div>
                 <div class="token-item">
                     <div class="token-label">每分钟请求限制</div>
-                    <div class="token-value">${tokenData.rate_limit_per_minute || '-'} 次/分钟</div>
+                    <div class="token-value">${tokenData.rate_limit_per_minute || '无限制'}</div>
                 </div>
                 <div class="token-item">
                     <div class="token-label">突发请求限制</div>
-                    <div class="token-value">${tokenData.rate_limit_burst || '-'} 次</div>
+                    <div class="token-value">${tokenData.rate_limit_burst || '无限制'}</div>
                 </div>
                 <div class="token-item">
                     <div class="token-label">创建时间</div>
@@ -2672,8 +2800,29 @@ return readExcelFromUrl();`
 
             <div id="modalAlert" class="alert"></div>
 
+            <!-- 🔥 查询方式1：直接输入Token -->
             <div class="form-group">
-                <label class="form-label">Workspace ID <span style="color: red;">*</span></label>
+                <label class="form-label">🎯 Token（直接查询）</label>
+                <input type="text" 
+                       id="queryTokenDirect" 
+                       class="form-input"
+                       placeholder="输入完整的 Token 进行查询（优先使用此方式）"
+                       style="font-family: 'Courier New', monospace;">
+                <div style="font-size: 12px; color: #6c757d; margin-top: 5px;">
+                    💡 如果填写了 Token，将直接查询该 Token 信息（无需填写下方的 Workspace ID 和 Email）
+                </div>
+            </div>
+
+            <!-- 🔥 分隔线 -->
+            <div style="display: flex; align-items: center; margin: 20px 0;">
+                <div style="flex: 1; height: 1px; background: #e9ecef;"></div>
+                <span style="padding: 0 15px; color: #6c757d; font-size: 13px; font-weight: 500;">或者</span>
+                <div style="flex: 1; height: 1px; background: #e9ecef;"></div>
+            </div>
+
+            <!-- 🔥 查询方式2：通过ws_id + email -->
+            <div class="form-group">
+                <label class="form-label">📋 Workspace ID</label>
                 <input type="text" 
                        id="queryWsId" 
                        class="form-input"
@@ -2681,11 +2830,14 @@ return readExcelFromUrl();`
             </div>
 
             <div class="form-group">
-                <label class="form-label">Email <span style="color: red;">*</span></label>
+                <label class="form-label">📧 Email</label>
                 <input type="text" 
                        id="queryEmail" 
                        class="form-input"
                        placeholder="请输入 Email 地址">
+                <div style="font-size: 12px; color: #6c757d; margin-top: 5px;">
+                    💡 同时填写 Workspace ID 和 Email 可查询该用户的所有 Token
+                </div>
             </div>
 
             <div class="form-group" style="margin-top: 10px;">

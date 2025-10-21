@@ -76,6 +76,21 @@ services:
       - RATE_LIMIT_REDIS_TTL_MINUTES=${RATE_LIMIT_REDIS_TTL_MINUTES}  # Redis TTL(分钟)
       - RATE_LIMIT_BATCH_SIZE=${RATE_LIMIT_BATCH_SIZE}        # 批量写入大小
       
+      # ==================== 🔥 配额日志清理配置 ====================
+      # 自动清理配额消耗日志，避免数据库膨胀
+      - QUOTA_CLEANUP_ENABLED=${QUOTA_CLEANUP_ENABLED:-true}       # 是否启用自动清理（默认：true）
+      - QUOTA_CLEANUP_RETENTION_DAYS=${QUOTA_CLEANUP_RETENTION_DAYS:-180}  # 日志保留天数（默认：180天，即6个月）
+      - QUOTA_CLEANUP_INTERVAL_HOURS=${QUOTA_CLEANUP_INTERVAL_HOURS:-24}  # 清理间隔（小时，默认：24小时）
+      - QUOTA_CLEANUP_BATCH_SIZE=${QUOTA_CLEANUP_BATCH_SIZE:-10000}   # 每批删除数量（默认：10000）
+      
+      # ==================== 🔥 配额同步配置 ====================
+      # 功能：配置Redis到DB的配额同步策略
+      # 说明：配额准确性由Redis原子操作保证，同步间隔只影响DB实时性
+      - QUOTA_SYNC_QUEUE_SIZE=${QUOTA_SYNC_QUEUE_SIZE:-10000}      # 同步队列容量（默认：10000）
+      - QUOTA_LOG_QUEUE_SIZE=${QUOTA_LOG_QUEUE_SIZE:-10000}       # 日志队列容量（默认：10000）
+      - QUOTA_SYNC_BATCH_SIZE=${QUOTA_SYNC_BATCH_SIZE:-500}       # 同步批次大小（默认：500）
+      - QUOTA_SYNC_INTERVAL_MS=${QUOTA_SYNC_INTERVAL_MS:-1000}     # 同步间隔（毫秒，默认：1000，即1秒）
+      
       # ==================== 🚦 IP限流配置 ====================
       # # 认证前IP限流（严格）- 防止暴力破解Token
       - IP_RATE_LIMIT_PRE_AUTH=${IP_RATE_LIMIT_PRE_AUTH}        # 每秒请求数 (推荐:50)
@@ -272,12 +287,13 @@ services:
     restart: unless-stopped
     
     # 健康检查
+    # 说明：不仅检查MySQL服务，还要确保数据库和表已创建（init.sql执行完成）
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${MYSQL_USER}", "-p${MYSQL_PASSWORD}"]
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u ${MYSQL_USER} -p${MYSQL_PASSWORD} && mysql -u ${MYSQL_USER} -p${MYSQL_PASSWORD} ${MYSQL_DATABASE} -e 'SELECT 1 FROM access_tokens LIMIT 1' > /dev/null 2>&1 || exit 1"]
       timeout: 20s
       retries: 10
       interval: 10s
-      start_period: 40s
+      start_period: 60s  # 生产环境增加到60秒，确保init.sql执行完成
     
     # 资源限制
     deploy:

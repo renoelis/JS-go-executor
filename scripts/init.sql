@@ -23,6 +23,11 @@ CREATE TABLE IF NOT EXISTS `access_tokens` (
   `rate_limit_per_minute` INT DEFAULT NULL COMMENT '每分钟请求限制数，NULL表示不限制',
   `rate_limit_burst` INT DEFAULT NULL COMMENT '每秒请求限制数（突发限制），NULL表示不限制',
   `rate_limit_window_seconds` INT DEFAULT 60 COMMENT '限流时间窗口(秒)，默认60秒',
+  -- 🔥 配额相关字段
+  `quota_type` ENUM('time', 'count', 'hybrid') DEFAULT 'time' COMMENT '配额类型: time=仅时间限制, count=仅次数限制, hybrid=时间+次数双重限制',
+  `total_quota` INT DEFAULT NULL COMMENT '总配额次数（仅count/hybrid有效，NULL表示不限次数）',
+  `remaining_quota` INT DEFAULT NULL COMMENT '剩余配额次数（冷备份，热数据在Redis）',
+  `quota_synced_at` TIMESTAMP NULL COMMENT 'Redis配额最后同步到DB的时间',
   `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_access_token` (`access_token`),
@@ -30,7 +35,12 @@ CREATE TABLE IF NOT EXISTS `access_tokens` (
   KEY `idx_email` (`email`),
   KEY `idx_expires_at` (`expires_at`),
   KEY `idx_is_active` (`is_active`),
-  KEY `idx_rate_limit` (`rate_limit_per_minute`)
+  KEY `idx_rate_limit` (`rate_limit_per_minute`),
+  KEY `idx_quota_type` (`quota_type`),
+  KEY `idx_remaining_quota` (`remaining_quota`),
+  -- 🔥 性能优化复合索引（代码审查修复 - 问题7）
+  KEY `idx_quota_check` (`is_active`, `quota_type`, `remaining_quota`) COMMENT '配额检查复合索引',
+  KEY `idx_ws_email` (`ws_id`, `email`) COMMENT 'ws_id和email复合索引'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='访问令牌表';
 
 -- ==================== 限流历史记录表（冷数据层） ====================
@@ -219,7 +229,47 @@ CREATE TABLE IF NOT EXISTS `module_usage_stats` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci 
 COMMENT='模块使用统计表(按天聚合)';
 
--- ==================== 表5: 用户活跃度统计表(按天聚合) ====================
+-- ==================== 表5: Token配额消耗审计日志表 ====================
+-- 用途: 记录每次配额消耗的详细信息，用于审计和查询
+CREATE TABLE IF NOT EXISTS `token_quota_logs` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `token` VARCHAR(255) NOT NULL COMMENT 'Token（完整存储）',
+  `ws_id` VARCHAR(255) NOT NULL COMMENT '工作空间ID',
+  `email` VARCHAR(255) NOT NULL COMMENT '用户邮箱',
+  
+  -- 配额信息
+  `quota_before` INT NOT NULL COMMENT '操作前剩余配额',
+  `quota_after` INT NOT NULL COMMENT '操作后剩余配额',
+  `quota_change` INT NOT NULL COMMENT '配额变化量（负数=消耗，正数=充值）',
+  
+  -- 操作信息
+  `action` ENUM('consume', 'refund', 'recharge', 'init') NOT NULL 
+    COMMENT '动作类型: consume=消耗, refund=退款, recharge=充值, init=初始化',
+  `request_id` VARCHAR(64) DEFAULT NULL COMMENT '关联的执行请求ID',
+  
+  -- 执行结果（仅consume时有值）
+  `execution_success` TINYINT(1) DEFAULT NULL COMMENT '执行是否成功: 1=成功, 0=失败, NULL=不适用',
+  `execution_error_type` VARCHAR(100) DEFAULT NULL COMMENT '错误类型（仅失败时记录）',
+  `execution_error_message` VARCHAR(500) DEFAULT NULL COMMENT '错误消息（仅失败时记录）',
+  
+  -- 时间字段
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '记录时间',
+  
+  PRIMARY KEY (`id`),
+  KEY `idx_token_created` (`token`, `created_at`),
+  KEY `idx_ws_id_created` (`ws_id`, `created_at`),
+  KEY `idx_email_created` (`email`, `created_at`),
+  KEY `idx_request_id` (`request_id`),
+  KEY `idx_action` (`action`),
+  KEY `idx_created_at` (`created_at`),
+  -- 🔥 性能优化复合索引（代码审查修复 - 问题7）
+  KEY `idx_ws_action_time` (`ws_id`, `action`, `created_at` DESC) COMMENT '工作区和操作类型复合索引',
+  KEY `idx_email_action_time` (`email`, `action`, `created_at` DESC) COMMENT '用户和操作类型复合索引',
+  KEY `idx_action_created` (`action`, `created_at` DESC) COMMENT '操作类型和时间复合索引'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci 
+COMMENT='Token配额消耗审计日志';
+
+-- ==================== 表6: 用户活跃度统计表(按天聚合) ====================
 -- 用途: 按天统计每个用户的活跃情况,用于生成用户活跃度报告
 CREATE TABLE IF NOT EXISTS `user_activity_stats` (
   `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
@@ -267,5 +317,26 @@ SET FOREIGN_KEY_CHECKS = 1;
 
 -- ==================== 初始化完成提示 ====================
 SELECT '🎉 数据库初始化完成！' AS status;
-SELECT '📝 下一步：使用管理员API创建正式Token' AS next_step;
+SELECT '📝 下一步：' AS next_step;
+SELECT '1. 配置Redis AOF持久化: appendonly yes' AS step1;
+SELECT '2. 使用管理员API创建Token' AS step2;
 SELECT 'POST /flow/tokens -H "Authorization: Bearer YOUR_ADMIN_TOKEN"' AS api_endpoint;
+SELECT '3. 支持配额类型: time(时间), count(次数), hybrid(时间+次数)' AS quota_types;
+
+-- ==================== 性能优化索引说明 ====================
+-- 代码审查修复 - 问题7: 添加复合索引优化查询性能
+-- 
+-- access_tokens 表：
+--   - idx_quota_check: 优化配额检查查询 (is_active, quota_type, remaining_quota)
+--   - idx_ws_email: 优化Token查询 (ws_id, email)
+-- 
+-- token_quota_logs 表：
+--   - idx_ws_action_time: 优化工作区统计查询 (ws_id, action, created_at)
+--   - idx_email_action_time: 优化用户统计查询 (email, action, created_at)
+--   - idx_action_created: 优化按操作类型统计 (action, created_at)
+-- 
+-- 使用示例：
+--   EXPLAIN SELECT * FROM access_tokens WHERE is_active = 1 AND quota_type = 'count' AND remaining_quota > 0;
+--   EXPLAIN SELECT * FROM token_quota_logs WHERE ws_id = 'xxx' AND action = 'consume' AND created_at >= '2025-10-01';
+-- 
+-- 参考文档：docs/CODE_REVIEW_FIXES.md

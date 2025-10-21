@@ -72,6 +72,11 @@ type TokenInfo struct {
 	RateLimitPerMinute     *int          `db:"rate_limit_per_minute" json:"rate_limit_per_minute"`
 	RateLimitBurst         *int          `db:"rate_limit_burst" json:"rate_limit_burst"`
 	RateLimitWindowSeconds *int          `db:"rate_limit_window_seconds" json:"rate_limit_window_seconds"`
+	// 🔥 配额相关字段
+	QuotaType              string        `db:"quota_type" json:"quota_type"`                   // time/count/hybrid
+	TotalQuota             *int          `db:"total_quota" json:"total_quota"`                 // 总配额
+	RemainingQuota         *int          `db:"remaining_quota" json:"remaining_quota"`         // 剩余配额
+	QuotaSyncedAt          *ShanghaiTime `db:"quota_synced_at" json:"quota_synced_at"`         // 配额同步时间
 	UpdatedAt              ShanghaiTime  `db:"updated_at" json:"updated_at"`
 }
 
@@ -86,6 +91,43 @@ func (t *TokenInfo) IsExpired() bool {
 // IsUnlimited 检查是否不限流
 func (t *TokenInfo) IsUnlimited() bool {
 	return t.RateLimitPerMinute == nil
+}
+
+// IsCountBased 是否基于次数的配额模式
+func (t *TokenInfo) IsCountBased() bool {
+	return t.QuotaType == "count" || t.QuotaType == "hybrid"
+}
+
+// NeedsQuotaCheck 是否需要配额检查
+func (t *TokenInfo) NeedsQuotaCheck() bool {
+	return t.IsCountBased() && t.TotalQuota != nil
+}
+
+// IsQuotaExhausted 检查配额是否耗尽
+func (t *TokenInfo) IsQuotaExhausted() bool {
+	if !t.NeedsQuotaCheck() {
+		return false // time模式不检查配额
+	}
+	if t.RemainingQuota == nil {
+		return false // NULL表示不限次数
+	}
+	return *t.RemainingQuota <= 0
+}
+
+// IsValid 检查Token是否有效（综合判断：激活状态 + 时间 + 配额）
+func (t *TokenInfo) IsValid() bool {
+	if !t.IsActive {
+		return false
+	}
+	// 时间检查
+	if t.IsExpired() {
+		return false
+	}
+	// 配额检查
+	if t.IsQuotaExhausted() {
+		return false
+	}
+	return true
 }
 
 // GetRateLimitConfig 获取限流配置
@@ -124,6 +166,9 @@ type CreateTokenRequest struct {
 	RateLimitPerMinute     *int   `json:"rate_limit_per_minute"`
 	RateLimitBurst         *int   `json:"rate_limit_burst"`
 	RateLimitWindowSeconds *int   `json:"rate_limit_window_seconds"`
+	// 🔥 配额相关字段
+	QuotaType              string `json:"quota_type" binding:"omitempty,oneof=time count hybrid"` // 配额类型
+	TotalQuota             *int   `json:"total_quota"`                                             // 总配额次数
 }
 
 // UpdateTokenRequest 更新Token请求
@@ -133,6 +178,11 @@ type UpdateTokenRequest struct {
 	RateLimitPerMinute     *int   `json:"rate_limit_per_minute"`
 	RateLimitBurst         *int   `json:"rate_limit_burst"`
 	RateLimitWindowSeconds *int   `json:"rate_limit_window_seconds"`
+	// 🔥 配额操作字段
+	QuotaOperation         string `json:"quota_operation" binding:"omitempty,oneof=add set reset"` // add=增加, set=设置, reset=重置
+	QuotaAmount            *int   `json:"quota_amount"`                                             // 配额数量
+	// 🔥 新增：支持修改配额类型
+	QuotaType              string `json:"quota_type" binding:"omitempty,oneof=time count hybrid"` // time=仅时间, count=仅次数, hybrid=双重限制
 }
 
 // TokenQueryRequest Token查询请求
@@ -140,4 +190,30 @@ type TokenQueryRequest struct {
 	WsID  string `form:"ws_id"`
 	Email string `form:"email"`
 	Token string `form:"token"`
+}
+
+// QuotaLog 配额日志
+type QuotaLog struct {
+	ID                   int64         `db:"id" json:"id"`
+	Token                string        `db:"token" json:"token"`
+	WsID                 string        `db:"ws_id" json:"ws_id"`
+	Email                string        `db:"email" json:"email"`
+	QuotaBefore          int           `db:"quota_before" json:"quota_before"`
+	QuotaAfter           int           `db:"quota_after" json:"quota_after"`
+	QuotaChange          int           `db:"quota_change" json:"quota_change"`
+	Action               string        `db:"action" json:"action"`
+	RequestID            *string       `db:"request_id" json:"request_id"`
+	ExecutionSuccess     *bool         `db:"execution_success" json:"execution_success"`
+	ExecutionErrorType   *string       `db:"execution_error_type" json:"execution_error_type"`
+	ExecutionErrorMessage *string      `db:"execution_error_message" json:"execution_error_message"`
+	CreatedAt            ShanghaiTime  `db:"created_at" json:"created_at"`
+}
+
+// QuotaLogsQueryRequest 配额日志查询请求
+type QuotaLogsQueryRequest struct {
+	Token     string `form:"token"`
+	StartDate string `form:"start_date"` // yyyy-MM-dd
+	EndDate   string `form:"end_date"`   // yyyy-MM-dd
+	Page      int    `form:"page"`
+	PageSize  int    `form:"page_size"`
 }

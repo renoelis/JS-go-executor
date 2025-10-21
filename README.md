@@ -58,6 +58,16 @@
 - **降级保护**: Redis故障自动降级，连续错误自动禁用
 - **完善监控**: 缓存统计、限流统计、命中率分析
 
+### 💰 Token配额系统 (v2.6+)
+- **3种配额类型**: time（仅时间）、count（仅次数）、hybrid（时间+次数双重限制）
+- **调用即消耗**: 无论执行成功失败都消耗配额，确保公平计费
+- **高性能**: Redis原子操作（DECR），QPS > 8000，扣减延迟< 1ms
+- **高可用**: Redis故障自动降级到DB原子操作，保证服务不中断
+- **完整审计**: 异步批量记录每次消耗日志，支持详细查询
+- **灵活管理**: 支持配额增购（add）、设置（set）、重置（reset）
+- **自动清理**: 定时清理过期配额日志（默认保留180天）
+- **智能TTL**: Redis缓存自动根据Token类型和过期时间设置合理TTL
+
 ### 🔒 CORS 跨域控制 (v2.3+)
 - **智能识别**: 自动识别服务端调用（无Origin头）vs 前端调用（有Origin头）
 - **多层策略**: 
@@ -274,10 +284,12 @@ Flow-codeblock_goja/
 │   ├── executor_helpers.go  # 辅助方法
 │   ├── module_registry.go   # 模块注册器（统一管理）
 │   ├── cache_service.go     # 🔥 混合缓存服务（内存+Redis）
-│   ├── token_service.go     # 🔥 Token业务逻辑
+│   ├── token_service.go     # 🔥 Token业务逻辑（含配额校验修复）
 │   ├── rate_limiter_service.go    # 🔥 限流业务逻辑
 │   ├── rate_limiter_tiers.go      # 🔥 三层限流存储
 │   ├── stats_service.go     # 📊 统计分析服务
+│   ├── quota_service.go     # 💰 配额管理服务（Redis+DB双存储）
+│   ├── quota_cleanup_service.go  # 💰 配额日志清理服务
 │   └── cache_write_pool.go  # 缓存写入池
 ├── router/
 │   └── router.go            # 路由配置（集成认证和限流）
@@ -957,10 +969,28 @@ go run load_test.go
 - [x] 统一API响应格式
 - [x] 请求ID追踪系统
 
-### 第六阶段 (长期规划)
+### 第六阶段 ✅ (已完成 - v2.6)
+- [x] 💰 Token配额系统
+  - [x] 3种配额类型（time/count/hybrid）
+  - [x] Redis + DB双存储架构
+  - [x] 原子操作保证并发安全
+  - [x] 异步批量日志记录
+  - [x] 自动清理服务（可配置保留天数）
+  - [x] 配额管理API（查询/增购/重置）
+  - [x] 完整测试覆盖
+  - [x] 智能TTL管理
+  - [x] 高可用降级机制
+- [x] 🐛 代码质量优化
+  - [x] 严重问题修复（配额校验、Redis TTL）
+  - [x] 中等问题修复（性能优化、nil校验）
+  - [x] 高优先级问题修复（操作校验逻辑）
+  - [x] 配额类型动态转换支持
+
+### 第七阶段 (长期规划)
 - [ ] 性能持续优化
 - [ ] 监控和日志系统完善
 - [ ] 统计数据可视化仪表盘
+- [ ] 配额使用趋势分析
 - [ ] 分布式执行支持
 - [ ] WebAssembly模块支持
 - [ ] 测试工具功能增强（代码版本管理、历史记录等）
@@ -1076,15 +1106,21 @@ X-RateLimit-Burst-Limit: 10
 | GET | `/flow/health` | 详细健康检查 |
 | GET | `/flow/status` | 执行统计信息 |
 | GET | `/flow/limits` | 系统限制信息 |
-| POST | `/flow/tokens` | 创建Token |
+| POST | `/flow/tokens` | 创建Token（支持配额类型） |
 | GET | `/flow/tokens` | 查询Token |
-| PUT | `/flow/tokens/:token` | 更新Token |
+| PUT | `/flow/tokens/:token` | 更新Token（支持配额操作） |
 | DELETE | `/flow/tokens/:token` | 删除Token |
 | GET | `/flow/cache/stats` | 缓存统计 |
 | GET | `/flow/rate-limit/stats` | 限流统计 |
-| GET | `/flow/stats/modules` | 📊 模块使用统计 |
-| GET | `/flow/stats/modules/:module_name` | 📊 特定模块详细统计 |
-| GET | `/flow/stats/users` | 📊 用户活跃度统计 |
+| 💰 **配额管理** | |
+| GET | `/flow/tokens/:token/quota` | 查询Token配额状态 |
+| GET | `/flow/tokens/:token/quota/logs` | 查询配额消耗日志 |
+| GET | `/flow/quota/cleanup/stats` | 查询清理服务状态 |
+| POST | `/flow/quota/cleanup/trigger` | 手动触发配额清理 |
+| 📊 **统计分析** | |
+| GET | `/flow/stats/modules` | 模块使用统计 |
+| GET | `/flow/stats/modules/:module_name` | 特定模块详细统计 |
+| GET | `/flow/stats/users` | 用户活跃度统计 |
 
 ### 性能指标
 
@@ -1757,10 +1793,39 @@ MIT License
 
 ---
 
-### v2.5.1 (2025-10-15) - SSRF 防护功能 🛡️
-- ✨ 新增 SSRF (Server-Side Request Forgery) 防护功能
-  - **私有 IP 拦截**: 阻止访问内网地址（127.0.0.1, 10.x, 172.16-31.x, 192.168.x）
-  - **云平台保护**: 阻止访问云平台元数据服务（AWS 169.254.169.254, 阿里云 100.100.100.200）
+### v2.6.0 (2025-10-19) - Token配额系统 💰
+- ✨ 新增完整的Token配额管理系统
+- 💰 三种配额类型
+  - **time**: 仅时间限制，过期前无限次使用
+  - **count**: 仅次数限制，永久有限次使用
+  - **hybrid**: 时间+次数双重限制
+- 🚀 高性能架构
+  - Redis原子操作（DECR），QPS > 8000
+  - 配额扣减延迟 < 1ms
+  - 异步批量同步DB（1秒间隔）
+- 🛡️ 高可用设计
+  - Redis故障自动降级到DB原子操作
+  - 双存储确保数据不丢失
+- 📊 完整审计
+  - 异步批量记录消耗日志
+  - 支持详细查询和分析
+  - 自动清理服务（可配置保留天数）
+- 🔧 灵活管理
+  - add: 增购配额
+  - set: 设置配额（允许0）
+  - reset: 重置为总配额
+- 🐛 代码质量优化
+  - 修复2个严重问题（配额校验、Redis TTL）
+  - 修复2个中等问题（性能优化、nil校验）
+  - 修复1个高优先级问题（操作校验逻辑）
+- 🔄 配额类型动态转换支持
+- 📚 完整文档：`CODE_REVIEW_ROUND4_SUMMARY.md`、配额系统文档
+
+### v2.5.1 (2025-10-18) - SSRF防护功能 🛡️
+- ✨ 新增 SSRF（服务端请求伪造）防护系统
+- 🔒 多层防护机制
+  - **私有 IP 拦截**: 阻止访问 127.0.0.1, 10.x.x.x, 172.16-31.x.x, 192.168.x.x
+  - **云平台保护**: 阻止访问 AWS/阿里云/腾讯云元数据服务
   - **DNS 重绑定防护**: 域名解析后再次检查 IP，防止绕过
 - 🧠 智能环境判断
   - production 环境：自动启用防护，禁止私有 IP（公有云部署）

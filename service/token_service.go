@@ -18,6 +18,7 @@ type TokenService struct {
 	cache            *CacheService
 	writePool        *CacheWritePool // 🔥 新增：异步缓存写入池
 	writePoolTimeout time.Duration   // 🔥 写入池提交超时
+	quotaService     *QuotaService   // 🔥 配额服务
 }
 
 // NewTokenService 创建Token服务
@@ -26,12 +27,14 @@ func NewTokenService(
 	cache *CacheService,
 	writePool *CacheWritePool,
 	writePoolTimeout time.Duration,
+	quotaService *QuotaService,
 ) *TokenService {
 	return &TokenService{
 		repo:             repo,
 		cache:            cache,
 		writePool:        writePool,
 		writePoolTimeout: writePoolTimeout,
+		quotaService:     quotaService,
 	}
 }
 
@@ -117,6 +120,13 @@ func (s *TokenService) CreateToken(ctx context.Context, req *model.CreateTokenRe
 		return nil, err
 	}
 
+	// 🔥 初始化Redis配额
+	if tokenInfo.NeedsQuotaCheck() && s.quotaService != nil {
+		if err := s.quotaService.InitQuota(ctx, tokenInfo); err != nil {
+			utils.Warn("Redis配额初始化失败（不影响Token创建）", zap.Error(err))
+		}
+	}
+
 	// 存入缓存
 	s.cache.SetHot(tokenInfo.AccessToken, tokenInfo)
 
@@ -140,6 +150,7 @@ func (s *TokenService) CreateToken(ctx context.Context, req *model.CreateTokenRe
 		zap.String("ws_id", tokenInfo.WsID),
 		zap.String("email", tokenInfo.Email),
 		zap.String("token", utils.MaskToken(tokenInfo.AccessToken)),
+		zap.String("quota_type", tokenInfo.QuotaType),
 	)
 
 	return tokenInfo, nil
@@ -156,6 +167,14 @@ func (s *TokenService) UpdateToken(ctx context.Context, token string, req *model
 	tokenInfo, err := s.repo.Update(ctx, token, req)
 	if err != nil {
 		return nil, err
+	}
+
+	// 🔥 处理配额更新（如果有）
+	if req.QuotaOperation != "" && s.quotaService != nil {
+		tokenInfo, err = s.quotaService.UpdateQuota(ctx, token, req.QuotaOperation, req.QuotaAmount)
+		if err != nil {
+			return nil, fmt.Errorf("更新配额失败: %w", err)
+		}
 	}
 
 	// 清除缓存（传递 Context）
@@ -265,6 +284,14 @@ func (s *TokenService) validateCreateRequest(req *model.CreateTokenRequest) erro
 		return fmt.Errorf("operation为set时，specific_date参数不能为空")
 	}
 
+	// 🔥 修复严重问题：count/hybrid类型必须提供total_quota
+	if req.QuotaType != "" && req.QuotaType != "time" {
+		// count或hybrid类型必须有配额
+		if req.TotalQuota == nil || *req.TotalQuota <= 0 {
+			return fmt.Errorf("quota_type为%s时，total_quota必须为正整数", req.QuotaType)
+		}
+	}
+
 	return nil
 }
 
@@ -276,6 +303,42 @@ func (s *TokenService) validateUpdateRequest(req *model.UpdateTokenRequest) erro
 
 	if req.Operation == "set" && req.SpecificDate == "" {
 		return fmt.Errorf("operation为set时，specific_date参数不能为空")
+	}
+
+	// 🔥 修复严重问题：更新为count/hybrid类型时必须提供配额
+	if req.QuotaType != "" && req.QuotaType != "time" {
+		// 如果改为count或hybrid类型，必须确保有配额操作
+		if req.QuotaOperation == "" {
+			return fmt.Errorf("更新quota_type为%s时，必须提供quota_operation", req.QuotaType)
+		}
+		
+		// 🔥 修复高优先级问题：根据不同的quota_operation进行不同的校验
+		switch req.QuotaOperation {
+		case "add", "set":
+			// add和set需要提供amount
+			if req.QuotaAmount == nil {
+				return fmt.Errorf("quota_operation为%s时，必须提供quota_amount", req.QuotaOperation)
+			}
+			// add必须为正数，set允许0（清空配额）
+			if req.QuotaOperation == "add" && *req.QuotaAmount <= 0 {
+				return fmt.Errorf("quota_operation为add时，quota_amount必须为正整数")
+			}
+			if *req.QuotaAmount < 0 {
+				return fmt.Errorf("quota_amount不能为负数")
+			}
+		case "reset":
+			// reset操作支持两种模式：
+			// 1. 不提供amount：重置为当前的total_quota（原有逻辑）
+			// 2. 提供amount：同时修改total_quota和remaining_quota为该值（新增功能）
+			if req.QuotaAmount != nil {
+				// 如果提供了amount，必须为非负数
+				if *req.QuotaAmount < 0 {
+					return fmt.Errorf("quota_amount不能为负数")
+				}
+			}
+		default:
+			return fmt.Errorf("不支持的quota_operation: %s", req.QuotaOperation)
+		}
 	}
 
 	return nil
@@ -299,4 +362,9 @@ func (s *TokenService) PingDB(ctx context.Context) error {
 // PingRedis 检查Redis连接
 func (s *TokenService) PingRedis(ctx context.Context) error {
 	return s.cache.PingRedis(ctx)
+}
+
+// GetQuotaLogs 查询配额日志
+func (s *TokenService) GetQuotaLogs(ctx context.Context, req *model.QuotaLogsQueryRequest) ([]*model.QuotaLog, int, error) {
+	return s.repo.GetQuotaLogs(ctx, req)
 }

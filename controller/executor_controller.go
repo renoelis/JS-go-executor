@@ -24,15 +24,17 @@ type ExecutorController struct {
 	config       *config.Config
 	tokenService *service.TokenService
 	statsService *service.StatsService // 🆕 统计服务
+	quotaService *service.QuotaService // 🔥 配额服务
 }
 
 // NewExecutorController 创建新的执行器控制器
-func NewExecutorController(executor *service.JSExecutor, cfg *config.Config, tokenService *service.TokenService, statsService *service.StatsService) *ExecutorController {
+func NewExecutorController(executor *service.JSExecutor, cfg *config.Config, tokenService *service.TokenService, statsService *service.StatsService, quotaService *service.QuotaService) *ExecutorController {
 	return &ExecutorController{
 		executor:     executor,
 		config:       cfg,
 		tokenService: tokenService,
 		statsService: statsService, // 🆕 统计服务
+		quotaService: quotaService, // 🔥 配额服务
 	}
 }
 
@@ -127,6 +129,53 @@ func (c *ExecutorController) Execute(ctx *gin.Context) {
 
 	// 🆕 解析模块使用情况
 	moduleInfo := utils.ParseModuleUsage(code)
+
+	// 🔥 【钩子1】预扣配额（调用即消耗）
+	token := ctx.GetString("token")
+	wsID := ctx.GetString("wsId")
+	email := ctx.GetString("userEmail")
+	
+	// 🔥 获取Token信息，检查是否需要配额检查
+	tokenInfoValue, exists := ctx.Get("tokenInfo")
+	needsQuotaCheck := false
+	if exists {
+		if tokenInfo, ok := tokenInfoValue.(*model.TokenInfo); ok {
+			needsQuotaCheck = tokenInfo.NeedsQuotaCheck()
+		} else {
+			// 🔥 类型断言失败，记录警告日志（修复问题12）
+			utils.Warn("tokenInfo类型断言失败",
+				zap.String("actual_type", fmt.Sprintf("%T", tokenInfoValue)))
+			// 安全起见，默认需要配额检查
+			needsQuotaCheck = true
+		}
+	}
+	
+	// 🔥 只对需要配额检查的Token（count/hybrid类型）进行配额扣减
+	if token != "" && c.quotaService != nil && needsQuotaCheck {
+		// 注意：这里先传递nil，执行后再更新日志
+		_, _, err := c.quotaService.ConsumeQuota(ctx.Request.Context(), token, wsID, email, requestID, true, nil, nil)
+		if err != nil {
+			utils.Warn("配额不足",
+				zap.String("token", utils.MaskToken(token)),
+				zap.String("request_id", requestID),
+				zap.Error(err))
+
+			ctx.JSON(429, model.ExecuteResponse{
+				Success: false,
+				Error: &model.ExecuteError{
+					Type:    "QuotaExceeded",
+					// 🔥 用户友好的错误提示，不暴露内部细节（修复问题9）
+					Message: "配额已用完，请联系管理员充值",
+				},
+				Timing: &model.ExecuteTiming{
+					TotalTime: time.Since(startTime).Milliseconds(),
+				},
+				Timestamp: utils.FormatTime(utils.Now()),
+				RequestID: requestID,
+			})
+			return
+		}
+	}
 
 	// 🆕 记录代码执行开始
 	utils.Debug("开始执行代码",
