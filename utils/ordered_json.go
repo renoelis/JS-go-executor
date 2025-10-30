@@ -86,6 +86,19 @@ func exportArrayWithOrder(obj *goja.Object) interface{} {
 
 // exportObjectWithOrder 导出对象，保持字段顺序
 func exportObjectWithOrder(obj *goja.Object) interface{} {
+	// 🔥 优先检查是否有 toJSON 方法（Node.js 兼容性）
+	// Buffer、Date 等内置对象都实现了 toJSON 方法
+	if toJSONVal := obj.Get("toJSON"); toJSONVal != nil && !goja.IsUndefined(toJSONVal) {
+		if toJSONFunc, ok := goja.AssertFunction(toJSONVal); ok {
+			// 调用 toJSON 方法获取序列化结果
+			result, err := toJSONFunc(obj)
+			if err == nil && result != nil && !goja.IsUndefined(result) {
+				// 递归处理 toJSON 的返回值（可能是对象或数组）
+				return ExportWithOrder(result)
+			}
+		}
+	}
+
 	// 获取对象的所有键（按插入顺序）
 	keys := obj.Keys()
 
@@ -160,7 +173,7 @@ func (om *OrderedMap) MarshalJSON() ([]byte, error) {
 	}
 
 	buf.WriteByte('}')
-	
+
 	// 🔥 重要：复制数据（buf 会被归还到池中复用）
 	result := make([]byte, buf.Len())
 	copy(result, buf.Bytes())

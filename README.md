@@ -107,6 +107,12 @@ ALLOWED_ORIGINS=https://your-frontend.com,https://admin.your-company.com
   - ✅ 哈希算法（MD5、SHA-1、SHA-256、SHA-384、SHA-512）
   - ✅ HMAC、随机数生成、UUID
   - ✅ 严格的安全验证（PSS 密钥大小检查等）
+- **SM-Crypto-V2**: 🔥 **中国国密算法库** (基于 @noble/curves)
+  - ✅ SM2 非对称加密/解密/签名/验签（国密椭圆曲线算法）
+  - ✅ SM3 哈希算法（国密摘要算法）
+  - ✅ SM4 对称加密/解密（国密分组密码算法）
+  - ✅ 密码学安全随机数生成（Go crypto/rand CSPRNG）
+  - ✅ 无外部依赖，更现代的实现（腾讯团队维护）
 - **Fetch API**: 完整的现代Fetch API实现，支持所有HTTP方法
 - **Axios**: 基于Fetch的axios兼容层(95%+ API兼容)，推荐用于文件操作
 
@@ -1309,7 +1315,57 @@ return {
 
 > 💡 **更多 Crypto 功能**: 查看 [NODEJS18_CRYPTO_COMPATIBILITY.md](NODEJS18_CRYPTO_COMPATIBILITY.md) 了解完整的 Node.js 18+ 兼容性说明、API 参考和安全建议。
 
-### 3. 使用Axios发送HTTP请求
+### 3. 使用国密算法（SM-Crypto-V2）
+```javascript
+const smCrypto = require('sm-crypto-v2');
+
+// SM2 密钥对生成
+const sm2KeyPair = smCrypto.sm2.generateKeyPair();
+const publicKey = sm2KeyPair.publicKey;   // 公钥 (04 开头的 130 字符十六进制)
+const privateKey = sm2KeyPair.privateKey; // 私钥 (64 字符十六进制)
+
+// SM2 加密/解密
+const plaintext = 'hello world';
+const encrypted = smCrypto.sm2.encrypt(plaintext, publicKey);
+const decrypted = smCrypto.sm2.decrypt(encrypted, privateKey);
+
+// SM2 签名/验签
+const message = 'message to sign';
+const signature = smCrypto.sm2.sign(message, privateKey);
+const isValid = smCrypto.sm2.verify(message, signature, publicKey);
+
+// SM3 哈希
+const hash = smCrypto.sm3('hello world');  // 44f0061e69fa6fdfc290c494654a05dc0c053da7e5c52b84ef93a9d67d3fff88
+
+// SM4 对称加密/解密
+const sm4Key = '0123456789abcdeffedcba9876543210';  // 32字符十六进制
+const sm4Plaintext = 'plaintext';
+const sm4Encrypted = smCrypto.sm4.encrypt(sm4Plaintext, sm4Key);
+const sm4Decrypted = smCrypto.sm4.decrypt(sm4Encrypted, sm4Key);
+
+return {
+  sm2: {
+    publicKey: publicKey.slice(0, 20) + '...',
+    privateKey: privateKey.slice(0, 16) + '...',
+    encrypted,
+    decrypted,
+    signatureValid: isValid
+  },
+  sm3: { hash },
+  sm4: {
+    encrypted: sm4Encrypted,
+    decrypted: sm4Decrypted
+  }
+};
+```
+
+> 💡 **国密优势**: 
+> - ✅ 符合中国密码管理局标准，满足合规要求
+> - ✅ 基于 @noble/curves 现代密码学库，性能优异
+> - ✅ 使用 Go crypto/rand CSPRNG，密码学安全保证
+> - ✅ 无外部依赖，腾讯团队维护
+
+### 4. 使用Axios发送HTTP请求
 ```javascript
 const axios = require('axios');
 

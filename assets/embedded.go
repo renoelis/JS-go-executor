@@ -42,3 +42,6 @@ var AceWorkerJavaScript string
 
 //go:embed codemirror/worker-json.js
 var AceWorkerJSON string
+
+//go:embed external-libs/sm-crypto-v2.js
+var SMCrypto string

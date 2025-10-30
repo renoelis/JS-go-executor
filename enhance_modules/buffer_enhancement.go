@@ -30,7 +30,7 @@ func decodeBase64Lenient(str string) ([]byte, error) {
 
 	// 🔥 修复：先检查是否有 padding
 	hasPadding := strings.Contains(str, "=")
-	
+
 	if hasPadding {
 		// 有 padding：使用 StdEncoding
 		decoded, err := base64.StdEncoding.DecodeString(str)
@@ -40,7 +40,7 @@ func decodeBase64Lenient(str string) ([]byte, error) {
 		// 如果失败，移除 padding 再试
 		str = strings.TrimRight(str, "=")
 	}
-	
+
 	// 无 padding 或移除 padding 后：使用 RawStdEncoding
 	return base64.RawStdEncoding.DecodeString(str)
 }
@@ -58,7 +58,7 @@ func decodeBase64URLLenient(str string) ([]byte, error) {
 
 	// 检查是否有 padding
 	hasPadding := strings.Contains(str, "=")
-	
+
 	if hasPadding {
 		// 有 padding：使用 URLEncoding
 		decoded, err := base64.URLEncoding.DecodeString(str)
@@ -68,7 +68,7 @@ func decodeBase64URLLenient(str string) ([]byte, error) {
 		// 如果失败，移除 padding 再试
 		str = strings.TrimRight(str, "=")
 	}
-	
+
 	// 无 padding 或移除 padding 后：使用 RawURLEncoding
 	return base64.RawURLEncoding.DecodeString(str)
 }
@@ -768,7 +768,7 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 
 		if len(call.Arguments) >= 2 && !goja.IsUndefined(call.Arguments[1]) {
 			arg1 := call.Arguments[1]
-			
+
 			// 🔥 修复：Node.js 只看类型，不看内容
 			// 如果是字符串类型 -> encoding；否则 -> offset
 			arg1Type := arg1.ExportType()
@@ -781,7 +781,7 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 
 				if len(call.Arguments) >= 3 && !goja.IsUndefined(call.Arguments[2]) {
 					arg2 := call.Arguments[2]
-					
+
 					// 第三个参数同理：字符串 -> encoding；否则 -> length
 					arg2Type := arg2.ExportType()
 					if arg2Type != nil && arg2Type.Kind().String() == "string" {
@@ -1589,7 +1589,7 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 		if len(call.Arguments) > 3 && !goja.IsUndefined(call.Arguments[3]) {
 			encoding = call.Arguments[3].String()
 		}
-		
+
 		// 🔥 修复：编码大小写不敏感
 		encoding = strings.ToLower(encoding)
 
@@ -1761,7 +1761,7 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 		searchVal := call.Arguments[0]
 		offset := int64(0)
 		enc := goja.Undefined()
-		
+
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
 			offset = call.Arguments[1].ToInteger()
 		}
@@ -3455,8 +3455,17 @@ func (be *BufferEnhancer) setupBigIntSupport(runtime *goja.Runtime) {
 
 			// 尝试解析为大整数
 			value = new(big.Int)
-			if _, ok := value.SetString(argStr, 10); !ok {
-				// 如果解析失败，尝试浮点数转换
+
+			// 🔥 支持十六进制字符串（0x 前缀）
+			if strings.HasPrefix(argStr, "0x") || strings.HasPrefix(argStr, "0X") {
+				// 去掉 0x 前缀，使用 base 16 解析
+				hexStr := argStr[2:]
+				if _, ok := value.SetString(hexStr, 16); !ok {
+					// 十六进制解析失败
+					value.SetInt64(0)
+				}
+			} else if _, ok := value.SetString(argStr, 10); !ok {
+				// 十进制解析失败，尝试浮点数转换
 				if floatVal := arg.ToFloat(); floatVal == floatVal { // 检查 NaN
 					value.SetInt64(int64(floatVal))
 				} else {

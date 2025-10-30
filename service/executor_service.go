@@ -304,6 +304,9 @@ func (e *JSExecutor) registerModules(cfg *config.Config) {
 	e.moduleRegistry.Register(enhance_modules.NewUuidEnhancer(assets.Uuid))
 	e.moduleRegistry.Register(enhance_modules.NewXLSXEnhancer(cfg))
 
+	// 🔥 国密算法模块（sm-crypto-v2: 支持 SM2/SM3/SM4）
+	e.moduleRegistry.Register(enhance_modules.NewSMCryptoEnhancer(assets.SMCrypto))
+
 	// 🔥 一次性注册所有模块到 require 系统
 	if err := e.moduleRegistry.RegisterAll(e.registry); err != nil {
 		utils.Fatal("模块注册失败", zap.Error(err))
@@ -515,6 +518,18 @@ func (e *JSExecutor) warmupModules() error {
 			precompile: func(m interface{}) error {
 				if enhancer, ok := m.(*enhance_modules.UuidEnhancer); ok {
 					return enhancer.PrecompileUuid()
+				}
+				return fmt.Errorf("invalid module type")
+			},
+		},
+		{
+			name: "sm-crypto-v2",
+			getModule: func() (interface{}, bool) {
+				return e.moduleRegistry.GetModule("sm-crypto-v2")
+			},
+			precompile: func(m interface{}) error {
+				if enhancer, ok := m.(*enhance_modules.SMCryptoEnhancer); ok {
+					return enhancer.PrecompileSMCrypto()
 				}
 				return fmt.Errorf("invalid module type")
 			},
