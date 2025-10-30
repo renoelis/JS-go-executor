@@ -214,6 +214,11 @@ services:
       - TEST_TOOL_EXAMPLE_URL=${TEST_TOOL_EXAMPLE_URL}     # Flow CodeBlock 代码示例
       - TEST_TOOL_AI_URL=${TEST_TOOL_AI_URL} # 轻翼AI：Flow CodeBlock 代码AI助手
       - TEST_TOOL_APPLY_URL=${TEST_TOOL_APPLY_URL}                          # 申请开通服务链接
+      
+      # ==================== 🎨 自定义Logo配置 ====================
+      # 优先级：CUSTOM_LOGO_URL（最高）> CUSTOM_LOGO_PATH > 默认Logo
+      - CUSTOM_LOGO_URL=${CUSTOM_LOGO_URL:-}              # 🎨 自定义Logo外部URL（如CDN链接）
+      - CUSTOM_LOGO_PATH=${CUSTOM_LOGO_PATH:-}            # 🎨 自定义Logo本地路径（容器内路径，如：/app/logos/your-logo.png）
     
     restart: unless-stopped
     
@@ -263,6 +268,11 @@ services:
     # ==================== 卷挂载 ====================
     volumes:
       - /etc/localtime:/etc/localtime:ro
+      
+      # 🎨 自定义Logo卷挂载（如果使用 CUSTOM_LOGO_PATH）
+      # 取消注释下面一行，将宿主机的 /data/logos 目录挂载到容器
+      # - /data/logos:/app/logos:ro
+      # 然后设置环境变量: CUSTOM_LOGO_PATH=/app/logos/your-logo.png
     
     # ==================== 标签 ====================
     labels:

@@ -634,9 +634,17 @@ func (c *ExecutorController) TestTool(ctx *gin.Context) {
 	// 从配置中获取测试工具配置
 	testToolCfg := c.config.TestTool
 
+	// 🔧 动态决定Logo图片URL
+	// 优先级：CUSTOM_LOGO_URL（外部URL）> /flow/assets/logo.png（本地文件）
+	logoImageUrl := "/flow/assets/logo.png" // 默认使用本地路由
+	if testToolCfg.CustomLogoUrl != "" {
+		logoImageUrl = testToolCfg.CustomLogoUrl // 使用自定义外部URL
+	}
+
 	ctx.HTML(http.StatusOK, "test-tool.html", gin.H{
 		"ApiUrl":           testToolCfg.ApiUrl,
 		"LogoUrl":          testToolCfg.LogoUrl,
+		"LogoImageUrl":     logoImageUrl, // 🔧 新增：动态Logo图片URL
 		"AiAssistantUrl":   testToolCfg.AiAssistantUrl,
 		"HelpDocUrl":       testToolCfg.HelpDocUrl,
 		"ApiDocUrl":        testToolCfg.ApiDocUrl,

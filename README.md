@@ -769,8 +769,17 @@ ENABLE_SSRF_PROTECTION=false
 | `TEST_TOOL_HELP_URL` | https://exiao.yuque.com/... | 帮助文档链接 |
 | `TEST_TOOL_APPLY_URL` | https://qingflow.com/... | 申请服务链接 |
 | `TEST_TOOL_EXAMPLE_URL` | https://exiao.yuque.com/... | 示例文档链接 |
+| `CUSTOM_LOGO_URL` | （空） | 🎨 自定义Logo外部URL（优先级最高） |
+| `CUSTOM_LOGO_PATH` | （空） | 🎨 自定义Logo本地路径（优先级次之） |
 
-**配置说明**：所有链接均可自定义
+**配置说明**：
+- 所有链接均可自定义
+- **自定义Logo**：支持动态配置，无需重新打包部署
+  - 优先级：`CUSTOM_LOGO_URL` > `CUSTOM_LOGO_PATH` > 默认Logo
+  - 外部URL示例：`CUSTOM_LOGO_URL=https://cdn.example.com/logo.png`
+  - 本地路径示例：`CUSTOM_LOGO_PATH=/data/logos/custom-logo.png`
+  - 图片要求：支持PNG/JPG/SVG，建议高度70px左右
+  - 修改后重启服务即生效，无需重新打包
 
 ### 推荐配置场景
 

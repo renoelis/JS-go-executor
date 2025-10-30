@@ -193,6 +193,8 @@ type XLSXConfig struct {
 type TestToolConfig struct {
 	ApiUrl           string // API 服务地址
 	LogoUrl          string // Logo 点击跳转链接
+	CustomLogoUrl    string // 🔧 自定义Logo URL（优先级最高，支持外部CDN）
+	CustomLogoPath   string // 🔧 自定义Logo本地路径（优先级次之，支持本地文件）
 	AiAssistantUrl   string // AI 助手链接
 	HelpDocUrl       string // 帮助文档链接
 	ApiDocUrl        string // API 文档链接
@@ -543,6 +545,8 @@ func LoadConfig() *Config {
 	cfg.TestTool = TestToolConfig{
 		ApiUrl:           getEnvString("TEST_TOOL_API_URL", "http://localhost:3002"),
 		LogoUrl:          getEnvString("TEST_TOOL_LOGO_URL", "https://qingflow.com/"),
+		CustomLogoUrl:    getEnvString("CUSTOM_LOGO_URL", ""),    // 🔧 自定义Logo URL（优先级最高）
+		CustomLogoPath:   getEnvString("CUSTOM_LOGO_PATH", ""),   // 🔧 自定义Logo路径（优先级次之）
 		AiAssistantUrl:   getEnvString("TEST_TOOL_AI_URL", ""),
 		HelpDocUrl:       getEnvString("TEST_TOOL_HELP_URL", ""),
 		ApiDocUrl:        getEnvString("TEST_TOOL_API_DOC_URL", ""),

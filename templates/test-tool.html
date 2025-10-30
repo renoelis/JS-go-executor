@@ -185,6 +185,24 @@
             gap: 6px;
         }
 
+        /* JS代码区按钮组 - 紧凑样式 */
+        .code-action-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 15px;
+            flex-wrap: wrap;
+        }
+
+        .code-action-group .btn {
+            flex: 1 1 auto;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            gap: 5px;
+            white-space: nowrap;
+            min-width: fit-content;
+        }
+
         .btn-primary {
             background: linear-gradient(135deg, #1976d2 0%, #42a5f5 100%);
             color: white;
@@ -232,13 +250,15 @@
         }
 
         .btn-warning {
-            background: #ffc107;
-            color: #212529;
+            background: linear-gradient(135deg, #ff9800 0%, #ffc107 100%);
+            color: white;
+            box-shadow: 0 2px 6px rgba(255, 152, 0, 0.25);
         }
 
         .btn-warning:hover {
-            background: #e0a800;
+            background: linear-gradient(135deg, #f57c00 0%, #ff9800 100%);
             transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(255, 152, 0, 0.35);
         }
 
         .btn-danger {
@@ -1097,7 +1117,7 @@
         <!-- Header -->
         <div class="header">
             <a href="{{.LogoUrl}}" target="_blank" class="header-logo-link" title="访问轻流官网">
-                <img src="/flow/assets/logo.png" alt="轻流 Logo" class="header-logo">
+                <img src="{{.LogoImageUrl}}" alt="轻流 Logo" class="header-logo">
             </a>
             <h1> Flow-CodeBlock 代码执行测试工具</h1>
             <p>支持 数据处理、异步操作、HTTP 请求、加密等功能</p>
@@ -1290,12 +1310,15 @@ return {
 };</textarea>
                 </div>
 
-                <div class="button-group">
+                <div class="button-group code-action-group">
                     <button class="btn btn-danger" onclick="clearCode()">
                         🗑️ 清空代码
                     </button>
                     <button class="btn btn-info" onclick="encodeToBase64()">
                         🔒 Base64编码并复制
+                    </button>
+                    <button class="btn btn-warning" onclick="decodeFromBase64()">
+                        🔓 Base64解码
                     </button>
                     <button class="btn btn-success" onclick="executeCode()" id="runBtn">
                         ▶️ 运行代码
@@ -1390,6 +1413,159 @@ return {
             } catch (error) {
                 showAlertInArea('jsAlertBox', '编码失败: ' + error.message, 'error');
             }
+        }
+
+        // ==================== Base64 解码 (策略C: 混合模式) ====================
+        async function decodeFromBase64() {
+            let base64String = '';
+            let needManualInput = false;
+            
+            // 第一步: 尝试从剪贴板读取
+            try {
+                if (navigator.clipboard && navigator.clipboard.readText) {
+                    base64String = await navigator.clipboard.readText();
+                    
+                    // 检查剪贴板内容是否为有效的 Base64
+                    if (base64String && base64String.trim()) {
+                        base64String = base64String.trim();
+                        
+                        // 验证是否为合法的 Base64 格式
+                        if (!isValidBase64(base64String)) {
+                            needManualInput = true;
+                        }
+                    } else {
+                        needManualInput = true;
+                    }
+                } else {
+                    // 浏览器不支持剪贴板 API
+                    needManualInput = true;
+                }
+            } catch (error) {
+                // 剪贴板权限被拒绝或其他错误
+                needManualInput = true;
+            }
+            
+            // 第二步: 如果剪贴板不可用或内容无效,弹出输入框
+            if (needManualInput) {
+                showBase64InputModal();
+                return;
+            }
+            
+            // 第三步: 直接解码剪贴板中的 Base64
+            performBase64Decode(base64String);
+        }
+        
+        // 验证 Base64 格式
+        function isValidBase64(str) {
+            if (!str || typeof str !== 'string') {
+                return false;
+            }
+            
+            // 移除可能的空白字符
+            str = str.replace(/\s/g, '');
+            
+            // Base64 字符集检查 (包括 padding =)
+            const base64Regex = /^[A-Za-z0-9+\/]*={0,2}$/;
+            if (!base64Regex.test(str)) {
+                return false;
+            }
+            
+            // 长度必须是 4 的倍数
+            if (str.length % 4 !== 0) {
+                return false;
+            }
+            
+            return true;
+        }
+        
+        // 执行 Base64 解码
+        function performBase64Decode(base64String) {
+            try {
+                // 移除空白字符
+                base64String = base64String.replace(/\s/g, '');
+                
+                // Base64 解码
+                const binaryString = atob(base64String);
+                
+                // 转换为 UTF-8
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                
+                const decoder = new TextDecoder('utf-8');
+                const decodedCode = decoder.decode(bytes);
+                
+                // 更新到代码编辑器
+                if (mainEditor) {
+                    mainEditor.setValue(decodedCode, -1);
+                }
+                document.getElementById('jsCode').value = decodedCode;
+                
+                // 显示成功提示
+                showAlertInArea('jsAlertBox', 
+                    `✅ Base64 解码成功！\nBase64 长度: ${base64String.length}, 解码后字符数: ${decodedCode.length}`, 
+                    'success'
+                );
+                
+                // 关闭弹窗(如果是从弹窗触发的)
+                closeBase64InputModal();
+                
+            } catch (error) {
+                showAlertInArea('jsAlertBox', 
+                    `❌ Base64 解码失败: ${error.message}\n请确保输入的是有效的 Base64 编码字符串`, 
+                    'error'
+                );
+            }
+        }
+        
+        // 显示 Base64 输入弹窗
+        function showBase64InputModal() {
+            const modal = document.getElementById('base64InputModal');
+            const textarea = document.getElementById('base64Input');
+            const errorMsg = document.getElementById('base64InputError');
+            
+            // 清空之前的内容
+            textarea.value = '';
+            errorMsg.style.display = 'none';
+            
+            // 显示弹窗
+            modal.classList.add('show');
+            
+            // 聚焦到输入框
+            setTimeout(() => textarea.focus(), 300);
+        }
+        
+        // 关闭 Base64 输入弹窗
+        function closeBase64InputModal() {
+            const modal = document.getElementById('base64InputModal');
+            modal.classList.remove('show');
+        }
+        
+        // 从弹窗确认解码
+        function confirmBase64Decode() {
+            const textarea = document.getElementById('base64Input');
+            const errorMsg = document.getElementById('base64InputError');
+            const base64String = textarea.value.trim();
+            
+            // 验证输入
+            if (!base64String) {
+                errorMsg.textContent = '⚠️ 请输入 Base64 编码的内容';
+                errorMsg.style.display = 'block';
+                return;
+            }
+            
+            if (!isValidBase64(base64String)) {
+                errorMsg.textContent = '❌ 格式错误，请输入有效的 Base64 字符串';
+                errorMsg.style.display = 'block';
+                return;
+            }
+            
+            // 隐藏错误提示
+            errorMsg.style.display = 'none';
+            
+            // 执行解码
+            performBase64Decode(base64String);
         }
 
         // 降级复制方案（兼容旧浏览器）
@@ -3247,5 +3423,35 @@ return readExcelFromUrl();`
             }
         }
     </script>
+
+    <!-- Base64 解码输入弹窗 -->
+    <div id="base64InputModal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <span>🔓 Base64 解码</span>
+                <button class="modal-close" onclick="closeBase64InputModal()">&times;</button>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">请粘贴 Base64 编码的代码:</label>
+                <textarea 
+                    id="base64Input" 
+                    class="form-input" 
+                    placeholder="粘贴 Base64 字符串到这里...\n例如: Y29uc29sZS5sb2coJ0hlbGxvIFdvcmxkJyk7"
+                    style="min-height: 200px; font-family: 'Courier New', monospace;"
+                ></textarea>
+                <div id="base64InputError" style="display: none; color: #dc3545; font-size: 13px; margin-top: 8px; font-weight: 500;"></div>
+            </div>
+            
+            <div class="button-group">
+                <button class="btn btn-secondary" onclick="closeBase64InputModal()">
+                    ❌ 取消
+                </button>
+                <button class="btn btn-success" onclick="confirmBase64Decode()">
+                    ✅ 确认解码
+                </button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

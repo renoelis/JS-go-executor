@@ -146,8 +146,15 @@ func SetupRouter(
 			c.Header("Content-Type", "application/javascript; charset=utf-8")
 			c.String(200, assets.AceWorkerJSON)
 		})
-		// 🆕 Logo 图片路由
+		// 🆕 Logo 图片路由（支持动态配置）
+		// 优先级：CUSTOM_LOGO_PATH > 默认本地文件
 		flowGroup.GET("/assets/logo.png", func(c *gin.Context) {
+			// 检查是否配置了自定义本地Logo路径
+			if customLogoPath := cfg.TestTool.CustomLogoPath; customLogoPath != "" {
+				c.File(customLogoPath)
+				return
+			}
+			// 使用默认Logo
 			c.File("assets/elements/LOGO.png")
 		})
 
