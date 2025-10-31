@@ -528,10 +528,8 @@ func (e *JSExecutor) warmupModules() error {
 				return e.moduleRegistry.GetModule("sm-crypto-v2")
 			},
 			precompile: func(m interface{}) error {
-				if enhancer, ok := m.(*enhance_modules.SMCryptoEnhancer); ok {
-					return enhancer.PrecompileSMCrypto()
-				}
-				return fmt.Errorf("invalid module type")
+				// 🔥 Go 原生实现，无需预编译
+				return nil
 			},
 		},
 	}
@@ -757,7 +755,7 @@ func (e *JSExecutor) setupRuntime(runtime *goja.Runtime) error {
 	// 注意：我们无法完全禁用 Function（库需要它），但可以禁用 constructor 链攻击
 	runtime.Set("eval", goja.Undefined())
 	// runtime.Set("Function", goja.Undefined())  // 无法禁用，库需要
-	runtime.Set("globalThis", goja.Undefined())
+	//runtime.Set("globalThis", goja.Undefined()) // 不禁用了，仅关键词识别
 	runtime.Set("window", goja.Undefined())
 	runtime.Set("self", goja.Undefined())
 
@@ -853,6 +851,7 @@ func (e *JSExecutor) setupGlobalObjects(runtime *goja.Runtime) {
 	runtime.Set("decodeURIComponent", runtime.Get("decodeURIComponent"))
 
 	e.registerBase64Functions(runtime)
+	e.registerTextEncoders(runtime)
 }
 
 // setupGlobalObjectsForEventLoop 为 EventLoop 设置全局对象
@@ -883,6 +882,106 @@ func (e *JSExecutor) registerBase64Functions(runtime *goja.Runtime) {
 		}
 		return runtime.ToValue(string(decoded))
 	})
+}
+
+// registerTextEncoders 注册 TextEncoder 和 TextDecoder（Node.js 兼容）
+func (e *JSExecutor) registerTextEncoders(runtime *goja.Runtime) {
+	// TextEncoder 构造函数（纯 Go 实现）
+	textEncoderConstructor := func(call goja.ConstructorCall) *goja.Object {
+		obj := call.This
+		obj.Set("encoding", "utf-8")
+
+		// encode 方法
+		obj.Set("encode", func(call goja.FunctionCall) goja.Value {
+			var input string
+			if len(call.Arguments) > 0 && !goja.IsUndefined(call.Argument(0)) && !goja.IsNull(call.Argument(0)) {
+				input = call.Argument(0).String()
+			}
+
+			// UTF-8 编码
+			bytes := []byte(input)
+
+			// 创建普通数组
+			arr := runtime.NewArray()
+			for i, b := range bytes {
+				arr.Set(fmt.Sprintf("%d", i), runtime.ToValue(int(b)))
+			}
+
+			// 使用 Uint8Array 构造函数
+			uint8ArrayCtor := runtime.Get("Uint8Array")
+			if constructor, ok := goja.AssertFunction(uint8ArrayCtor); ok {
+				result, err := constructor(goja.Null(), arr)
+				if err == nil {
+					return result
+				}
+			}
+
+			// 降级：返回普通数组
+			return arr
+		})
+
+		return nil
+	}
+
+	// TextDecoder 构造函数（纯 Go 实现）
+	textDecoderConstructor := func(call goja.ConstructorCall) *goja.Object {
+		obj := call.This
+		encoding := "utf-8"
+		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Argument(0)) && !goja.IsNull(call.Argument(0)) {
+			encoding = call.Argument(0).String()
+		}
+		obj.Set("encoding", encoding)
+
+		// decode 方法
+		obj.Set("decode", func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 {
+				return runtime.ToValue("")
+			}
+
+			input := call.Argument(0)
+			if goja.IsUndefined(input) || goja.IsNull(input) {
+				return runtime.ToValue("")
+			}
+
+			// 尝试提取字节数组
+			var bytes []byte
+
+			// 方式1: 尝试作为 ArrayBuffer
+			if ab, ok := input.Export().(*goja.ArrayBuffer); ok {
+				bytes = ab.Bytes()
+			} else if obj := input.ToObject(runtime); obj != nil {
+				// 方式2: 尝试获取 buffer 属性（TypedArray）
+				if buffer := obj.Get("buffer"); !goja.IsUndefined(buffer) && !goja.IsNull(buffer) {
+					if ab, ok := buffer.Export().(*goja.ArrayBuffer); ok {
+						bytes = ab.Bytes()
+					}
+				}
+
+				// 方式3: 作为类数组对象处理
+				if len(bytes) == 0 {
+					if lengthVal := obj.Get("length"); !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
+						length := int(lengthVal.ToInteger())
+						bytes = make([]byte, length)
+						for i := 0; i < length; i++ {
+							val := obj.Get(fmt.Sprintf("%d", i))
+							if !goja.IsUndefined(val) && !goja.IsNull(val) {
+								bytes[i] = byte(val.ToInteger())
+							}
+						}
+					}
+				}
+			}
+
+			// UTF-8 解码
+			return runtime.ToValue(string(bytes))
+		})
+
+		return nil
+	}
+
+	// 注册到全局作用域
+	runtime.Set("TextEncoder", textEncoderConstructor)
+	runtime.Set("TextDecoder", textDecoderConstructor)
 }
 
 // setupSecurityRestrictions 设置安全限制

@@ -1,5 +1,6 @@
 # Flow-CodeBlock Go版本 Dockerfile
-FROM golang:1.24-alpine AS builder
+
+FROM golang:1.25.3-alpine AS builder
 
 # 设置工作目录
 WORKDIR /app

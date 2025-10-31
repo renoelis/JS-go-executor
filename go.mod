@@ -1,8 +1,8 @@
 module flow-codeblock-go
 
-go 1.24.0
+go 1.25.0
 
-toolchain go1.24.3
+toolchain go1.25.3
 
 require (
 	github.com/dop251/goja v0.0.0-20250630131328-58d95d85e994
@@ -19,6 +19,8 @@ require (
 	golang.org/x/sync v0.17.0
 	golang.org/x/time v0.13.0
 )
+
+require github.com/emmansun/gmsm v0.34.1 // indirect
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect

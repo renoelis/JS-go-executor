@@ -595,12 +595,13 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 			}
 
 			e.registerBase64Functions(vm)
+			e.registerTextEncoders(vm) // ✅ 注册 TextEncoder/TextDecoder
 			e.setupGlobalObjectsForEventLoop(vm)
 
 			// 🔒 步骤2: 禁用危险功能和 constructor
 			vm.Set("eval", goja.Undefined())
 			// vm.Set("Function", goja.Undefined())  // 无法禁用，库需要
-			vm.Set("globalThis", goja.Undefined())
+			//vm.Set("globalThis", goja.Undefined()) // 不禁用了，仅关键词识别
 			vm.Set("window", goja.Undefined())
 			vm.Set("self", goja.Undefined())
 
