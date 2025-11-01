@@ -19,11 +19,15 @@ var Qs string
 //go:embed external-libs/lodash.min.js
 var Lodash string
 
-//go:embed external-libs/pinyin.min.js
-var Pinyin string
+// Pinyin 已移除：现已使用 Go 原生实现（enhance_modules/pinyin）
+// 不再需要嵌入 JavaScript 代码，性能和功能都更强大
+var Pinyin string = "" // 保留变量以保持接口兼容性
 
 //go:embed external-libs/uuid.min.js
 var Uuid string
+
+//go:embed external-libs/fast-xml-parser.min.js
+var FastXMLParser string
 
 //go:embed codemirror/ace.js
 var AceEditor string

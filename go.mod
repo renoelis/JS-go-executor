@@ -7,6 +7,7 @@ toolchain go1.25.3
 require (
 	github.com/dop251/goja v0.0.0-20250630131328-58d95d85e994
 	github.com/dop251/goja_nodejs v0.0.0-20250409162600-f7acab6894b0
+	github.com/emmansun/gmsm v0.34.1
 	github.com/gin-contrib/pprof v1.5.3
 	github.com/gin-gonic/gin v1.10.0
 	github.com/go-sql-driver/mysql v1.8.1
@@ -19,8 +20,6 @@ require (
 	golang.org/x/sync v0.17.0
 	golang.org/x/time v0.13.0
 )
-
-require github.com/emmansun/gmsm v0.34.1 // indirect
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect

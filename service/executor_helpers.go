@@ -383,6 +383,19 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 	runtime.Set("__executionId", executionId)
 	runtime.Set("__startTime", time.Now().UnixNano()/1e6)
 
+	// 🔥 预处理用户代码：移除 Shebang（#!/usr/bin/env node）
+	// Goja 不会自动忽略 Shebang，需要手动移除以避免语法错误
+	processedCode := code
+	if strings.HasPrefix(code, "#!") {
+		// 移除第一行（Shebang 行）
+		if idx := strings.Index(code, "\n"); idx != -1 {
+			processedCode = code[idx+1:]
+		} else {
+			// 整个文件只有 Shebang 一行，移除后变为空
+			processedCode = ""
+		}
+	}
+
 	// 包装用户代码：启用严格模式、隔离作用域、统一错误处理
 	wrappedCode := fmt.Sprintf(`
 		(function() {
@@ -393,7 +406,7 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 				throw new Error('代码执行错误: ' + (error.message || error));
 			}
 		})()
-	`, code)
+	`, processedCode)
 
 	program, err := e.getCompiledCode(wrappedCode)
 	if err != nil {
@@ -618,6 +631,19 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 			vm.Set("__finalResult", goja.Undefined())
 			vm.Set("__finalError", goja.Undefined())
 
+			// 🔥 预处理用户代码：移除 Shebang（#!/usr/bin/env node）
+			// Goja 不会自动忽略 Shebang，需要手动移除以避免语法错误
+			processedCode := code
+			if strings.HasPrefix(code, "#!") {
+				// 移除第一行（Shebang 行）
+				if idx := strings.Index(code, "\n"); idx != -1 {
+					processedCode = code[idx+1:]
+				} else {
+					// 整个文件只有 Shebang 一行，移除后变为空
+					processedCode = ""
+				}
+			}
+
 			// 包装用户代码以支持 async/await：
 			//   1. 'use strict'：启用严格模式
 			//   2. Promise.resolve()：将结果包装为Promise，确保EventLoop等待
@@ -656,7 +682,7 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 						return Promise.resolve(undefined);
 					}
 				})()
-			`, code)
+			`, processedCode)
 
 			_, err := vm.RunString(wrappedCode)
 			if err != nil {
