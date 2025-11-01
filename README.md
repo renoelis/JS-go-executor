@@ -122,7 +122,7 @@ ALLOWED_ORIGINS=https://your-frontend.com,https://admin.your-company.com
 - **QS**: 查询字符串解析和序列化（预加载）
 - **UUID**: UUID生成(v1/v4)（按需加载）
 - **Pinyin**: 🔥 **Go 原生实现** - 中文拼音转换（100% 兼容 JS 原生 API）
-  - ✅ 完整实现 pinyin-pro 4.0+ 所有功能
+  - ✅ 完整实现 [hotoo/pinyin](https://github.com/hotoo/pinyin) v4 所有功能
   - ✅ 7种拼音风格（TONE/TONE2/TO3NE/NORMAL/INITIALS/FIRST_LETTER/PASSPORT）
   - ✅ 多音字支持（heteronym）、分词支持（segment）、姓氏模式（surname）
   - ✅ 41,244 个汉字字典 + 41,140 个词组字典
@@ -1615,7 +1615,7 @@ return {
 ```
 
 **Pinyin 模块特性**:
-- ✅ **100% 兼容 JS API**: 与 pinyin-pro 4.0+ 完全兼容
+- ✅ **100% 兼容 JS API**: 与 [hotoo/pinyin](https://github.com/hotoo/pinyin) v4 完全兼容
 - ✅ **7种拼音风格**: TONE（默认）、TONE2、TO3NE、NORMAL、INITIALS、FIRST_LETTER、PASSPORT
 - ✅ **多音字支持**: heteronym 选项返回所有可能读音
 - ✅ **智能分词**: segment 选项自动选择正确的多音字读音
@@ -1628,7 +1628,7 @@ return {
 
 | 特性 | pinyin.min.js (JS) | pinyin (Go 原生) | 说明 |
 |------|-------------------|------------------|------|
-| API 兼容性 | ✅ 100% | ✅ 100% | 完全兼容 pinyin-pro 4.0+ API |
+| API 兼容性 | ✅ 100% | ✅ 100% | 完全兼容 [hotoo/pinyin](https://github.com/hotoo/pinyin) v4 API |
 | 7种拼音风格 | ✅ | ✅ | TONE/TONE2/TO3NE/NORMAL/INITIALS/FIRST_LETTER/PASSPORT |
 | 多音字支持 | ✅ | ✅ | heteronym 选项 |
 | 分词支持 | ✅ (Intl.Segmenter) | ✅ (gse 分词器) | Go 版使用更强大的 gse 分词器 |
