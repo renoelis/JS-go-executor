@@ -123,3 +123,4 @@ scripts/add_performance_indexes.sql
 tools
 test_*.go
 scripts/minify-html.js
+temp_test

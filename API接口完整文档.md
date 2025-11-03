@@ -370,7 +370,7 @@ curl -X POST http://localhost:3002/flow/codeblock \
 - ✅ fetch API（HTTP请求）
 - ✅ axios（HTTP客户端）
 - ✅ lodash（工具库）
-- ✅ date-fns（日期处理）
+- ✅ dayjs（日期处理）
 - ✅ crypto-js（加密）
 - ✅ Buffer（二进制处理）
 - ✅ FormData（表单数据）
@@ -847,7 +847,7 @@ Authorization: Bearer {ADMIN_TOKEN}
     "modules": [
       "crypto-js",
       "axios",
-      "date-fns",
+      "dayjs",
       "lodash",
       "qs",
       "pinyin",

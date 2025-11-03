@@ -633,16 +633,16 @@ return {
   decrypted: decrypted,
   match: input.name === decrypted
 };`,
-                datefns: `// 日期处理示例（使用 date-fns 库）
-const { format, addDays, differenceInDays } = require('date-fns');
+                datefns: `// 日期处理示例（使用 dayjs 库）
+const dayjs = require('dayjs');
 
-const now = new Date();
-const future = addDays(now, 7);
+const now = dayjs();
+const future = now.add(7, 'day');
 
 return {
-  current: format(now, 'yyyy-MM-dd HH:mm:ss'),
-  future: format(future, 'yyyy-MM-dd HH:mm:ss'),
-  daysUntil: differenceInDays(future, now)
+  current: now.format('YYYY-MM-DD HH:mm:ss'),
+  future: future.format('YYYY-MM-DD HH:mm:ss'),
+  daysUntil: future.diff(now, 'day')
 };`
             };
 
@@ -878,53 +878,53 @@ return {
                         birthdate: "1990-05-20",
                         meetingDate: "2024-12-25"
                     },
-                    code: `// 日期处理示例（使用 date-fns）
-const dateFns = require('date-fns');
+                    code: `// 日期处理示例（使用 dayjs）
+const dayjs = require('dayjs');
 
 // 解析日期
-const start = new Date(input.startDate);
-const end = new Date(input.endDate);
-const birth = new Date(input.birthdate);
-const meeting = new Date(input.meetingDate);
-const now = new Date();
+const start = dayjs(input.startDate);
+const end = dayjs(input.endDate);
+const birth = dayjs(input.birthdate);
+const meeting = dayjs(input.meetingDate);
+const now = dayjs();
 
 // 1. 计算日期差异
-const daysDiff = dateFns.differenceInDays(end, start);
-const monthsDiff = dateFns.differenceInMonths(end, start);
-const yearsDiff = dateFns.differenceInYears(end, start);
-const age = dateFns.differenceInYears(now, birth);
-const daysToMeeting = dateFns.differenceInDays(meeting, now);
+const daysDiff = end.diff(start, 'day');
+const monthsDiff = end.diff(start, 'month');
+const yearsDiff = end.diff(start, 'year');
+const age = now.diff(birth, 'year');
+const daysToMeeting = meeting.diff(now, 'day');
 
 // 2. 格式化日期（使用标准格式）
-const formattedStart = dateFns.format(start, 'yyyy-MM-dd');
-const formattedEnd = dateFns.format(end, 'yyyy-MM-dd HH:mm:ss');
-const formattedBirth = dateFns.format(birth, 'yyyy/MM/dd');
-const formattedNow = dateFns.format(now, 'yyyy-MM-dd HH:mm:ss');
+const formattedStart = start.format('YYYY-MM-DD');
+const formattedEnd = end.format('YYYY-MM-DD HH:mm:ss');
+const formattedBirth = birth.format('YYYY/MM/DD');
+const formattedNow = now.format('YYYY-MM-DD HH:mm:ss');
 
 // 3. 日期操作（加减）
-const nextWeek = dateFns.addWeeks(now, 1);
-const lastMonth = dateFns.subMonths(now, 1);
-const next30Days = dateFns.addDays(now, 30);
-const last7Days = dateFns.subDays(now, 7);
+const nextWeek = now.add(1, 'week');
+const lastMonth = now.subtract(1, 'month');
+const next30Days = now.add(30, 'day');
+const last7Days = now.subtract(7, 'day');
 
 // 4. 获取日期的起始和结束
-const startOfMonth = dateFns.startOfMonth(now);
-const endOfMonth = dateFns.endOfMonth(now);
-const startOfYear = dateFns.startOfYear(now);
-const endOfYear = dateFns.endOfYear(now);
+const startOfMonth = now.startOf('month');
+const endOfMonth = now.endOf('month');
+const startOfYear = now.startOf('year');
+const endOfYear = now.endOf('year');
 
 // 5. 日期比较
-const isAfter = dateFns.isAfter(end, start);
-const isBefore = dateFns.isBefore(start, end);
-const isWeekend = dateFns.isWeekend(now);
-const isFuture = dateFns.isFuture(meeting);
-const isPast = dateFns.isPast(start);
+const isAfter = end.isAfter(start);
+const isBefore = start.isBefore(end);
+const isWeekend = now.day() === 0 || now.day() === 6;
+const isFuture = meeting.isAfter(now);
+const isPast = start.isBefore(now);
 
 // 6. 日期判断
-const isToday = dateFns.isToday(now);
-const isSameDay = dateFns.isSameDay(start, end);
-const isSameMonth = dateFns.isSameMonth(start, end);
-const isSameYear = dateFns.isSameYear(start, end);
+const isToday = now.isSame(now, 'day');
+const isSameDay = start.isSame(end, 'day');
+const isSameMonth = start.isSame(end, 'month');
+const isSameYear = start.isSame(end, 'year');
 
 return {
   inputDates: {
@@ -947,14 +947,14 @@ return {
     now: formattedNow
   },
   operations: {
-    nextWeek: dateFns.format(nextWeek, 'yyyy-MM-dd'),
-    lastMonth: dateFns.format(lastMonth, 'yyyy-MM-dd'),
-    next30Days: dateFns.format(next30Days, 'yyyy-MM-dd'),
-    last7Days: dateFns.format(last7Days, 'yyyy-MM-dd'),
-    startOfMonth: dateFns.format(startOfMonth, 'yyyy-MM-dd'),
-    endOfMonth: dateFns.format(endOfMonth, 'yyyy-MM-dd'),
-    startOfYear: dateFns.format(startOfYear, 'yyyy-MM-dd'),
-    endOfYear: dateFns.format(endOfYear, 'yyyy-MM-dd')
+    nextWeek: nextWeek.format('YYYY-MM-DD'),
+    lastMonth: lastMonth.format('YYYY-MM-DD'),
+    next30Days: next30Days.format('YYYY-MM-DD'),
+    last7Days: last7Days.format('YYYY-MM-DD'),
+    startOfMonth: startOfMonth.format('YYYY-MM-DD'),
+    endOfMonth: endOfMonth.format('YYYY-MM-DD'),
+    startOfYear: startOfYear.format('YYYY-MM-DD'),
+    endOfYear: endOfYear.format('YYYY-MM-DD')
   },
   comparisons: {
     endIsAfterStart: isAfter,

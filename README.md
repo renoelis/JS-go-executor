@@ -37,7 +37,7 @@
 - **危险模块禁用**: fs、path、child_process等模块被拦截
 - **代码解析级检查**: 在执行前检测危险模式和不支持语法
 - **多层沙箱防护**: 5层防护机制（Function.constructor 删除、Function 冻结、Reflect/Proxy 禁用）
-- **白名单策略**: 保留必要的 prototype.constructor 以支持库功能（lodash, date-fns 等）
+- **白名单策略**: 保留必要的 prototype.constructor 以支持库功能（lodash, dayjs 等）
 - **静态代码分析**: 检测用户代码中的 constructor 访问，防止恶意利用
 - **无限循环检测 (v2.4+)**: 智能检测 while(true)/while(1)/for(;;)/do-while，排除注释和字符串中的误判
 - **资源限制**: 代码长度、执行时间、输入输出大小限制
@@ -130,7 +130,7 @@ ALLOWED_ORIGINS=https://your-frontend.com,https://admin.your-company.com
 - **Axios**: 基于Fetch的axios兼容层(95%+ API兼容)，推荐用于文件操作
 
 #### 工具库
-- **Date-fns**: 完整的date-fns库支持，时间处理利器（预加载）
+- **Dayjs**: 轻量级日期处理库，API 简洁优雅（预加载）
 - **Lodash**: 工具函数库，数据处理必备（按需加载）
 - **QS**: 查询字符串解析和序列化（预加载）
 - **UUID**: UUID生成(v1/v4)（按需加载）
@@ -244,7 +244,7 @@ TEST_TOOL_EXAMPLE_URL=https://exiao.yuque.com/rlf3k1/oanb79/tlty7ic7szfr2v7v?sin
 | Fetch API | 现代 Fetch API 使用 | 标准 Web 请求 |
 | Lodash | 数据分组和排序 | 复杂数据处理 |
 | 数据加密 | SHA256/HMAC 加密 | 安全功能 |
-| 日期处理 | Date-fns 日期格式化 | 时间处理 |
+| 日期处理 | Dayjs 日期格式化 | 时间处理 |
 | XLSX 读取 | 从 URL 读取 Excel | 表格数据处理 |
 
 #### 使用流程
@@ -275,7 +275,7 @@ TEST_TOOL_EXAMPLE_URL=https://exiao.yuque.com/rlf3k1/oanb79/tlty7ic7szfr2v7v?sin
 
 **优化策略**:
 - ✅ **共享编译缓存**: 所有模块使用 `sync.Once`，只编译一次
-- ✅ **精简预加载**: 只预加载常用小库（date-fns, qs, crypto-js）
+- ✅ **精简预加载**: 只预加载常用小库（dayjs, qs, crypto-js）
 - ✅ **按需加载**: 大库和不常用库按需加载（lodash, uuid）
 - ✅ **移除 pinyin**: 节省 1.6GB (20 Runtime) 或 16GB (200 Runtime)
 
@@ -333,7 +333,7 @@ Flow-codeblock_goja/
 │   ├── crypto_enhancement.go     # Crypto双模块实现
 │   ├── fetch_enhancement.go      # Fetch API实现
 │   ├── axios_enhancement.go      # Axios兼容层
-│   ├── datefns_enhancement.go    # Date-fns支持
+│   ├── dayjs_enhancement.go      # Dayjs支持
 │   ├── lodash_enhancement.go     # Lodash工具库
 │   ├── qs_enhancement.go         # QS查询字符串
 │   ├── pinyin_enhancement.go     # 🔥 Pinyin 拼音转换（Go 原生实现）
@@ -566,7 +566,7 @@ go run cmd/main.go
   },
   "warmup": {
     "status": "completed",
-    "modules": ["crypto-js", "axios", "date-fns", "lodash", "qs", "uuid"],
+    "modules": ["crypto-js", "axios", "dayjs", "lodash", "qs", "uuid"],
     "totalModules": 6,
     "successCount": 6,
     "elapsed": "125ms",
@@ -974,7 +974,7 @@ go run load_test.go
 - AbortController (请求取消)
 
 ✅ **工具库**
-- Date-fns (日期处理)
+- Dayjs (日期处理)
 - Lodash (工具函数)
 - QS (查询字符串)
 - Pinyin (拼音转换，🔥 Go 原生实现，100% 兼容 JS API)
@@ -1699,7 +1699,7 @@ return {
 - ⚠️ **关键**: 检查是否预加载了大型库（如已移除的 pinyin 库曾占用 73% 内存）
 - 移除不需要的模块注册（v2.2+ 已移除 pinyin 模块）
 - 增加 Docker 内存限制
-- 优化预加载策略：只预加载常用小库（date-fns, qs, crypto-js）
+- 优化预加载策略：只预加载常用小库（dayjs, qs, crypto-js）
 - 大库改为按需加载（lodash, uuid）
 
 **问题：高并发时出现超时**

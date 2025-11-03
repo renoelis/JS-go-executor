@@ -10,8 +10,8 @@ var CryptoJS string
 //go:embed axios.js
 var AxiosJS string
 
-//go:embed external-libs/date-fns.min.js
-var DateFns string
+//go:embed external-libs/dayjs.min.js
+var Dayjs string
 
 //go:embed external-libs/qs.min.js
 var Qs string

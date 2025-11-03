@@ -340,7 +340,7 @@ func (e *JSExecutor) registerModules(cfg *config.Config) {
 
 	// 注册其他模块
 	e.moduleRegistry.Register(enhance_modules.NewAxiosEnhancer(assets.AxiosJS))
-	e.moduleRegistry.Register(enhance_modules.NewDateFnsEnhancerWithEmbedded(assets.DateFns))
+	e.moduleRegistry.Register(enhance_modules.NewDayjsEnhancerWithEmbedded(assets.Dayjs))
 	e.moduleRegistry.Register(enhance_modules.NewQsEnhancer(assets.Qs))
 	e.moduleRegistry.Register(enhance_modules.NewLodashEnhancer(assets.Lodash))
 
@@ -509,13 +509,13 @@ func (e *JSExecutor) warmupModules() error {
 			},
 		},
 		{
-			name: "date-fns",
+			name: "dayjs",
 			getModule: func() (interface{}, bool) {
-				return e.moduleRegistry.GetModule("date-fns")
+				return e.moduleRegistry.GetModule("dayjs")
 			},
 			precompile: func(m interface{}) error {
-				if enhancer, ok := m.(*enhance_modules.DateFnsEnhancer); ok {
-					return enhancer.PrecompileDateFns()
+				if enhancer, ok := m.(*enhance_modules.DayjsEnhancer); ok {
+					return enhancer.PrecompileDayjs()
 				}
 				return fmt.Errorf("invalid module type")
 			},
