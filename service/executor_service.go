@@ -26,6 +26,35 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+// gcThrottler GC 节流器，防止 GC 风暴
+// 🔥 使用 channel 限制并发 GC 数量（最多 1 个）
+type gcThrottler struct {
+	ch chan struct{}
+}
+
+// newGCThrottler 创建 GC 节流器
+func newGCThrottler() *gcThrottler {
+	return &gcThrottler{
+		ch: make(chan struct{}, 1), // 🔥 最多 1 个并发 GC
+	}
+}
+
+// triggerGC 触发 GC（非阻塞）
+// 如果已经有 GC 在运行，则跳过本次触发
+func (t *gcThrottler) triggerGC() {
+	select {
+	case t.ch <- struct{}{}:
+		go func() {
+			defer func() { <-t.ch }()
+			runtime.GC()
+			utils.Debug("手动触发 GC 完成")
+		}()
+	default:
+		// GC 已在进行中，跳过本次触发
+		utils.Debug("GC 已在运行中，跳过本次触发")
+	}
+}
+
 // JSExecutor Go+goja JavaScript执行器
 type JSExecutor struct {
 	// Runtime池
@@ -70,6 +99,13 @@ type JSExecutor struct {
 	longRunningThreshold          time.Duration // 长期运行时间阈值
 	poolExpansionThresholdPercent float64       // 池扩展阈值百分比
 	healthCheckInterval           time.Duration // 健康检查间隔
+
+	// 🔥 Runtime 重用限制配置（方案D：防止内存累积）
+	maxRuntimeReuseCount int64 // Runtime 最大重用次数（达到后销毁）
+
+	// 🔥 GC 触发频率配置（高并发优化）
+	gcTriggerInterval int64        // 每销毁N个Runtime触发一次GC
+	gcThrottler       *gcThrottler // 🔥 GC 节流器（防止GC风暴）
 
 	// Node.js兼容性
 	registry *require.Registry
@@ -176,6 +212,13 @@ func NewJSExecutor(cfg *config.Config) *JSExecutor {
 		longRunningThreshold:          time.Duration(cfg.Executor.LongRunningThresholdMinutes) * time.Minute,
 		poolExpansionThresholdPercent: cfg.Executor.PoolExpansionThresholdPercent,
 		healthCheckInterval:           time.Duration(cfg.Executor.HealthCheckIntervalSeconds) * time.Second,
+
+		// 🔥 Runtime 重用限制配置（方案D：防止内存累积）
+		maxRuntimeReuseCount: cfg.Executor.MaxRuntimeReuseCount,
+
+		// 🔥 GC 触发频率配置（高并发优化）
+		gcTriggerInterval: cfg.Executor.GCTriggerInterval,
+		gcThrottler:       newGCThrottler(), // 🔥 初始化 GC 节流器
 
 		registry:        new(require.Registry),
 		moduleRegistry:  NewModuleRegistry(), // 🔥 创建模块注册器

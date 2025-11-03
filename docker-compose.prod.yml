@@ -194,6 +194,10 @@ services:
       - POOL_EXPANSION_THRESHOLD_PERCENT=${POOL_EXPANSION_THRESHOLD_PERCENT}     # 池扩展阈值（生产环境：0.1 即 10%，及时响应负载）
       - HEALTH_CHECK_INTERVAL_SECONDS=${HEALTH_CHECK_INTERVAL_SECONDS}         # 健康检查间隔（生产环境：30秒，及时监控）
       
+      # 🔥 Runtime 重用和GC优化配置（高并发场景）
+      - MAX_RUNTIME_REUSE_COUNT=${MAX_RUNTIME_REUSE_COUNT:-1}           # Runtime 最大重用次数（推荐：3，平衡性能和内存）
+      - GC_TRIGGER_INTERVAL=${GC_TRIGGER_INTERVAL:-10}                  # GC 触发频率（每N次销毁触发1次GC，推荐：15-20）
+      
       # ==================== Go运行时配置 ====================
       - GOMAXPROCS=${GOMAXPROCS}                     # 0=使用所有CPU核心
       - GOGC=${GOGC}                          # 🔧 GC目标百分比 (100→75，更频繁GC，降低内存峰值)

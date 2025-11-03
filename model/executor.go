@@ -22,6 +22,9 @@ type ExecutorStats struct {
 
 	// 熔断器统计
 	CircuitBreakerTrips int64 `json:"circuitBreakerTrips"` // 熔断器触发次数
+
+	// 🔥 Runtime 管理统计（方案D：限次重用）
+	RuntimeDestroyCount int64 `json:"runtimeDestroyCount"` // Runtime 销毁次数
 }
 
 // ExecutionError 自定义执行错误
@@ -43,6 +46,7 @@ func (e *ExecutionError) Error() string {
 type ExecutionResult struct {
 	Result    interface{}
 	RequestID string // 🔄 改名：ExecutionId → RequestID（复用 HTTP 请求ID）
+	JSONData  []byte `json:"-"` // 🔥 预序列化的 JSON 数据（避免重复序列化）
 }
 
 // WarmupStats 模块预热统计信息

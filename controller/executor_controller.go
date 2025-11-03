@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"runtime"
@@ -134,7 +135,7 @@ func (c *ExecutorController) Execute(ctx *gin.Context) {
 	token := ctx.GetString("token")
 	wsID := ctx.GetString("wsId")
 	email := ctx.GetString("userEmail")
-	
+
 	// 🔥 获取Token信息，检查是否需要配额检查
 	tokenInfoValue, exists := ctx.Get("tokenInfo")
 	needsQuotaCheck := false
@@ -149,7 +150,7 @@ func (c *ExecutorController) Execute(ctx *gin.Context) {
 			needsQuotaCheck = true
 		}
 	}
-	
+
 	// 🔥 只对需要配额检查的Token（count/hybrid类型）进行配额扣减
 	if token != "" && c.quotaService != nil && needsQuotaCheck {
 		// 注意：这里先传递nil，执行后再更新日志
@@ -163,7 +164,7 @@ func (c *ExecutorController) Execute(ctx *gin.Context) {
 			ctx.JSON(429, model.ExecuteResponse{
 				Success: false,
 				Error: &model.ExecuteError{
-					Type:    "QuotaExceeded",
+					Type: "QuotaExceeded",
 					// 🔥 用户友好的错误提示，不暴露内部细节（修复问题9）
 					Message: "配额已用完，请联系管理员充值",
 				},
@@ -246,9 +247,19 @@ func (c *ExecutorController) Execute(ctx *gin.Context) {
 		c.recordStats(requestID, ctx, moduleInfo, code, totalTime, "success")
 	}
 
+	// 🔥 使用预序列化的 JSON（避免重复序列化，降低内存压力）
+	var result interface{}
+	if len(executionResult.JSONData) > 0 {
+		// 有预序列化的 JSON，使用 json.RawMessage 避免重复序列化
+		result = json.RawMessage(executionResult.JSONData)
+	} else {
+		// 没有预序列化的 JSON，使用原始结果
+		result = executionResult.Result
+	}
+
 	ctx.JSON(200, model.ExecuteResponse{
 		Success: true,
-		Result:  executionResult.Result,
+		Result:  result,
 		Timing: &model.ExecuteTiming{
 			ExecutionTime: totalTime,
 			TotalTime:     totalTime,
@@ -631,6 +642,27 @@ func (c *ExecutorController) recordStats(requestID string, ctx *gin.Context, mod
 
 // TestTool 测试工具页面
 func (c *ExecutorController) TestTool(ctx *gin.Context) {
+	// 🔒 设置 CSP（Content Security Policy）安全头
+	// 防止 XSS 攻击、数据泄露、点击劫持等安全威胁
+	cspPolicy := "default-src 'self'; " +
+		"script-src 'self' 'unsafe-inline' blob:; " + // 允许内联脚本和 blob: 协议（Ace Editor Worker 需要）
+		"style-src 'self' 'unsafe-inline'; " + // 允许内联样式
+		"img-src 'self' data: https:; " + // 允许图片（包括 data URI 和 HTTPS）
+		"connect-src 'self'; " + // 只允许向自己的域名发送 AJAX/fetch 请求
+		"font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; " + // 允许字体
+		"worker-src 'self' blob:; " + // 🔍 允许 Web Worker（Ace Editor 语法检查需要）
+		"child-src 'self' blob:; " + // 🔍 允许 Web Worker（兼容旧版浏览器）
+		"frame-ancestors 'none'; " + // 禁止被 iframe 嵌入（防止点击劫持）
+		"base-uri 'self'; " + // 限制 base 标签
+		"form-action 'self'" // 限制表单提交目标
+	ctx.Header("Content-Security-Policy", cspPolicy)
+
+	// 🔒 额外的安全头
+	ctx.Header("X-Content-Type-Options", "nosniff")                  // 防止 MIME 类型嗅探
+	ctx.Header("X-Frame-Options", "DENY")                            // 防止点击劫持（旧版浏览器）
+	ctx.Header("X-XSS-Protection", "1; mode=block")                  // 启用 XSS 过滤（旧版浏览器）
+	ctx.Header("Referrer-Policy", "strict-origin-when-cross-origin") // 控制 Referrer 信息
+
 	// 从配置中获取测试工具配置
 	testToolCfg := c.config.TestTool
 

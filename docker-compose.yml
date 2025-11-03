@@ -96,18 +96,18 @@ services:
       
       # ==================== 🚀 JavaScript执行器配置 ====================
       # 开发环境配置（适合本地测试）
-      - RUNTIME_POOL_SIZE=20             # 🔧 开发环境减少池大小
-      - MIN_RUNTIME_POOL_SIZE=10
-      - MAX_RUNTIME_POOL_SIZE=50
+      - RUNTIME_POOL_SIZE=100             # 🔧 开发环境减少池大小
+      - MIN_RUNTIME_POOL_SIZE=50
+      - MAX_RUNTIME_POOL_SIZE=100
       - RUNTIME_IDLE_TIMEOUT_MIN=5
-      - MAX_CONCURRENT_EXECUTIONS=200    # 🔧 开发环境减少并发
+      - MAX_CONCURRENT_EXECUTIONS=400    # 🔧 开发环境减少并发
       - CODE_CACHE_SIZE=50
       - ALLOW_CONSOLE=true               # 🔧 开发环境允许console
       
       # 执行限制
       - MAX_CODE_LENGTH=65535            # 64KB
       - MAX_INPUT_SIZE=2097152           # 2MB
-      - MAX_RESULT_SIZE=5242880          # 5MB
+      - MAX_RESULT_SIZE=2000000         # 5MB
       - EXECUTION_TIMEOUT_MS=300000       # 🔧 开发环境30秒超时
 
       # ==================== 🛡️ SSRF 防护配置（开发环境）====================
@@ -191,7 +191,7 @@ services:
       #   - Array.push 超限时会抛出中文错误："Array.push 操作会导致数组长度超过限制..."
       #   - 其他限制包括：new Array(n)、new Uint8Array(n)、new ArrayBuffer(n)
       - ENABLE_JS_MEMORY_LIMIT=true      # 🔧 启用 JS 侧内存限制（默认：true）
-      - JS_MEMORY_LIMIT_MB=0              # 🔧 限制大小（0=使用 MAX_BLOB_FILE_SIZE_MB，当前为1MB → 131K元素）
+      - JS_MEMORY_LIMIT_MB=10              # 🔧 限制大小（0=使用 MAX_BLOB_FILE_SIZE_MB，当前为1MB → 131K元素）
       
       # ==================== 🔥 健康检查和池管理配置 ====================
       # 开发环境：较宽松的阈值，便于调试
@@ -201,6 +201,10 @@ services:
       - LONG_RUNNING_THRESHOLD_MINUTES=30        # 长期运行时间阈值（开发环境：30分钟）
       - POOL_EXPANSION_THRESHOLD_PERCENT=0.2     # 池扩展阈值（开发环境：0.2 即 20%，避免频繁扩展）
       - HEALTH_CHECK_INTERVAL_SECONDS=60         # 健康检查间隔（开发环境：60秒，减少日志输出）
+      
+      # 🔥 Runtime 重用和GC优化配置（高并发场景）
+      - MAX_RUNTIME_REUSE_COUNT=1               # Runtime 最大重用次数（开发环境：1，便于测试；生产推荐：3）
+      - GC_TRIGGER_INTERVAL=15                   # GC 触发频率（每N次销毁触发1次GC，推荐：15-20）
       
       # ==================== Go运行时配置 ====================
       - GOMAXPROCS=0                     # 使用所有CPU

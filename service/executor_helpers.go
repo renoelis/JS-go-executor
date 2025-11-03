@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -24,6 +25,7 @@ import (
 	"github.com/dop251/goja_nodejs/eventloop"
 	"github.com/dop251/goja_nodejs/process"
 	"github.com/dop251/goja_nodejs/url"
+	jsoniter "github.com/json-iterator/go"
 	"go.uber.org/zap"
 	"golang.org/x/text/unicode/norm"
 )
@@ -291,23 +293,73 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 		}
 		e.healthMutex.RUnlock()
 
-		// 🔥 从池中获取的 Runtime 归还策略（非阻塞 + 自然收缩）
+		// 🔥 从池中获取的 Runtime 归还策略（方案D：限次重用 + 主动GC）
 		//
 		// 设计原理：
-		//   1. 使用 select-default 实现非阻塞归还，避免 goroutine 永久阻塞
-		//   2. 池满时丢弃 Runtime（自然收缩），由 Go GC 自动回收内存
-		//   3. 🔥 v2.4.3 修复：丢弃时需要减少 currentPoolSize（因为从池中取出时计数未变）
+		//   1. 检查Runtime重用次数，达到上限则销毁（防止内存累积）
+		//   2. 未达上限则清理后归还池
+		//   3. 池满时丢弃Runtime（自然收缩）
+		//   4. 定期主动触发GC，加速内存回收
 		defer func() {
+			// 🔥 方案D：检查重用次数
+			var shouldDestroy bool
+			var reuseCount int64
+
+			e.healthMutex.RLock()
+			if health, exists := e.runtimeHealth[runtime]; exists {
+				reuseCount = health.executionCount.Load()
+			}
+			e.healthMutex.RUnlock()
+
+			// 🔥 关键判断：达到重用上限 → 销毁Runtime
+			if reuseCount >= e.maxRuntimeReuseCount {
+				shouldDestroy = true
+
+				utils.Debug("Runtime达到重用上限，销毁",
+					zap.Int64("reuse_count", reuseCount),
+					zap.Int64("max_reuse_count", e.maxRuntimeReuseCount))
+			}
+
+			if shouldDestroy {
+				// 清理健康信息
+				e.healthMutex.Lock()
+				delete(e.runtimeHealth, runtime)
+				e.healthMutex.Unlock()
+
+				// 更新计数
+				atomic.AddInt32(&e.currentPoolSize, -1)
+
+				// 📊 统计（用于监控）
+				atomic.AddInt64(&e.stats.RuntimeDestroyCount, 1)
+
+				// 🔥 主动触发GC（使用节流器，可配置触发频率）
+				// 高频销毁场景优化：通过 GC_TRIGGER_INTERVAL 环境变量控制GC频率
+				// 默认：每15次销毁触发1次GC（平衡CPU和内存）
+				// 高并发场景：可调整为20-30（降低CPU开销）
+				// 低内存场景：可调整为5-10（加速内存回收）
+				// 🛡️ GC 节流器确保最多只有 1 个 GC 并发运行，防止 GC 风暴
+				if atomic.LoadInt64(&e.stats.RuntimeDestroyCount)%e.gcTriggerInterval == 0 {
+					e.gcThrottler.triggerGC()
+				}
+
+				// 🔥 实时补充：销毁1个，立即补充1个（保持池大小恒定）
+				// 优势：池永不枯竭，性能最稳定
+				go e.replenishOneRuntime()
+
+				// 不归还池，让GC回收
+				return
+			}
+
+			// 未达上限：清理后归还
 			e.cleanupRuntime(runtime)
 			select {
 			case e.runtimePool <- runtime:
 				// ✅ 成功归还到池
 			default:
-				// 🔥 v2.4.3 修复：池满，丢弃 Runtime（自然收缩）
-				// 从池中取出的 Runtime 被丢弃，需要减少计数
+				// 🔥 池满，丢弃Runtime（自然收缩）
 				atomic.AddInt32(&e.currentPoolSize, -1)
 
-				// 🔥 清理健康信息（防止内存泄漏）
+				// 清理健康信息（防止内存泄漏）
 				e.healthMutex.Lock()
 				delete(e.runtimeHealth, runtime)
 				e.healthMutex.Unlock()
@@ -457,21 +509,32 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 			return
 		}
 
-		// 🔥 使用保持顺序的导出（保持 JavaScript 对象字段顺序）
-		result := utils.ExportWithOrder(value)
+		// 🔥 使用带大小限制的导出（边导出边检查，超限立即中断，最早保护内存）
+		result, err := utils.ExportWithOrderAndLimit(value, e.maxResultSize)
+		if err != nil {
+			// 导出阶段超限（最早拦截点）
+			errorChan <- &model.ExecutionError{
+				Type:    "ValidationError",
+				Message: fmt.Sprintf("返回数据过大: %v", err),
+			}
+			return
+		}
 
-		if err := e.validateResult(result); err != nil {
+		// 🔥 转换所有 time.Time 对象为 UTC ISO 字符串（在验证前转换）
+		// 修复 date-fns 时区问题：确保返回 UTC 时间（Z）
+		result = convertTimesToUTC(result)
+
+		// 🔥 验证结果并获取预序列化的 JSON（避免重复序列化）
+		jsonData, err := e.validateResult(result)
+		if err != nil {
 			errorChan <- err
 			return
 		}
 
-		// 🔥 转换所有 time.Time 对象为 UTC ISO 字符串
-		// 修复 date-fns 时区问题：确保返回 UTC 时间（Z）
-		result = convertTimesToUTC(result)
-
 		executionResult := &model.ExecutionResult{
 			Result:    result,
 			RequestID: executionId, // 🔄 改名：ExecutionId → RequestID
+			JSONData:  jsonData,    // 🔥 保存预序列化的 JSON
 		}
 		resultChan <- executionResult
 	}()
@@ -562,6 +625,7 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 	}
 
 	var finalResult interface{}
+	var finalResultJSON []byte // 🔥 预序列化的 JSON（避免重复序列化）
 	var finalError error
 	var vm *goja.Runtime // 🔥 提升到外层作用域，以便在超时时访问
 
@@ -721,15 +785,29 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 						Message: "代码没有返回有效结果",
 					}
 				} else {
-					// 🔥 使用保持顺序的导出（保持 JavaScript 对象字段顺序）
-					finalResult = utils.ExportWithOrder(finalRes)
-
-					if err := e.validateResult(finalResult); err != nil {
-						finalError = err
+					// 🔥 使用带大小限制的导出（边导出边检查，超限立即中断）
+					exportedResult, err := utils.ExportWithOrderAndLimit(finalRes, e.maxResultSize)
+					if err != nil {
+						// 导出阶段超限（最早拦截点）
+						finalError = &model.ExecutionError{
+							Type:    "ValidationError",
+							Message: fmt.Sprintf("返回数据过大: %v", err),
+						}
 					} else {
-						// 🔥 转换所有 time.Time 对象为 UTC ISO 字符串
+						finalResult = exportedResult
+
+						// 🔥 转换所有 time.Time 对象为 UTC ISO 字符串（在验证前转换）
 						// 修复 date-fns 时区问题：确保返回 UTC 时间（Z）
 						finalResult = convertTimesToUTC(finalResult)
+
+						// 🔥 验证结果并获取预序列化的 JSON（避免重复序列化）
+						finalJSONData, err := e.validateResult(finalResult)
+						if err != nil {
+							finalError = err
+						} else {
+							// 保存预序列化的 JSON 到全局变量（后续使用）
+							finalResultJSON = finalJSONData
+						}
 					}
 				}
 			}
@@ -743,7 +821,8 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 		}
 		return &model.ExecutionResult{
 			Result:    finalResult,
-			RequestID: executionId, // 🔄 改名：ExecutionId → RequestID
+			RequestID: executionId,     // 🔄 改名：ExecutionId → RequestID
+			JSONData:  finalResultJSON, // 🔥 保存预序列化的 JSON
 		}, nil
 	case <-execCtx.Done():
 		// 🔥 关键修复：主动中断 Runtime 执行
@@ -1483,25 +1562,94 @@ func (e *JSExecutor) validateCodeSecurityCleaned(code, cleanedCode string) error
 	return e.checkInfiniteLoops(cleanedCode)
 }
 
-// validateResult 验证执行结果
-func (e *JSExecutor) validateResult(result interface{}) error {
-	// 1. 检查结果大小
-	if resultSize := len(fmt.Sprintf("%v", result)); resultSize > e.maxResultSize {
-		return &model.ExecutionError{
-			Type:    "ValidationError",
-			Message: fmt.Sprintf("返回结果过大: %d > %d字节", resultSize, e.maxResultSize),
-		}
+// limitedWriter 限制写入大小的 writer（边序列化边检查，超限立即中断）
+type limitedWriter struct {
+	buf     *bytes.Buffer
+	written int
+	limit   int
+}
+
+func (w *limitedWriter) Write(p []byte) (n int, err error) {
+	// 检查写入后是否超限
+	if w.written+len(p) > w.limit {
+		// 🔥 立即中断，避免继续消耗内存
+		return 0, fmt.Errorf("结果序列化超过大小限制: 已写入 %d 字节, 尝试再写 %d 字节, 限制 %d 字节",
+			w.written, len(p), w.limit)
 	}
 
-	// 2. 检查是否包含无效的JSON值 (NaN, Infinity等)
+	n, err = w.buf.Write(p)
+	w.written += n
+	return n, err
+}
+
+// validateResult 验证执行结果（使用 jsoniter 高性能序列化 + 大小检查）
+//
+// 性能优势（vs 标准库）：
+//   - 序列化速度快 6 倍
+//   - 内存分配减少 92%
+//   - 降低 GC 压力
+//
+// 流式能力限制（实测结果）：
+//   - 仅对顶级数组（return [...]）支持真正的流式分块写入
+//   - 对象结构（return {items: [...]}）仍然是一次性序列化
+//   - 大多数场景：序列化完成后一次性写入，无法在序列化过程中中断
+//
+// 内存保护机制：
+//   - limitedWriter 在写入时检查大小，拦截超限数据
+//   - 能防止传输超大响应，但无法完全防止序列化阶段的内存占用
+//   - 建议：合理设置 MAX_RESULT_SIZE + Docker 内存限制 + 监控
+func (e *JSExecutor) validateResult(result interface{}) ([]byte, error) {
+	// 1. 检查是否包含无效的JSON值 (NaN, Infinity等) - 在序列化前检查
 	if err := validateJSONSerializable(result); err != nil {
-		return &model.ExecutionError{
+		return nil, &model.ExecutionError{
 			Type:    "ValidationError",
 			Message: fmt.Sprintf("返回结果包含无效的JSON值: %v", err),
 		}
 	}
 
-	return nil
+	// 2. 🔥 使用 jsoniter 高性能序列化 + limitedWriter 大小检查
+	var jsonAPI = jsoniter.ConfigCompatibleWithStandardLibrary
+	buf := &bytes.Buffer{}
+	limitWriter := &limitedWriter{
+		buf:   buf,
+		limit: e.maxResultSize,
+	}
+
+	encoder := jsonAPI.NewEncoder(limitWriter)
+	if err := encoder.Encode(result); err != nil {
+		// 检查是否是大小限制错误（包含 "结果序列化超过大小限制" 关键字）
+		if strings.Contains(err.Error(), "结果序列化超过大小限制") {
+			if limitWriter.written > 0 && limitWriter.written >= e.maxResultSize {
+				// 流式写入中被中断（罕见，仅顶级数组结构）
+				return nil, &model.ExecutionError{
+					Type: "ValidationError",
+					Message: fmt.Sprintf("返回结果过大: 已序列化 %d 字节 > %d 字节限制（流式序列化已中断）",
+						limitWriter.written, e.maxResultSize),
+				}
+			} else {
+				// 第一次写入就超限（常见，对象结构一次性序列化）
+				// 注意：此时数据已在内存中完成序列化，但被拦截未传输
+				return nil, &model.ExecutionError{
+					Type: "ValidationError",
+					Message: fmt.Sprintf("返回结果过大: %s。警告：请优化返回结构",
+						err.Error()),
+				}
+			}
+		}
+		// 其他序列化错误
+		return nil, &model.ExecutionError{
+			Type:    "ValidationError",
+			Message: fmt.Sprintf("结果无法序列化为JSON: %v", err),
+		}
+	}
+
+	// 3. 移除 Encoder 自动添加的换行符
+	jsonData := buf.Bytes()
+	if len(jsonData) > 0 && jsonData[len(jsonData)-1] == '\n' {
+		jsonData = jsonData[:len(jsonData)-1]
+	}
+
+	return jsonData, nil
 }
 
 // convertTimesToUTC 递归将结果中所有 time.Time 对象转换为 UTC ISO 字符串
@@ -2298,6 +2446,8 @@ func (e *JSExecutor) checkAndFixRuntimes() {
 
 	// 🔥 阶段 4: 池大小调整（细粒度锁）
 	e.adjustPoolSize(analysis)
+
+	// 注：不需要定期补充，因为销毁时实时补充已足够
 }
 
 // rebuildRuntimeUnsafe 已废弃，使用 rebuildRuntimeSafe 替代
@@ -2306,6 +2456,65 @@ func (e *JSExecutor) rebuildRuntimeUnsafe(oldRuntime *goja.Runtime) {
 	// 直接调用新的安全版本
 	// 注意：调用者不应该持有 healthMutex 锁
 	e.rebuildRuntimeSafe(oldRuntime)
+}
+
+// replenishOneRuntime 实时补充：销毁1个立即补充1个
+// 🔥 设计理念：保持池大小恒定，性能最稳定
+// 🔥 优势：
+//   - 实现简单（无需阈值判断）
+//   - 池永不枯竭（恒定大小）
+//   - 开销可控（只在销毁时创建）
+//   - 配合空闲超时自动收缩
+func (e *JSExecutor) replenishOneRuntime() {
+	// 检查是否正在关闭
+	select {
+	case <-e.shutdown:
+		return
+	default:
+	}
+
+	// 检查是否超过最大池大小（安全保护）
+	currentSize := atomic.LoadInt32(&e.currentPoolSize)
+	if int(currentSize) >= e.maxPoolSize {
+		utils.Debug("已达最大池大小，跳过补充",
+			zap.Int32("current_size", currentSize),
+			zap.Int("max_pool_size", e.maxPoolSize))
+		return
+	}
+
+	// 创建新Runtime
+	rt := goja.New()
+	if err := e.setupRuntime(rt); err != nil {
+		utils.Error("补充Runtime失败", zap.Error(err))
+		return
+	}
+
+	// 注册健康信息
+	now := time.Now().UnixNano()
+	e.healthMutex.Lock()
+	health := &runtimeHealthInfo{}
+	health.createdAtNano.Store(now)
+	health.lastUsedAtNano.Store(now)
+	health.executionCount.Store(0)
+	health.errorCount.Store(0)
+	e.runtimeHealth[rt] = health
+	e.healthMutex.Unlock()
+
+	// 放入池中
+	select {
+	case e.runtimePool <- rt:
+		atomic.AddInt32(&e.currentPoolSize, 1)
+		utils.Debug("实时补充Runtime成功",
+			zap.Int("pool_count", len(e.runtimePool)),
+			zap.Int32("current_size", atomic.LoadInt32(&e.currentPoolSize)))
+	default:
+		// 池已满（正常情况，其他goroutine已补充）
+		e.healthMutex.Lock()
+		delete(e.runtimeHealth, rt)
+		e.healthMutex.Unlock()
+		utils.Debug("补充时池已满，跳过",
+			zap.Int("pool_count", len(e.runtimePool)))
+	}
 }
 
 // Shutdown 优雅关闭执行器
@@ -2717,7 +2926,11 @@ func (e *JSExecutor) recordAdjustment(isExpand bool) {
 
 	// 只保留未过期的记录
 	if validStart > 0 {
-		e.recentAdjustmentLog = e.recentAdjustmentLog[validStart:]
+		// 🔥 创建新切片，完全释放旧底层数组（避免内存泄漏）
+		newLog := make([]time.Time, len(e.recentAdjustmentLog)-validStart)
+		copy(newLog, e.recentAdjustmentLog[validStart:])
+		e.recentAdjustmentLog = newLog
+
 		utils.Debug("清理过期调整记录",
 			zap.Int("removed_count", validStart),
 			zap.Int("remaining_count", len(e.recentAdjustmentLog)))

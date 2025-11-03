@@ -122,3 +122,4 @@ scripts/add_performance_indexes.sql
 轻流 x FlowCodeBlock-1.md
 tools
 test_*.go
+scripts/minify-html.js

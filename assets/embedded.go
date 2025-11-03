@@ -47,6 +47,9 @@ var AceWorkerJavaScript string
 //go:embed codemirror/worker-json.js
 var AceWorkerJSON string
 
+//go:embed codemirror/ext-searchbox.js
+var AceExtSearchbox string
+
 // SMCrypto 已移除：现已使用 Go 原生实现（enhance_modules/sm_crypto）
 // 不再需要嵌入 JavaScript 代码，性能提升 10-100 倍
 var SMCrypto string = "" // 保留变量以保持接口兼容性

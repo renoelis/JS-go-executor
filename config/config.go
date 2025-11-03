@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"runtime"
 	"strconv"
@@ -14,15 +15,15 @@ import (
 
 // Config 应用程序配置
 type Config struct {
-	Environment string // 运行环境: "development" 或 "production"
-	Server      ServerConfig
-	Executor    ExecutorConfig
-	Fetch       FetchConfig
-	Runtime     RuntimeConfig
-	Auth        AuthConfig       // 🔒 认证配置
-	RateLimit   RateLimitConfig  // 🔥 IP 限流配置
-	Database    DatabaseConfig   // 数据库配置
-	Redis       RedisConfig      // Redis配置
+	Environment  string // 运行环境: "development" 或 "production"
+	Server       ServerConfig
+	Executor     ExecutorConfig
+	Fetch        FetchConfig
+	Runtime      RuntimeConfig
+	Auth         AuthConfig         // 🔒 认证配置
+	RateLimit    RateLimitConfig    // 🔥 IP 限流配置
+	Database     DatabaseConfig     // 数据库配置
+	Redis        RedisConfig        // Redis配置
 	Cache        CacheConfig        // 缓存配置
 	TokenLimit   TokenLimitConfig   // Token限流配置
 	QuotaCleanup QuotaCleanupConfig // 🔥 配额日志清理配置
@@ -79,6 +80,12 @@ type ExecutorConfig struct {
 	LongRunningThresholdMinutes   int     // 长期运行时间阈值（分钟，默认：60）
 	PoolExpansionThresholdPercent float64 // 池扩展阈值百分比（默认：0.1，即 10%，可用槽位低于此值时扩展）
 	HealthCheckIntervalSeconds    int     // 健康检查间隔（秒，默认：30）
+
+	// 🔥 Runtime 重用限制配置（方案D：防止内存累积）
+	MaxRuntimeReuseCount int64 // Runtime 最大重用次数（默认：2，达到后销毁并创建新的）
+
+	// 🔥 GC 触发频率配置（高并发优化）
+	GCTriggerInterval int64 // 每销毁N个Runtime触发一次GC（默认：15，值越大GC越少，CPU开销越低）
 }
 
 // FetchConfig Fetch API配置
@@ -408,6 +415,12 @@ func LoadConfig() *Config {
 		LongRunningThresholdMinutes:   getEnvInt("LONG_RUNNING_THRESHOLD_MINUTES", 60),      // 长期运行阈值（默认：60 分钟）
 		PoolExpansionThresholdPercent: getEnvFloat("POOL_EXPANSION_THRESHOLD_PERCENT", 0.1), // 池扩展阈值（默认：0.1，即 10%）
 		HealthCheckIntervalSeconds:    getEnvInt("HEALTH_CHECK_INTERVAL_SECONDS", 30),       // 健康检查间隔（默认：30 秒）
+
+		// 🔥 Runtime 重用限制配置（方案D：防止内存累积）
+		MaxRuntimeReuseCount: int64(getEnvInt("MAX_RUNTIME_REUSE_COUNT", 1)),
+
+		// 🔥 GC 触发频率配置（高并发优化）
+		GCTriggerInterval: int64(getEnvInt("GC_TRIGGER_INTERVAL", 10)),
 	}
 
 	// 加载Fetch配置
@@ -520,18 +533,18 @@ func LoadConfig() *Config {
 
 	// 🔥 加载配额日志清理配置
 	cfg.QuotaCleanup = QuotaCleanupConfig{
-		Enabled:         getEnvBool("QUOTA_CLEANUP_ENABLED", true),                                              // 默认启用
-		RetentionDays:   getEnvInt("QUOTA_CLEANUP_RETENTION_DAYS", 180),                                         // 默认保留180天（6个月）
-		CleanupInterval: time.Duration(getEnvInt("QUOTA_CLEANUP_INTERVAL_HOURS", 24)) * time.Hour,              // 默认每24小时清理一次
-		BatchSize:       getEnvInt("QUOTA_CLEANUP_BATCH_SIZE", 10000),                                           // 默认每批删除1万条
+		Enabled:         getEnvBool("QUOTA_CLEANUP_ENABLED", true),                                // 默认启用
+		RetentionDays:   getEnvInt("QUOTA_CLEANUP_RETENTION_DAYS", 180),                           // 默认保留180天（6个月）
+		CleanupInterval: time.Duration(getEnvInt("QUOTA_CLEANUP_INTERVAL_HOURS", 24)) * time.Hour, // 默认每24小时清理一次
+		BatchSize:       getEnvInt("QUOTA_CLEANUP_BATCH_SIZE", 10000),                             // 默认每批删除1万条
 	}
 
 	// 🔥 加载配额同步配置
 	cfg.QuotaSync = QuotaSyncConfig{
-		SyncQueueSize: getEnvInt("QUOTA_SYNC_QUEUE_SIZE", 10000),                                                // 默认队列容量1万
-		LogQueueSize:  getEnvInt("QUOTA_LOG_QUEUE_SIZE", 10000),                                                 // 默认日志队列1万
-		SyncBatch:     getEnvInt("QUOTA_SYNC_BATCH_SIZE", 500),                                                  // 默认批次500条
-		SyncInterval:  time.Duration(getEnvInt("QUOTA_SYNC_INTERVAL_MS", 1000)) * time.Millisecond,             // 默认1秒（1000毫秒）
+		SyncQueueSize: getEnvInt("QUOTA_SYNC_QUEUE_SIZE", 10000),                                   // 默认队列容量1万
+		LogQueueSize:  getEnvInt("QUOTA_LOG_QUEUE_SIZE", 10000),                                    // 默认日志队列1万
+		SyncBatch:     getEnvInt("QUOTA_SYNC_BATCH_SIZE", 500),                                     // 默认批次500条
+		SyncInterval:  time.Duration(getEnvInt("QUOTA_SYNC_INTERVAL_MS", 1000)) * time.Millisecond, // 默认1秒（1000毫秒）
 	}
 
 	// 🔥 加载 XLSX 配置
@@ -545,8 +558,8 @@ func LoadConfig() *Config {
 	cfg.TestTool = TestToolConfig{
 		ApiUrl:           getEnvString("TEST_TOOL_API_URL", "http://localhost:3002"),
 		LogoUrl:          getEnvString("TEST_TOOL_LOGO_URL", "https://qingflow.com/"),
-		CustomLogoUrl:    getEnvString("CUSTOM_LOGO_URL", ""),    // 🔧 自定义Logo URL（优先级最高）
-		CustomLogoPath:   getEnvString("CUSTOM_LOGO_PATH", ""),   // 🔧 自定义Logo路径（优先级次之）
+		CustomLogoUrl:    getEnvString("CUSTOM_LOGO_URL", ""),  // 🔧 自定义Logo URL（优先级最高）
+		CustomLogoPath:   getEnvString("CUSTOM_LOGO_PATH", ""), // 🔧 自定义Logo路径（优先级次之）
 		AiAssistantUrl:   getEnvString("TEST_TOOL_AI_URL", ""),
 		HelpDocUrl:       getEnvString("TEST_TOOL_HELP_URL", ""),
 		ApiDocUrl:        getEnvString("TEST_TOOL_API_DOC_URL", ""),
@@ -599,7 +612,83 @@ func LoadConfig() *Config {
 		zap.Int("length", len(adminToken)),
 		zap.String("masked_token", utils.MaskToken(adminToken)))
 
+	// 🔥 配置验证（在返回前验证所有关键配置）
+	if err := cfg.Validate(); err != nil {
+		utils.Fatal("配置验证失败", zap.Error(err))
+	}
+
 	return cfg
+}
+
+// Validate 验证配置参数的合法性
+// 🔥 在服务启动前进行配置验证，避免运行时错误
+func (c *Config) Validate() error {
+	// 1. 验证 Runtime 重用次数配置
+	if c.Executor.MaxRuntimeReuseCount < 1 {
+		return fmt.Errorf("MAX_RUNTIME_REUSE_COUNT 必须 >= 1，当前值: %d",
+			c.Executor.MaxRuntimeReuseCount)
+	}
+
+	// 2. 验证 GC 触发频率配置
+	if c.Executor.GCTriggerInterval < 1 {
+		return fmt.Errorf("GC_TRIGGER_INTERVAL 必须 >= 1，当前值: %d",
+			c.Executor.GCTriggerInterval)
+	}
+
+	// 3. ⚠️ 警告：过于激进的 GC 配置
+	// 注意：MaxRuntimeReuseCount = 1 是允许的（每次使用后立即销毁，适合极端内存敏感场景）
+	// 但如果同时 GC 触发间隔也很小，可能导致 GC 过于频繁
+	if c.Executor.GCTriggerInterval < 5 {
+		utils.Warn("GC 触发间隔较小，可能导致 GC 过于频繁",
+			zap.Int64("gc_interval", c.Executor.GCTriggerInterval),
+			zap.String("建议", "增加 GC_TRIGGER_INTERVAL 到 5+ 以降低 CPU 开销"))
+	}
+
+	// 提示：MaxRuntimeReuseCount = 1 的使用场景
+	if c.Executor.MaxRuntimeReuseCount == 1 {
+		utils.Info("Runtime 配置为单次使用模式（每次使用后立即销毁）",
+			zap.String("适用场景", "极端内存敏感环境或需要严格隔离的场景"))
+	}
+
+	// 4. 验证 Runtime 池大小配置
+	if c.Executor.MinPoolSize < 1 {
+		return fmt.Errorf("MIN_RUNTIME_POOL_SIZE 必须 >= 1，当前值: %d",
+			c.Executor.MinPoolSize)
+	}
+
+	if c.Executor.MaxPoolSize < c.Executor.MinPoolSize {
+		return fmt.Errorf("MAX_RUNTIME_POOL_SIZE (%d) 不能小于 MIN_RUNTIME_POOL_SIZE (%d)",
+			c.Executor.MaxPoolSize, c.Executor.MinPoolSize)
+	}
+
+	// 5. 验证超时配置
+	if c.Executor.ExecutionTimeout < time.Second {
+		utils.Warn("执行超时时间过短，可能导致正常任务被中断",
+			zap.Duration("timeout", c.Executor.ExecutionTimeout),
+			zap.String("建议", "至少设置为 5秒"))
+	}
+
+	// 6. 验证代码长度限制
+	if c.Executor.MaxCodeLength < 100 {
+		return fmt.Errorf("MAX_CODE_LENGTH 过小，必须 >= 100，当前值: %d",
+			c.Executor.MaxCodeLength)
+	}
+
+	// 7. 验证并发限制
+	if c.Executor.MaxConcurrent < 1 {
+		return fmt.Errorf("MAX_CONCURRENT_EXECUTIONS 必须 >= 1，当前值: %d",
+			c.Executor.MaxConcurrent)
+	}
+
+	// ✅ 所有验证通过
+	utils.Info("配置验证通过",
+		zap.Int64("max_runtime_reuse", c.Executor.MaxRuntimeReuseCount),
+		zap.Int64("gc_interval", c.Executor.GCTriggerInterval),
+		zap.Int("min_pool_size", c.Executor.MinPoolSize),
+		zap.Int("max_pool_size", c.Executor.MaxPoolSize),
+		zap.Int("max_concurrent", c.Executor.MaxConcurrent))
+
+	return nil
 }
 
 // SetupGoRuntime 设置Go运行时参数
@@ -614,8 +703,16 @@ func (c *Config) SetupGoRuntime() {
 		os.Setenv("GOGC", c.Runtime.GOGC)
 	}
 
+	// GOMEMLIMIT 通过环境变量设置（不需要代码设置）
+	gomemlimit := os.Getenv("GOMEMLIMIT")
+	if gomemlimit == "" {
+		gomemlimit = "未设置（使用Go默认）"
+	}
+
 	utils.Info("Go 运行时配置",
-		zap.Int("gomaxprocs", runtime.GOMAXPROCS(0)), zap.String("gogc", os.Getenv("GOGC")))
+		zap.Int("gomaxprocs", runtime.GOMAXPROCS(0)),
+		zap.String("gogc", os.Getenv("GOGC")),
+		zap.String("gomemlimit", gomemlimit))
 }
 
 // 辅助函数：从环境变量读取字符串

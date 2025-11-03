@@ -1,13 +1,16 @@
 package model
 
+import "encoding/json"
+
 // ExecuteResponse 执行响应结构
 type ExecuteResponse struct {
-	Success   bool           `json:"success"`
-	Result    interface{}    `json:"result,omitempty"`
-	Error     *ExecuteError  `json:"error,omitempty"`
-	Timing    *ExecuteTiming `json:"timing"`
-	Timestamp string         `json:"timestamp"`
-	RequestID string         `json:"request_id,omitempty"` // 🔄 统一使用 request_id（原 executionId 已移除）
+	Success   bool            `json:"success"`
+	Result    interface{}     `json:"result,omitempty"` // 🔥 可以是普通数据或 json.RawMessage（预序列化）
+	Error     *ExecuteError   `json:"error,omitempty"`
+	Timing    *ExecuteTiming  `json:"timing"`
+	Timestamp string          `json:"timestamp"`
+	RequestID string          `json:"request_id,omitempty"` // 🔄 统一使用 request_id（原 executionId 已移除）
+	ResultRaw json.RawMessage `json:"-"`                    // 🔥 内部使用，不序列化
 }
 
 // ExecuteError 执行错误结构

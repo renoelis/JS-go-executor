@@ -53,6 +53,10 @@ func SetupRouter(
 
 	router.Use(corsMiddleware(cfg.Server.AllowedOrigins)) // 🔒 智能 CORS 控制
 
+	// 🔥 Gzip 压缩中间件（节省带宽 70%+）
+	router.Use(middleware.GzipMiddleware())
+	utils.Info("Gzip 压缩已启用", zap.String("level", "best_speed"))
+
 	// 🔥 创建限流器实例（需要在关闭时释放）
 	resources := &RouterResources{
 		SmartIPLimiter: middleware.NewSmartIPRateLimiter(
@@ -146,6 +150,10 @@ func SetupRouter(
 			c.Header("Content-Type", "application/javascript; charset=utf-8")
 			c.String(200, assets.AceWorkerJSON)
 		})
+		flowGroup.GET("/assets/ext-searchbox.js", func(c *gin.Context) {
+			c.Header("Content-Type", "application/javascript; charset=utf-8")
+			c.String(200, assets.AceExtSearchbox)
+		})
 		// 🆕 Logo 图片路由（支持动态配置）
 		// 优先级：CUSTOM_LOGO_PATH > 默认本地文件
 		flowGroup.GET("/assets/logo.png", func(c *gin.Context) {
@@ -186,11 +194,11 @@ func SetupRouter(
 			adminGroup.PUT("/tokens/:token", tokenController.UpdateToken)
 			adminGroup.DELETE("/tokens/:token", tokenController.DeleteToken)
 			adminGroup.GET("/tokens", tokenController.GetTokenInfo)
-			
+
 			// 🔥 配额查询接口
 			adminGroup.GET("/tokens/:token/quota", tokenController.GetQuota)
 			adminGroup.GET("/tokens/:token/quota/logs", tokenController.GetQuotaLogs)
-			
+
 			// 🔥 配额清理接口
 			adminGroup.GET("/quota/cleanup/stats", tokenController.GetQuotaCleanupStats)
 			adminGroup.POST("/quota/cleanup/trigger", tokenController.TriggerQuotaCleanup)
