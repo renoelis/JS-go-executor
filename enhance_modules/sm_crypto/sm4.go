@@ -83,6 +83,9 @@ func SM4Core(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		padding = "pkcs#7"
 	} else if padding == "pkcs5" {
 		padding = "pkcs#5"
+	} else if padding == "zero" {
+		// 匹配 Node.js sm-crypto-v2 行为：不支持 zero 填充
+		panic(runtime.NewTypeError("zero padding is not supported"))
 	}
 
 	mode := GetStringOption(opts, "mode", "ecb")
@@ -230,23 +233,15 @@ func sm4ECB(runtime *goja.Runtime, inArray []byte, key []byte, cryptFlag int, pa
 			block.Decrypt(outArray[i:i+SM4_BLOCK_SIZE], inArray[i:i+SM4_BLOCK_SIZE])
 		}
 
-		// 🔥 兼容 sm-crypto-v2：解密时总是尝试移除 padding
-		// 如果移除失败（说明没有有效的 padding），则保持原样
+		// 🔥 兼容 sm-crypto-v2：解密时尝试移除 padding
+		// 如果移除失败（说明没有有效的 padding，可能加密时就没添加），则保持原样
 		// 这与标准 PKCS#7 不同，但匹配 Node.js 库的行为
-		if isArrayMode {
-			// array 模式：尝试移除 padding，失败则忽略错误
-			trimmed, err := removePadding(outArray, padding, SM4_BLOCK_SIZE)
-			if err == nil {
-				outArray = trimmed
-			}
-			// 如果出错，保持 outArray 不变（不移除 padding）
-		} else {
-			// string 模式：必须成功移除 padding
-			outArray, err = removePadding(outArray, padding, SM4_BLOCK_SIZE)
-			if err != nil {
-				panic(runtime.NewGoError(fmt.Errorf("invalid padding: %w", err)))
-			}
+		trimmed, err := removePadding(outArray, padding, SM4_BLOCK_SIZE)
+		if err == nil {
+			outArray = trimmed
 		}
+		// 如果出错，保持 outArray 不变（不移除 padding）
+		// 这处理了加密时input长度是块倍数且output='array'时不添加padding的情况
 	}
 
 	// 返回结果
@@ -296,22 +291,15 @@ func sm4CBC(runtime *goja.Runtime, inArray []byte, key []byte, iv []byte, cryptF
 		mode := cipher.NewCBCDecrypter(block, iv)
 		mode.CryptBlocks(outArray, inArray)
 
-		// 🔥 兼容 sm-crypto-v2：解密时总是尝试移除 padding
-		// 如果移除失败（说明没有有效的 padding），则保持原样
-		if isArrayMode {
-			// array 模式：尝试移除 padding，失败则忽略错误
-			trimmed, err := removePadding(outArray, padding, SM4_BLOCK_SIZE)
-			if err == nil {
-				outArray = trimmed
-			}
-			// 如果出错，保持 outArray 不变（不移除 padding）
-		} else {
-			// string 模式：必须成功移除 padding
-			outArray, err = removePadding(outArray, padding, SM4_BLOCK_SIZE)
-			if err != nil {
-				panic(runtime.NewGoError(fmt.Errorf("invalid padding: %w", err)))
-			}
+		// 🔥 兼容 sm-crypto-v2：解密时尝试移除 padding
+		// 如果移除失败（说明没有有效的 padding，可能加密时就没添加），则保持原样
+		// 这与标准 PKCS#7 不同，但匹配 Node.js 库的行为
+		trimmed, err := removePadding(outArray, padding, SM4_BLOCK_SIZE)
+		if err == nil {
+			outArray = trimmed
 		}
+		// 如果出错，保持 outArray 不变（不移除 padding）
+		// 这处理了加密时input长度是块倍数且output='array'时不添加padding的情况
 	}
 
 	// 返回结果
@@ -386,7 +374,23 @@ func sm4GCM(runtime *goja.Runtime, inArray []byte, key []byte, cryptFlag int, op
 	}
 
 	// 获取附加认证数据 (AAD)
-	aad, _ := GetBytesOption(opts, "associatedData", runtime)
+	// AAD 可以是字符串（UTF-8）或字节数组，不同于其他参数（如IV是hex或bytes）
+	var aad []byte
+	if opts != nil {
+		aadVal := opts.Get("associatedData")
+		if aadVal != nil && !goja.IsUndefined(aadVal) && !goja.IsNull(aadVal) {
+			// 尝试作为字符串或字节数组解析（支持UTF-8字符串）
+			var err error
+			aad, err = ParseStringOrBytes(aadVal, runtime)
+			if err != nil {
+				// 如果解析失败，尝试作为hex
+				aad, err = ParseHexOrBytes(aadVal, runtime)
+				if err != nil {
+					aad = []byte{}
+				}
+			}
+		}
+	}
 	if aad == nil {
 		aad = []byte{}
 	}

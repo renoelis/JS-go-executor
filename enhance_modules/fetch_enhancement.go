@@ -480,20 +480,20 @@ func (fe *FetchEnhancer) fetch(runtime *goja.Runtime, call goja.FunctionCall) go
 			if !goja.IsUndefined(urlVal) && urlVal != nil {
 				// 这是一个 Request 对象，提取其属性
 				url = urlVal.String()
-				
+
 				// 从 Request 对象提取选项
 				options = make(map[string]interface{})
-				
+
 				// 提取 method
 				if methodVal := firstArgObj.Get("method"); !goja.IsUndefined(methodVal) {
 					options["method"] = methodVal.String()
 				}
-				
+
 				// 提取 headers
 				if headersVal := firstArgObj.Get("headers"); !goja.IsUndefined(headersVal) {
 					options["headers"] = headersVal
 				}
-				
+
 				// 提取 body（保留原始对象）
 				if bodyVal := firstArgObj.Get("body"); !goja.IsUndefined(bodyVal) && !goja.IsNull(bodyVal) {
 					if bodyObj, ok := bodyVal.(*goja.Object); ok {
@@ -503,7 +503,7 @@ func (fe *FetchEnhancer) fetch(runtime *goja.Runtime, call goja.FunctionCall) go
 						options["body"] = bodyVal.Export()
 					}
 				}
-				
+
 				// 如果有第二个参数，合并选项（第二个参数优先级更高）
 				if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
 					if secondArgObj := call.Arguments[1].ToObject(runtime); secondArgObj != nil {
@@ -962,7 +962,7 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 	var reqErr error
 
 	go func() {
-		defer close(done) // 🔥 确保 done 总会关闭（防御异常情况）
+		defer close(done)                     // 🔥 确保 done 总会关闭（防御异常情况）
 		resp, reqErr = httpClient.Do(httpReq) // 🔥 使用选择的 client
 	}()
 
@@ -1424,10 +1424,10 @@ func (fe *FetchEnhancer) createRequestConstructor(runtime *goja.Runtime) func(go
 			if optionsObj := call.Arguments[1].ToObject(runtime); optionsObj != nil {
 				// 先提取 body（保持原始类型）
 				bodyVal = optionsObj.Get("body")
-				
+
 				// 再 Export 其他选项
 				options = call.Arguments[1].Export().(map[string]interface{})
-				
+
 				// 恢复 body 为 goja.Value
 				if !goja.IsUndefined(bodyVal) && bodyVal != nil {
 					options["body"] = bodyVal

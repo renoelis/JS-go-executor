@@ -70,6 +70,11 @@ func SM3Hash(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 				panic(runtime.NewGoError(fmt.Errorf("invalid key parameter: %w", err)))
 			}
 
+			// 检查 key 是否为空（匹配 Node.js sm-crypto-v2 行为）
+			if len(key) == 0 {
+				panic(runtime.NewGoError(fmt.Errorf("invalid key")))
+			}
+
 			// 计算 HMAC
 			hash := sm3Hmac(key, input)
 			if output == "array" {

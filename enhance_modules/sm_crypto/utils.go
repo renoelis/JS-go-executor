@@ -186,8 +186,12 @@ func CreateUint8Array(runtime *goja.Runtime, data []byte) goja.Value {
 // ParseStringOrBytes 解析字符串或字节数组参数
 // 如果是字符串，返回 UTF-8 字节；如果是 Uint8Array，返回字节数组
 func ParseStringOrBytes(val goja.Value, runtime *goja.Runtime) ([]byte, error) {
-	if val == nil || goja.IsUndefined(val) || goja.IsNull(val) {
-		return nil, errors.New("argument is undefined or null")
+	// 匹配 Node.js sm-crypto-v2 的错误消息
+	if goja.IsNull(val) {
+		return nil, errors.New("object null is not iterable (cannot read property Symbol(Symbol.iterator))")
+	}
+	if val == nil || goja.IsUndefined(val) {
+		return nil, errors.New("undefined is not iterable (cannot read property Symbol(Symbol.iterator))")
 	}
 
 	// 尝试作为字符串

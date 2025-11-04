@@ -37,7 +37,7 @@ func HexToPrivateKey(privateKeyHex string) (*sm2.PrivateKey, error) {
 	curve := sm2.P256()
 	n := curve.Params().N
 	if d.Cmp(big.NewInt(1)) < 0 || d.Cmp(n) >= 0 {
-		return nil, errors.New("private key out of range")
+		return nil, errors.New("out of range [1..N-1]")
 	}
 
 	// 使用 gmsm 库的安全方法创建私钥

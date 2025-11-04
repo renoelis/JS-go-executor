@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"strings"
 
 	"github.com/dop251/goja"
 	"github.com/emmansun/gmsm/sm2"
@@ -33,7 +34,21 @@ func GenerateKeyPairHex(call goja.FunctionCall, runtime *goja.Runtime) goja.Valu
 		seedStr := call.Argument(0).String()
 		// 使用种子生成私钥
 		d := new(big.Int)
-		d.SetString(seedStr, 10) // 十进制解析
+
+		// 尝试解析种子（支持十进制和十六进制）
+		var success bool
+		if strings.HasPrefix(seedStr, "0x") || strings.HasPrefix(seedStr, "0X") {
+			// 十六进制（去掉 0x 前缀）
+			_, success = d.SetString(seedStr[2:], 16)
+		} else {
+			// 十进制
+			_, success = d.SetString(seedStr, 10)
+		}
+
+		if !success {
+			// 匹配 Node.js sm-crypto-v2 的错误消息
+			panic(runtime.NewTypeError(fmt.Sprintf("Cannot convert %s to a BigInt", seedStr)))
+		}
 
 		// 确保在有效范围内 (1 到 n-1)
 		n := sm2.P256().Params().N
@@ -542,17 +557,41 @@ func VerifyPublicKey(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 // ============================================================================
 
 // GetHash 计算摘要（含 Z 值）
-// 对应 JS: sm2.getHash(hashHex, publicKey, userId?)
+// 对应 JS: sm2.getHash(msg, publicKey, userId?)
+// msg 可以是：
+//   - 十六进制字符串（如 "48656c6c6f"）
+//   - 普通 UTF-8 字符串（如 "Hello"）- 会自动转换为十六进制
 func GetHash(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	if len(call.Arguments) < 2 {
 		panic(runtime.NewTypeError("getHash requires at least 2 arguments"))
 	}
 
-	// 参数 0: hashHex (消息的十六进制)
-	hashHex := call.Argument(0).String()
-	msgBytes, err := HexToBytes(hashHex)
-	if err != nil {
-		panic(runtime.NewGoError(fmt.Errorf("invalid hash hex: %w", err)))
+	// 参数 0: msg (可以是十六进制字符串或普通字符串)
+	msgStr := call.Argument(0).String()
+
+	// 尝试解析为字节数组：先尝试十六进制，失败则作为UTF-8
+	var msgBytes []byte
+	var err error
+
+	// 检查是否是有效的十六进制字符串
+	isHex := true
+	for _, c := range msgStr {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			isHex = false
+			break
+		}
+	}
+
+	if isHex && len(msgStr) > 0 {
+		// 尝试作为十六进制解析
+		msgBytes, err = HexToBytes(msgStr)
+		if err != nil {
+			// 十六进制解析失败，作为UTF-8处理
+			msgBytes = Utf8ToBytes(msgStr)
+		}
+	} else {
+		// 不是十六进制，作为UTF-8处理
+		msgBytes = Utf8ToBytes(msgStr)
 	}
 
 	// 参数 1: publicKey
@@ -585,6 +624,7 @@ func GetHash(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 
 // GetZ 计算 Z 值
 // 对应 JS: sm2.getZ(publicKey, userId?)
+// 返回: Uint8Array - Z 值（32字节）
 func GetZ(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	if len(call.Arguments) == 0 {
 		panic(runtime.NewTypeError("getZ requires at least 1 argument"))
@@ -609,11 +649,13 @@ func GetZ(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		panic(runtime.NewGoError(fmt.Errorf("failed to calculate ZA: %w", err)))
 	}
 
-	return runtime.ToValue(BytesToHex(za))
+	// 返回 Uint8Array（匹配 Node.js sm-crypto-v2 行为）
+	return CreateUint8Array(runtime, za)
 }
 
 // ECDH 椭圆曲线 Diffie-Hellman 密钥交换
 // 对应 JS: sm2.ecdh(privateKeyA, publicKeyB)
+// 返回: Uint8Array - 共享密钥（32字节）
 func ECDH(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	if len(call.Arguments) < 2 {
 		panic(runtime.NewTypeError("ecdh requires 2 arguments"))
@@ -637,18 +679,37 @@ func ECDH(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	// nolint:staticcheck // SM2 ECDH 需要使用底层 API（非标准 NIST 曲线）
 	x, _ := publicKey.ScalarMult(publicKey.X, publicKey.Y, privateKey.D.Bytes())
 
-	return runtime.ToValue(LeftPad(x.Text(16), 64))
+	// 将 x 坐标转换为 32 字节的 Uint8Array（匹配 Node.js sm-crypto-v2 行为）
+	xBytes := make([]byte, 32)
+	xBytesRaw := x.Bytes()
+	copy(xBytes[32-len(xBytesRaw):], xBytesRaw)
+
+	return CreateUint8Array(runtime, xBytes)
 }
 
-// GetPoint 获取 SM2 曲线基点
+// GetPoint 获取 SM2 曲线基点（包含完整的点信息和密钥对）
 // 对应 JS: sm2.getPoint()
-// 返回: { x: string (64字符十六进制), y: string (64字符十六进制) }
+// 返回: { x: string, y: string, k: string, x1: string, privateKey: string, publicKey: string }
 func GetPoint(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	params := sm2.P256().Params()
 
+	// 生成一个临时密钥对用于填充 k, x1, privateKey, publicKey 字段
+	// 这匹配 Node.js sm-crypto-v2 的行为
+	keypair, err := sm2.GenerateKey(rand.Reader)
+	if err != nil {
+		// 如果生成失败，使用固定值（理论上不会发生）
+		panic(runtime.NewGoError(fmt.Errorf("failed to generate keypair for getPoint: %w", err)))
+	}
+
 	obj := runtime.NewObject()
+	// 基点坐标
 	obj.Set("x", runtime.ToValue(LeftPad(params.Gx.Text(16), 64)))
 	obj.Set("y", runtime.ToValue(LeftPad(params.Gy.Text(16), 64)))
+	// 密钥对相关字段（匹配 Node.js 版本）
+	obj.Set("k", runtime.ToValue(LeftPad(keypair.D.Text(16), 64)))
+	obj.Set("x1", runtime.ToValue(LeftPad(keypair.PublicKey.X.Text(16), 64)))
+	obj.Set("privateKey", runtime.ToValue(LeftPad(keypair.D.Text(16), 64)))
+	obj.Set("publicKey", runtime.ToValue(PublicKeyToHex(&keypair.PublicKey, false)))
 
 	return obj
 }
@@ -890,7 +951,7 @@ func calculateSharedKeyCore(
 	// 计算 [x2_]RB + PB
 	sumX, sumY := curve.Add(x2RB_x, x2RB_y, pubB.X, pubB.Y)
 	if sumX == nil || sumY == nil {
-		return nil, fmt.Errorf("Add returned nil (x2_*RB + PB)")
+		return nil, fmt.Errorf("add returned nil (x2_*RB + PB)")
 	}
 
 	// nolint:staticcheck // SM2 国密算法需要使用底层 API

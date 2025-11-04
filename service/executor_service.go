@@ -341,7 +341,8 @@ func (e *JSExecutor) registerModules(cfg *config.Config) {
 	// 注册其他模块
 	e.moduleRegistry.Register(enhance_modules.NewAxiosEnhancer(assets.AxiosJS))
 	e.moduleRegistry.Register(enhance_modules.NewDayjsEnhancerWithEmbedded(assets.Dayjs))
-	e.moduleRegistry.Register(enhance_modules.NewQsEnhancer(assets.Qs))
+	// e.moduleRegistry.Register(enhance_modules.NewQsEnhancer(assets.Qs)) // 旧版 JS 实现已废弃
+	e.moduleRegistry.Register(enhance_modules.NewQsNativeEnhancer()) // 🔥 qs 模块（Go 原生实现：基于 zaytracom/qs v1.0.2，95%+ 兼容 Node.js qs）
 	e.moduleRegistry.Register(enhance_modules.NewLodashEnhancer(assets.Lodash))
 
 	// 🔥 Pinyin 模块（Go 原生实现：内存占用从 1.6GB 降低到 ~5-10MB，性能提升 100 倍）
@@ -539,8 +540,9 @@ func (e *JSExecutor) warmupModules() error {
 				return e.moduleRegistry.GetModule("qs")
 			},
 			precompile: func(m interface{}) error {
-				if enhancer, ok := m.(*enhance_modules.QsEnhancer); ok {
-					return enhancer.PrecompileQs()
+				// 🔥 Go 原生实现，无需预编译
+				if _, ok := m.(*enhance_modules.QsNativeEnhancer); ok {
+					return nil
 				}
 				return fmt.Errorf("invalid module type")
 			},

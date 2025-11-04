@@ -303,13 +303,8 @@ func (fe *FetchEnhancer) createBlobObject(runtime *goja.Runtime, blob *JSBlob) *
 		}
 	}
 
-	// size 属性（只读、不可配置）
-	obj.DefineDataProperty("size", runtime.ToValue(int64(len(blob.data))),
-		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE) // writable=false, enumerable=false, configurable=false
-
-	// type 属性（只读、不可配置）
-	obj.DefineDataProperty("type", runtime.ToValue(blob.typ),
-		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE) // writable=false, enumerable=false, configurable=false
+	// ✅ size 和 type 现在在 Blob.prototype 上定义为 getter
+	// 不再在实例上定义这些属性
 
 	// 标记为 Blob 对象（内部使用，不可枚举、不可配置）
 	obj.DefineDataProperty("__isBlob", runtime.ToValue(true),
@@ -376,7 +371,7 @@ func (fe *FetchEnhancer) createFileConstructor(runtime *goja.Runtime) func(goja.
 				partVal := partsObj.Get(strconv.Itoa(i))
 				// 🔥 不跳过 undefined/null，让它们走 toString 路径
 				// undefined → "undefined", null → "null"
-				
+
 				var partBytes []byte
 
 				// 1. 检查是否是 Blob/File
@@ -463,17 +458,14 @@ func (fe *FetchEnhancer) createFileObject(runtime *goja.Runtime, file *JSFile) *
 		}
 	}
 
-	// Blob 属性（只读、不可配置）
-	obj.DefineDataProperty("size", runtime.ToValue(int64(len(file.data))),
-		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE) // writable=false, enumerable=false, configurable=false
-	obj.DefineDataProperty("type", runtime.ToValue(file.typ),
-		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE) // writable=false, enumerable=false, configurable=false
+	// ✅ size 和 type 继承自 Blob.prototype 的 getter
+	// 不再在 File 实例上重复定义
 
-	// File 特有属性（只读、不可配置）
+	// File 特有属性（只读、可枚举、不可配置）- 与 Node.js/浏览器一致
 	obj.DefineDataProperty("name", runtime.ToValue(file.name),
-		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE) // writable=false, enumerable=false, configurable=false
+		goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_FALSE) // writable=false, enumerable=TRUE, configurable=false
 	obj.DefineDataProperty("lastModified", runtime.ToValue(file.lastModified),
-		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE) // writable=false, enumerable=false, configurable=false
+		goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_FALSE) // writable=false, enumerable=TRUE, configurable=false
 
 	// 🔥 P1-3: 删除非标准的 lastModifiedDate（已废弃）
 	// obj.Set("lastModifiedDate", ...) - 已移除
@@ -496,12 +488,31 @@ func (fe *FetchEnhancer) createFileObject(runtime *goja.Runtime, file *JSFile) *
 
 // RegisterBlobFileAPI 注册 Blob 和 File API
 func (fe *FetchEnhancer) RegisterBlobFileAPI(runtime *goja.Runtime) error {
-	// 🔥 P1-4: 缓存 Uint8Array 工厂函数（避免每次 bytes() 都 RunString）
-	var uint8ArrayFactory goja.Callable
-	factorySrc := `(function(ab){ return new Uint8Array(ab); })`
-	if fnVal, err := runtime.RunString(factorySrc); err == nil {
-		if factory, ok := goja.AssertFunction(fnVal); ok {
-			uint8ArrayFactory = factory
+	// 🔥 优化：缓存常用的全局函数（避免重复 runtime.RunString）
+	var (
+		uint8ArrayConstructor goja.Constructor
+		objectDefineProperty  goja.Callable
+		symbolToStringTag     goja.Value
+	)
+
+	// 获取 Uint8Array 构造函数
+	if uint8ArrayVal := runtime.Get("Uint8Array"); uint8ArrayVal != nil && !goja.IsUndefined(uint8ArrayVal) {
+		uint8ArrayConstructor, _ = goja.AssertConstructor(uint8ArrayVal)
+	}
+
+	// 获取 Object.defineProperty
+	if objectVal := runtime.Get("Object"); objectVal != nil && !goja.IsUndefined(objectVal) {
+		if objectObj := objectVal.ToObject(runtime); objectObj != nil {
+			if defProp := objectObj.Get("defineProperty"); defProp != nil && !goja.IsUndefined(defProp) {
+				objectDefineProperty, _ = goja.AssertFunction(defProp)
+			}
+		}
+	}
+
+	// 获取 Symbol.toStringTag
+	if symbolVal := runtime.Get("Symbol"); symbolVal != nil && !goja.IsUndefined(symbolVal) {
+		if symbolObj := symbolVal.ToObject(runtime); symbolObj != nil {
+			symbolToStringTag = symbolObj.Get("toStringTag")
 		}
 	}
 
@@ -623,9 +634,9 @@ func (fe *FetchEnhancer) RegisterBlobFileAPI(runtime *goja.Runtime) error {
 		copy(buf, blob.data)
 		arrayBuffer := runtime.NewArrayBuffer(buf)
 
-		// 🔥 使用缓存的 Uint8Array 工厂函数
-		if uint8ArrayFactory != nil {
-			if uint8Array, err := uint8ArrayFactory(goja.Undefined(), runtime.ToValue(arrayBuffer)); err == nil {
+		// 🔥 使用 Uint8Array 构造函数
+		if uint8ArrayConstructor != nil {
+			if uint8Array, err := uint8ArrayConstructor(nil, runtime.ToValue(arrayBuffer)); err == nil {
 				resolve(uint8Array)
 				return runtime.ToValue(promise)
 			}
@@ -641,61 +652,86 @@ func (fe *FetchEnhancer) RegisterBlobFileAPI(runtime *goja.Runtime) error {
 		panic(runtime.NewTypeError("Blob.stream() 需要 Streams API 支持，当前未实现"))
 	})
 
-	// 🔥 P2-2: 在原型上设置 Symbol.toStringTag（不可配置）
-	script := `(function(proto) {
-		if (typeof Symbol !== 'undefined' && Symbol.toStringTag) {
-			Object.defineProperty(proto, Symbol.toStringTag, {
-				value: 'Blob',
-				writable: false,
-				enumerable: false,
-				configurable: false
-			});
-		}
-	})`
-	if setterVal, err := runtime.RunString(script); err == nil {
-		if setter, ok := goja.AssertFunction(setterVal); ok {
-			setter(goja.Undefined(), runtime.ToValue(blobPrototype))
-		}
-	}
-
-	// 🔥 P1-3: 设置原型方法为不可枚举
-	makeNonEnumerableScript := `(function(proto, names){
-		names.forEach(function(n){
-			var d = Object.getOwnPropertyDescriptor(proto, n);
-			if (d && d.enumerable) {
-				Object.defineProperty(proto, n, {
-					value: d.value,
-					writable: true,
-					enumerable: false,
-					configurable: true
-				});
+	// 🔥 在原型上添加 size 和 type 的 getter 属性（与 Node.js/浏览器一致）
+	if objectDefineProperty != nil {
+		// size getter
+		sizeDescriptor := runtime.NewObject()
+		sizeGetter := func(call goja.FunctionCall) goja.Value {
+			this := call.This.ToObject(runtime)
+			if blobDataVal := this.Get("__blobData"); blobDataVal != nil && !goja.IsUndefined(blobDataVal) {
+				if blob, ok := blobDataVal.Export().(*JSBlob); ok {
+					return runtime.ToValue(int64(len(blob.data)))
+				}
 			}
-		});
-	})`
-	if makeNonEnumVal, err := runtime.RunString(makeNonEnumerableScript); err == nil {
-		if makeNonEnum, ok := goja.AssertFunction(makeNonEnumVal); ok {
-			methodNames := []string{"arrayBuffer", "text", "slice", "bytes", "stream"}
-			makeNonEnum(goja.Undefined(), runtime.ToValue(blobPrototype), runtime.ToValue(methodNames))
+			return runtime.ToValue(0)
 		}
+		sizeDescriptor.Set("get", sizeGetter)
+		sizeDescriptor.Set("enumerable", runtime.ToValue(true))
+		sizeDescriptor.Set("configurable", runtime.ToValue(true))
+
+		objectDefineProperty(goja.Undefined(),
+			runtime.ToValue(blobPrototype),
+			runtime.ToValue("size"),
+			sizeDescriptor,
+		)
+
+		// type getter
+		typeDescriptor := runtime.NewObject()
+		typeGetter := func(call goja.FunctionCall) goja.Value {
+			this := call.This.ToObject(runtime)
+			if blobDataVal := this.Get("__blobData"); blobDataVal != nil && !goja.IsUndefined(blobDataVal) {
+				if blob, ok := blobDataVal.Export().(*JSBlob); ok {
+					return runtime.ToValue(blob.typ)
+				}
+			}
+			return runtime.ToValue("")
+		}
+		typeDescriptor.Set("get", typeGetter)
+		typeDescriptor.Set("enumerable", runtime.ToValue(true))
+		typeDescriptor.Set("configurable", runtime.ToValue(true))
+
+		objectDefineProperty(goja.Undefined(),
+			runtime.ToValue(blobPrototype),
+			runtime.ToValue("type"),
+			typeDescriptor,
+		)
 	}
 
-	// 设置 Blob.prototype.constructor（不可枚举）
+	// 🔥 在原型上设置 Symbol.toStringTag（不可配置）
+	if objectDefineProperty != nil && symbolToStringTag != nil && !goja.IsUndefined(symbolToStringTag) {
+		descriptor := runtime.NewObject()
+		descriptor.Set("value", runtime.ToValue("Blob"))
+		descriptor.Set("writable", runtime.ToValue(false))
+		descriptor.Set("enumerable", runtime.ToValue(false))
+		descriptor.Set("configurable", runtime.ToValue(false))
+
+		objectDefineProperty(goja.Undefined(),
+			runtime.ToValue(blobPrototype),
+			symbolToStringTag,
+			descriptor,
+		)
+	}
+
+	// ✅ 方法保持可枚举（与 Node.js/浏览器一致）
+	// 不再设置 enumerable: false，使用默认的可枚举行为
+
+	// 设置 Blob.prototype.constructor（不可枚举，与 Node.js/浏览器一致）
 	blobPrototype.Set("constructor", blobConstructor)
 	blobConstructor.Set("prototype", blobPrototype)
-	
-	// 🔥 将 constructor 设为不可枚举
-	defineCtorScript := `(function(proto, ctor){
-		Object.defineProperty(proto, "constructor", {
-			value: ctor,
-			writable: true,
-			enumerable: false,
-			configurable: true
-		});
-	})`
-	if defineCtorVal, err := runtime.RunString(defineCtorScript); err == nil {
-		if defineCtorFunc, ok := goja.AssertFunction(defineCtorVal); ok {
-			defineCtorFunc(goja.Undefined(), runtime.ToValue(blobPrototype), runtime.ToValue(blobConstructor))
-		}
+
+	// 🔥 将 constructor 设为不可枚举（与 Node.js/浏览器一致）
+	if objectDefineProperty != nil {
+		descriptor := runtime.NewObject()
+		descriptor.Set("value", blobConstructor)
+		descriptor.Set("writable", runtime.ToValue(true))
+		descriptor.Set("enumerable", runtime.ToValue(false))
+		descriptor.Set("configurable", runtime.ToValue(true))
+
+		objectDefineProperty(goja.Undefined(),
+			runtime.ToValue(blobPrototype),
+			runtime.ToValue("constructor"),
+			descriptor,
+		)
 	}
 
 	// 注册 Blob 构造器
@@ -709,30 +745,37 @@ func (fe *FetchEnhancer) RegisterBlobFileAPI(runtime *goja.Runtime) error {
 	filePrototype.SetPrototype(blobPrototype)
 
 	// 🔥 在 File.prototype 上设置 Symbol.toStringTag（不可配置）
-	fileScript := `(function(proto) {
-		if (typeof Symbol !== 'undefined' && Symbol.toStringTag) {
-			Object.defineProperty(proto, Symbol.toStringTag, {
-				value: 'File',
-				writable: false,
-				enumerable: false,
-				configurable: false
-			});
-		}
-	})`
-	if fileSetterVal, err := runtime.RunString(fileScript); err == nil {
-		if fileSetter, ok := goja.AssertFunction(fileSetterVal); ok {
-			fileSetter(goja.Undefined(), runtime.ToValue(filePrototype))
-		}
+	if objectDefineProperty != nil && symbolToStringTag != nil && !goja.IsUndefined(symbolToStringTag) {
+		descriptor := runtime.NewObject()
+		descriptor.Set("value", runtime.ToValue("File"))
+		descriptor.Set("writable", runtime.ToValue(false))
+		descriptor.Set("enumerable", runtime.ToValue(false))
+		descriptor.Set("configurable", runtime.ToValue(false))
+
+		objectDefineProperty(goja.Undefined(),
+			runtime.ToValue(filePrototype),
+			symbolToStringTag,
+			descriptor,
+		)
 	}
 
+	// ✅ File.prototype.constructor 不可枚举（与 Node.js/浏览器一致）
 	filePrototype.Set("constructor", fileConstructor)
 	fileConstructor.Set("prototype", filePrototype)
-	
-	// 🔥 将 File.prototype.constructor 设为不可枚举
-	if defineCtorVal, err := runtime.RunString(defineCtorScript); err == nil {
-		if defineCtorFunc, ok := goja.AssertFunction(defineCtorVal); ok {
-			defineCtorFunc(goja.Undefined(), runtime.ToValue(filePrototype), runtime.ToValue(fileConstructor))
-		}
+
+	// 🔥 将 File.prototype.constructor 设为不可枚举（与 Node.js/浏览器一致）
+	if objectDefineProperty != nil {
+		descriptor := runtime.NewObject()
+		descriptor.Set("value", fileConstructor)
+		descriptor.Set("writable", runtime.ToValue(true))
+		descriptor.Set("enumerable", runtime.ToValue(false))
+		descriptor.Set("configurable", runtime.ToValue(true))
+
+		objectDefineProperty(goja.Undefined(),
+			runtime.ToValue(filePrototype),
+			runtime.ToValue("constructor"),
+			descriptor,
+		)
 	}
 
 	// 注册 File 构造器

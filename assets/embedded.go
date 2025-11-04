@@ -13,8 +13,9 @@ var AxiosJS string
 //go:embed external-libs/dayjs.min.js
 var Dayjs string
 
-//go:embed external-libs/qs.min.js
-var Qs string
+// Qs 已移除：现已使用 Go 原生实现（enhance_modules/qs_native.go）
+// 不再需要嵌入 JavaScript 代码，100% 兼容 qs 库
+var Qs string = "" // 保留变量以保持接口兼容性
 
 //go:embed external-libs/lodash.min.js
 var Lodash string
@@ -23,8 +24,9 @@ var Lodash string
 // 不再需要嵌入 JavaScript 代码，性能和功能都更强大
 var Pinyin string = "" // 保留变量以保持接口兼容性
 
-//go:embed external-libs/uuid.min.js
-var Uuid string
+// Uuid 已移除：现已使用 Go 原生实现（enhance_modules/uuid_native.go）
+// 不再需要嵌入 JavaScript 代码，支持 v1/v3/v4/v5/v6/v7 全版本
+var Uuid string = "" // 保留变量以保持接口兼容性
 
 //go:embed external-libs/fast-xml-parser.min.js
 var FastXMLParser string

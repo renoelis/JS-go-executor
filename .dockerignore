@@ -110,3 +110,13 @@ test_datefns_fix.go
 test_error_in_timeout.js
 test_eventloop_simple.js
 .cursor/
+
+!.env.example
+!.env
+scripts/migrations
+scripts/add_performance_indexes.sql
+轻流 x FlowCodeBlock-1.md
+tools
+test_*.go
+scripts/minify-html.js
+temp_test
