@@ -30,6 +30,9 @@ import (
 	"github.com/dop251/goja"
 	"github.com/dop251/goja_nodejs/require"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/blake2b"
+	"golang.org/x/crypto/blake2s"
+	"golang.org/x/crypto/sha3"
 )
 
 // ============================================================================
@@ -246,7 +249,21 @@ func (ce *CryptoEnhancer) addCreateHashMethod(runtime *goja.Runtime, cryptoObj *
 		// 🔥 修复：支持算法别名（rsa-sha256、sha-256 等）
 		algorithm := normalizeHashAlgorithm(strings.ToLower(call.Arguments[0].String()))
 
+		// 🔥 Node.js 18+：解析 options 参数（用于 SHAKE）
+		var outputLength int
+		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) && !goja.IsNull(call.Arguments[1]) {
+			if opts, ok := call.Arguments[1].(*goja.Object); ok && opts != nil {
+				if lengthVal := opts.Get("outputLength"); !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
+					outputLength = int(lengthVal.ToInteger())
+				}
+			}
+		}
+
+		// 🔥 特殊处理：SHAKE 系列使用 ShakeHash 接口
+		var isShake bool
+		var shakeHash sha3.ShakeHash
 		var hasher hash.Hash
+
 		switch algorithm {
 		case "md5":
 			hasher = md5.New()
@@ -260,6 +277,48 @@ func (ce *CryptoEnhancer) addCreateHashMethod(runtime *goja.Runtime, cryptoObj *
 			hasher = sha512.New384()
 		case "sha512":
 			hasher = sha512.New()
+		// SHA-512 变体
+		case "sha512224", "sha512/224":
+			hasher = sha512.New512_224()
+		case "sha512256", "sha512/256":
+			hasher = sha512.New512_256()
+		// SHA3 系列
+		case "sha3224":
+			hasher = sha3.New224()
+		case "sha3256":
+			hasher = sha3.New256()
+		case "sha3384":
+			hasher = sha3.New384()
+		case "sha3512":
+			hasher = sha3.New512()
+		// SHAKE 系列 (可扩展输出函数) - 特殊处理
+		case "shake128":
+			isShake = true
+			shakeHash = sha3.NewShake128()
+			// 默认输出长度：16 字节（与 Node.js 一致）
+			if outputLength == 0 {
+				outputLength = 16
+			}
+		case "shake256":
+			isShake = true
+			shakeHash = sha3.NewShake256()
+			// 默认输出长度：32 字节（与 Node.js 一致）
+			if outputLength == 0 {
+				outputLength = 32
+			}
+		// BLAKE2 系列
+		case "blake2b512":
+			h, err := blake2b.New512(nil)
+			if err != nil {
+				panic(runtime.NewGoError(fmt.Errorf("创建 blake2b512 失败: %w", err)))
+			}
+			hasher = h
+		case "blake2s256":
+			h, err := blake2s.New256(nil)
+			if err != nil {
+				panic(runtime.NewGoError(fmt.Errorf("创建 blake2s256 失败: %w", err)))
+			}
+			hasher = h
 		default:
 			panic(runtime.NewTypeError(fmt.Sprintf("不支持的哈希算法: %s", algorithm)))
 		}
@@ -267,10 +326,18 @@ func (ce *CryptoEnhancer) addCreateHashMethod(runtime *goja.Runtime, cryptoObj *
 		// 创建Hash对象
 		hashObj := runtime.NewObject()
 
+		// 🔥 新增：跟踪 Hash 对象是否已经 digest
+		var digested bool
+
 		// update方法
 		// 🔥 修复：支持 Buffer/TypedArray/ArrayBuffer/DataView/字符串
 		// 🔥 新增：支持 inputEncoding 参数（hex/base64/latin1/ascii/utf8）
 		hashObj.Set("update", func(call goja.FunctionCall) goja.Value {
+			// 🔥 检查是否已经调用过 digest()
+			if digested {
+				panic(runtime.NewTypeError("Digest already called"))
+			}
+
 			if len(call.Arguments) == 0 {
 				panic(runtime.NewTypeError("update 需要 data 参数"))
 			}
@@ -325,7 +392,12 @@ func (ce *CryptoEnhancer) addCreateHashMethod(runtime *goja.Runtime, cryptoObj *
 				}
 			}
 
-			hasher.Write(buf)
+			// 🔥 SHAKE 使用 Write 方法，标准 hash 也使用 Write
+			if isShake {
+				shakeHash.Write(buf)
+			} else {
+				hasher.Write(buf)
+			}
 
 			// 返回this以支持链式调用
 			return call.This
@@ -333,8 +405,26 @@ func (ce *CryptoEnhancer) addCreateHashMethod(runtime *goja.Runtime, cryptoObj *
 
 		// digest方法
 		// 🔥 修复：默认返回 Buffer（与 Node.js 对齐）
+		// 🔥 特殊处理：SHAKE 使用可变长度输出
 		hashObj.Set("digest", func(call goja.FunctionCall) goja.Value {
-			sum := hasher.Sum(nil)
+			// 🔥 检查是否已经调用过 digest()
+			if digested {
+				panic(runtime.NewTypeError("Digest already called"))
+			}
+			digested = true // 标记为已 digest
+
+			var sum []byte
+
+			// 🔥 SHAKE 系列使用 Read() 方法读取指定长度
+			if isShake {
+				sum = make([]byte, outputLength)
+				_, err := shakeHash.Read(sum)
+				if err != nil {
+					panic(runtime.NewGoError(fmt.Errorf("SHAKE 读取输出失败: %w", err)))
+				}
+			} else {
+				sum = hasher.Sum(nil)
+			}
 
 			// 如果未指定编码，返回 Buffer
 			if len(call.Arguments) == 0 {
@@ -364,63 +454,106 @@ func (ce *CryptoEnhancer) addCreateHashMethod(runtime *goja.Runtime, cryptoObj *
 		// copy方法
 		// 🔥 新增：支持复制哈希的中间状态（用于树形哈希、流式处理等）
 		// 使用闭包工厂函数来避免递归引用问题
-		var createCopyFunc func(hash.Hash, string) func(goja.FunctionCall) goja.Value
-		createCopyFunc = func(currentHasher hash.Hash, algo string) func(goja.FunctionCall) goja.Value {
+		var createCopyFunc func(hash.Hash, sha3.ShakeHash, string, *bool, bool, int) func(goja.FunctionCall) goja.Value
+		createCopyFunc = func(currentHasher hash.Hash, currentShake sha3.ShakeHash, algo string, digestedPtr *bool, isShakeAlgo bool, shakeOutputLen int) func(goja.FunctionCall) goja.Value {
 			return func(call goja.FunctionCall) goja.Value {
-				// 尝试使用 encoding.BinaryMarshaler 接口序列化当前状态
-				type binaryMarshaler interface {
-					MarshalBinary() ([]byte, error)
-				}
-				type binaryUnmarshaler interface {
-					UnmarshalBinary([]byte) error
+				// 🔥 检查是否已经调用过 digest()
+				if *digestedPtr {
+					panic(runtime.NewTypeError("Digest already called"))
 				}
 
-				marshaler, canMarshal := currentHasher.(binaryMarshaler)
-				if !canMarshal {
-					panic(runtime.NewTypeError(fmt.Sprintf("哈希算法 %s 不支持 copy()", algo)))
-				}
-
-				// 序列化当前状态
-				state, err := marshaler.MarshalBinary()
-				if err != nil {
-					panic(runtime.NewGoError(fmt.Errorf("复制哈希状态失败: %w", err)))
-				}
-
-				// 创建新的 hasher
 				var newHasher hash.Hash
-				switch algo {
-				case "md5":
-					newHasher = md5.New()
-				case "sha1":
-					newHasher = sha1.New()
-				case "sha224":
-					newHasher = sha256.New224()
-				case "sha256":
-					newHasher = sha256.New()
-				case "sha384":
-					newHasher = sha512.New384()
-				case "sha512":
-					newHasher = sha512.New()
-				default:
-					panic(runtime.NewTypeError(fmt.Sprintf("不支持的哈希算法: %s", algo)))
-				}
+				var newShake sha3.ShakeHash
 
-				// 反序列化状态到新 hasher
-				unmarshaler, canUnmarshal := newHasher.(binaryUnmarshaler)
-				if !canUnmarshal {
-					panic(runtime.NewTypeError(fmt.Sprintf("哈希算法 %s 不支持 copy()", algo)))
-				}
+				// 🔥 特殊处理：SHAKE 使用 Clone() 方法
+				if isShakeAlgo {
+					newShake = currentShake.Clone()
+				} else {
+					// 尝试使用 encoding.BinaryMarshaler 接口序列化当前状态
+					type binaryMarshaler interface {
+						MarshalBinary() ([]byte, error)
+					}
+					type binaryUnmarshaler interface {
+						UnmarshalBinary([]byte) error
+					}
 
-				err = unmarshaler.UnmarshalBinary(state)
-				if err != nil {
-					panic(runtime.NewGoError(fmt.Errorf("恢复哈希状态失败: %w", err)))
+					marshaler, canMarshal := currentHasher.(binaryMarshaler)
+					if !canMarshal {
+						panic(runtime.NewTypeError(fmt.Sprintf("哈希算法 %s 不支持 copy()", algo)))
+					}
+
+					// 序列化当前状态
+					state, err := marshaler.MarshalBinary()
+					if err != nil {
+						panic(runtime.NewGoError(fmt.Errorf("复制哈希状态失败: %w", err)))
+					}
+
+					// 创建新的 hasher
+					switch algo {
+					case "md5":
+						newHasher = md5.New()
+					case "sha1":
+						newHasher = sha1.New()
+					case "sha224":
+						newHasher = sha256.New224()
+					case "sha256":
+						newHasher = sha256.New()
+					case "sha384":
+						newHasher = sha512.New384()
+					case "sha512":
+						newHasher = sha512.New()
+					case "sha512224", "sha512/224":
+						newHasher = sha512.New512_224()
+					case "sha512256", "sha512/256":
+						newHasher = sha512.New512_256()
+					case "sha3224":
+						newHasher = sha3.New224()
+					case "sha3256":
+						newHasher = sha3.New256()
+					case "sha3384":
+						newHasher = sha3.New384()
+					case "sha3512":
+						newHasher = sha3.New512()
+					case "blake2b512":
+						h, err := blake2b.New512(nil)
+						if err != nil {
+							panic(runtime.NewGoError(fmt.Errorf("创建 blake2b512 失败: %w", err)))
+						}
+						newHasher = h
+					case "blake2s256":
+						h, err := blake2s.New256(nil)
+						if err != nil {
+							panic(runtime.NewGoError(fmt.Errorf("创建 blake2s256 失败: %w", err)))
+						}
+						newHasher = h
+					default:
+						panic(runtime.NewTypeError(fmt.Sprintf("不支持的哈希算法: %s", algo)))
+					}
+
+					// 反序列化状态到新 hasher
+					unmarshaler, canUnmarshal := newHasher.(binaryUnmarshaler)
+					if !canUnmarshal {
+						panic(runtime.NewTypeError(fmt.Sprintf("哈希算法 %s 不支持 copy()", algo)))
+					}
+
+					err = unmarshaler.UnmarshalBinary(state)
+					if err != nil {
+						panic(runtime.NewGoError(fmt.Errorf("恢复哈希状态失败: %w", err)))
+					}
 				}
 
 				// 创建新的 Hash 对象
 				newHashObj := runtime.NewObject()
 
+				// 🔥 新的 Hash 对象也需要跟踪 digested 状态
+				var newDigested bool
+
 				// 为新对象设置 update 方法
 				newHashObj.Set("update", func(call goja.FunctionCall) goja.Value {
+					// 🔥 检查是否已经调用过 digest()
+					if newDigested {
+						panic(runtime.NewTypeError("Digest already called"))
+					}
 					if len(call.Arguments) == 0 {
 						panic(runtime.NewTypeError("update 需要 data 参数"))
 					}
@@ -471,13 +604,35 @@ func (ce *CryptoEnhancer) addCreateHashMethod(runtime *goja.Runtime, cryptoObj *
 						}
 					}
 
-					newHasher.Write(buf)
+					// 🔥 SHAKE 和标准 hash 都使用 Write
+					if isShakeAlgo {
+						newShake.Write(buf)
+					} else {
+						newHasher.Write(buf)
+					}
 					return call.This
 				})
 
 				// 为新对象设置 digest 方法
 				newHashObj.Set("digest", func(call goja.FunctionCall) goja.Value {
-					sum := newHasher.Sum(nil)
+					// 🔥 检查是否已经调用过 digest()
+					if newDigested {
+						panic(runtime.NewTypeError("Digest already called"))
+					}
+					newDigested = true // 标记为已 digest
+
+					var sum []byte
+
+					// 🔥 SHAKE 系列使用 Read() 方法
+					if isShakeAlgo {
+						sum = make([]byte, shakeOutputLen)
+						_, err := newShake.Read(sum)
+						if err != nil {
+							panic(runtime.NewGoError(fmt.Errorf("SHAKE 读取输出失败: %w", err)))
+						}
+					} else {
+						sum = newHasher.Sum(nil)
+					}
 
 					if len(call.Arguments) == 0 {
 						return ce.createBuffer(runtime, sum)
@@ -500,14 +655,14 @@ func (ce *CryptoEnhancer) addCreateHashMethod(runtime *goja.Runtime, cryptoObj *
 					}
 				})
 
-				// 🔥 关键修复：新对象也需要支持 copy，使用工厂函数创建新的 copy 方法
-				newHashObj.Set("copy", createCopyFunc(newHasher, algo))
+				// 🔥 关键修复：新对象也需要支持 copy，使用工厂函数创建新的 copy 方法（传递新的 digested 指针）
+				newHashObj.Set("copy", createCopyFunc(newHasher, newShake, algo, &newDigested, isShakeAlgo, shakeOutputLen))
 
 				return newHashObj
 			}
 		}
 
-		hashObj.Set("copy", createCopyFunc(hasher, algorithm))
+		hashObj.Set("copy", createCopyFunc(hasher, shakeHash, algorithm, &digested, isShake, outputLength))
 
 		return hashObj
 	}
@@ -545,6 +700,35 @@ func (ce *CryptoEnhancer) addCreateHmacMethod(runtime *goja.Runtime, cryptoObj *
 			hasher = hmac.New(sha512.New384, keyBytes)
 		case "sha512":
 			hasher = hmac.New(sha512.New, keyBytes)
+		// SHA-512 变体
+		case "sha512224", "sha512/224":
+			hasher = hmac.New(sha512.New512_224, keyBytes)
+		case "sha512256", "sha512/256":
+			hasher = hmac.New(sha512.New512_256, keyBytes)
+		// SHA3 系列
+		case "sha3224":
+			hasher = hmac.New(sha3.New224, keyBytes)
+		case "sha3256":
+			hasher = hmac.New(sha3.New256, keyBytes)
+		case "sha3384":
+			hasher = hmac.New(sha3.New384, keyBytes)
+		case "sha3512":
+			hasher = hmac.New(sha3.New512, keyBytes)
+		// BLAKE2 系列
+		// 🔥 注意：BLAKE2 虽然有内置密钥支持，但 HMAC-BLAKE2 使用标准 HMAC 构造
+		case "blake2b512":
+			hasher = hmac.New(func() hash.Hash {
+				h, _ := blake2b.New512(nil)
+				return h
+			}, keyBytes)
+		case "blake2s256":
+			hasher = hmac.New(func() hash.Hash {
+				h, _ := blake2s.New256(nil)
+				return h
+			}, keyBytes)
+		// SHAKE 系列不支持 HMAC（它们是可扩展输出函数，不是标准哈希）
+		case "shake128", "shake256":
+			panic(runtime.NewTypeError(fmt.Sprintf("SHAKE 算法不支持 HMAC")))
 		default:
 			panic(runtime.NewTypeError(fmt.Sprintf("不支持的 HMAC 算法: %s", algorithm)))
 		}
@@ -552,10 +736,18 @@ func (ce *CryptoEnhancer) addCreateHmacMethod(runtime *goja.Runtime, cryptoObj *
 		// 创建Hmac对象
 		hmacObj := runtime.NewObject()
 
+		// 🔥 新增：跟踪 HMAC 对象是否已经 digest
+		var digested bool
+
 		// update方法
 		// 🔥 修复：支持 Buffer/TypedArray/ArrayBuffer/DataView/字符串
 		// 🔥 新增：支持 inputEncoding 参数（hex/base64/latin1/ascii/utf8）
 		hmacObj.Set("update", func(call goja.FunctionCall) goja.Value {
+			// 🔥 检查是否已经调用过 digest()
+			if digested {
+				panic(runtime.NewTypeError("Digest already called"))
+			}
+
 			if len(call.Arguments) == 0 {
 				panic(runtime.NewTypeError("update 需要 data 参数"))
 			}
@@ -619,6 +811,12 @@ func (ce *CryptoEnhancer) addCreateHmacMethod(runtime *goja.Runtime, cryptoObj *
 		// digest方法
 		// 🔥 修复：默认返回 Buffer（与 Node.js 对齐）
 		hmacObj.Set("digest", func(call goja.FunctionCall) goja.Value {
+			// 🔥 检查是否已经调用过 digest()
+			if digested {
+				panic(runtime.NewTypeError("Digest already called"))
+			}
+			digested = true // 标记为已 digest
+
 			sum := hasher.Sum(nil)
 
 			// 如果未指定编码，返回 Buffer
@@ -650,7 +848,7 @@ func (ce *CryptoEnhancer) addCreateHmacMethod(runtime *goja.Runtime, cryptoObj *
 		// 🔥 新增：支持复制 HMAC 的中间状态
 		// 🔥 Go 的 crypto/hmac 从 Go 1.17 开始支持 MarshalBinary/UnmarshalBinary
 		// 但是接口是在内部实现的，需要使用 encoding 包的接口
-		
+
 		// 使用闭包工厂函数，类似 Hash
 		var createHmacCopyFunc func(hash.Hash, string, []byte) func(goja.FunctionCall) goja.Value
 		createHmacCopyFunc = func(currentHasher hash.Hash, algo string, key []byte) func(goja.FunctionCall) goja.Value {
@@ -658,7 +856,7 @@ func (ce *CryptoEnhancer) addCreateHmacMethod(runtime *goja.Runtime, cryptoObj *
 				// 🔥 HMAC 的 copy 实现：
 				// Go 1.17+ 的 crypto/hmac 实现了 encoding.BinaryMarshaler
 				// 使用 encoding 包的接口进行类型断言
-				
+
 				// 创建新的 HMAC hasher
 				var newHasher hash.Hash
 				switch algo {
@@ -802,8 +1000,8 @@ func (ce *CryptoEnhancer) addRandomMethods(runtime *goja.Runtime, cryptoObj *goj
 	// 🔥 重构：使用共享的 randomUUID 实现
 	randomUUID := createRandomUUIDFunc(runtime)
 
-	// getRandomValues方法 (Web Crypto API兼容)
-	// 🔥 规范：只支持整型 TypedArray，不支持 Float32Array/Float64Array
+	// getRandomValues方法 (Node.js 兼容)
+	// 🔥 规范：只支持整型 TypedArray，不支持 Float32Array/Float64Array/DataView
 	getRandomValues := func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
 			panic(runtime.NewTypeError("getRandomValues 需要一个类型化数组参数"))
@@ -812,7 +1010,7 @@ func (ce *CryptoEnhancer) addRandomMethods(runtime *goja.Runtime, cryptoObj *goj
 		arg := call.Arguments[0]
 		obj, ok := arg.(*goja.Object)
 		if !ok || obj == nil {
-			panic(runtime.NewTypeError("参数必须是 TypedArray 或 DataView"))
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
 		}
 
 		// 获取数组类型名称
@@ -825,7 +1023,7 @@ func (ce *CryptoEnhancer) addRandomMethods(runtime *goja.Runtime, cryptoObj *goj
 			}
 		}
 
-		// 🔥 规范检查：只允许整型 TypedArray 和 DataView
+		// 🔥 规范检查：只允许整型 TypedArray（Node.js 不支持 DataView）
 		var bytesPerElement int
 		var isValidType bool
 
@@ -843,35 +1041,21 @@ func (ce *CryptoEnhancer) addRandomMethods(runtime *goja.Runtime, cryptoObj *goj
 			bytesPerElement = 8
 			isValidType = true
 		case "DataView":
-			bytesPerElement = 1 // DataView 按字节处理
-			isValidType = true
+			// 🔥 Node.js 不支持 DataView（与浏览器 Web Crypto API 不同）
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
 		case "Float32Array", "Float64Array":
-			// 🔥 规范：明确拒绝浮点数组
-			panic(runtime.NewTypeError(fmt.Sprintf(
-				"The \"%s\" argument must be an instance of Int8Array, Uint8Array, "+
-					"Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, "+
-					"BigInt64Array, BigUint64Array, or DataView. Received an instance of %s",
-				"typedArray", typeName)))
+			// 🔥 规范：明确拒绝浮点数组（与 Node.js 一致）
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
 		case "Array":
 			// 🔥 规范：明确拒绝普通数组
-			panic(runtime.NewTypeError("The \"typedArray\" argument must be an instance of Int8Array, Uint8Array, " +
-				"Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, " +
-				"BigInt64Array, BigUint64Array, or DataView. Received an instance of Array"))
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
 		default:
-			// 🔥 未知类型，直接拒绝（不再尝试作为通用 TypedArray 处理）
-			if typeName != "" {
-				panic(runtime.NewTypeError(fmt.Sprintf(
-					"The \"typedArray\" argument must be an instance of Int8Array, Uint8Array, "+
-						"Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, "+
-						"BigInt64Array, BigUint64Array, or DataView. Received an instance of %s",
-					typeName)))
-			} else {
-				panic(runtime.NewTypeError("参数必须是整型 TypedArray 或 DataView"))
-			}
+			// 🔥 未知类型，直接拒绝
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
 		}
 
 		if !isValidType {
-			panic(runtime.NewTypeError("参数必须是整型 TypedArray 或 DataView"))
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
 		}
 
 		// 获取字节长度
@@ -1243,7 +1427,7 @@ func (ce *CryptoEnhancer) addRandomMethods(runtime *goja.Runtime, cryptoObj *goj
 		generateRandom := func() int64 {
 			// 🔥 避免取模偏差（rejection sampling）
 			rangeSize := uint64(max - min)
-			
+
 			// 计算需要的字节数
 			var bytesNeeded int
 			if rangeSize <= 0xFF {
@@ -1401,34 +1585,167 @@ func (ce *CryptoEnhancer) SetupCryptoEnvironment(runtime *goja.Runtime) error {
 			}
 		})
 
+		// 🔥 新增：toJSON方法 - 用于 JSON.stringify() 序列化
+		bufferObj.Set("toJSON", func(call goja.FunctionCall) goja.Value {
+			result := runtime.NewObject()
+			result.Set("type", runtime.ToValue("Buffer"))
+
+			// 创建 data 数组
+			dataArray := make([]interface{}, len(bytes))
+			for i, b := range bytes {
+				dataArray[i] = int(b)
+			}
+			result.Set("data", runtime.ToValue(dataArray))
+
+			return result
+		})
+
+		// 🔥 添加 _isBuffer 标识
+		bufferObj.Set("_isBuffer", runtime.ToValue(true))
+
 		return bufferObj
 	}
 
 	// 添加 getRandomValues 方法 - crypto-js 也会检查这个方法（浏览器兼容）
+	// 🔥 修复：严格遵循 Web Crypto API 规范，拒绝 Float32Array/Float64Array
 	getRandomValues := func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
 			panic(runtime.NewTypeError("getRandomValues 需要一个类型化数组参数"))
 		}
 
 		arg := call.Arguments[0]
-		if obj, ok := arg.(*goja.Object); ok && obj != nil {
-			if lengthVal := obj.Get("length"); !goja.IsUndefined(lengthVal) {
-				length := int(lengthVal.ToInteger())
-				if length > 0 && length <= MaxTypedArraySize {
-					// 生成随机字节并填充数组
-					randomBytes := make([]byte, length*4) // 假设最大4字节元素
-					rand.Read(randomBytes)
+		obj, ok := arg.(*goja.Object)
+		if !ok || obj == nil {
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
+		}
 
-					for i := 0; i < length; i++ {
-						// 简单的32位随机值
-						value := uint32(randomBytes[i*4]) |
-							(uint32(randomBytes[i*4+1]) << 8) |
-							(uint32(randomBytes[i*4+2]) << 16) |
-							(uint32(randomBytes[i*4+3]) << 24)
-						obj.Set(strconv.Itoa(i), runtime.ToValue(value))
+		// 获取数组类型名称
+		var typeName string
+		if constructor := obj.Get("constructor"); !goja.IsUndefined(constructor) {
+			if constructorObj, ok := constructor.(*goja.Object); ok && constructorObj != nil {
+				if nameVal := constructorObj.Get("name"); !goja.IsUndefined(nameVal) {
+					typeName = nameVal.String()
+				}
+			}
+		}
+
+		// 🔥 规范检查：只允许整型 TypedArray（Node.js 不支持 DataView）
+		var bytesPerElement int
+		var isValidType bool
+
+		switch typeName {
+		case "Int8Array", "Uint8Array", "Uint8ClampedArray":
+			bytesPerElement = 1
+			isValidType = true
+		case "Int16Array", "Uint16Array":
+			bytesPerElement = 2
+			isValidType = true
+		case "Int32Array", "Uint32Array":
+			bytesPerElement = 4
+			isValidType = true
+		case "BigInt64Array", "BigUint64Array":
+			bytesPerElement = 8
+			isValidType = true
+		case "DataView":
+			// 🔥 Node.js 不支持 DataView（与浏览器 Web Crypto API 不同）
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
+		case "Float32Array", "Float64Array":
+			// 🔥 规范：明确拒绝浮点数组（与 Node.js 一致）
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
+		case "Array":
+			// 🔥 规范：明确拒绝普通数组
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
+		default:
+			// 🔥 未知类型，直接拒绝
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
+		}
+
+		if !isValidType {
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
+		}
+
+		// 获取字节长度
+		var byteLength int
+		if byteLengthVal := obj.Get("byteLength"); byteLengthVal != nil && !goja.IsUndefined(byteLengthVal) && !goja.IsNull(byteLengthVal) {
+			byteLength = int(byteLengthVal.ToInteger())
+		} else if lengthVal := obj.Get("length"); lengthVal != nil && !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
+			length := int(lengthVal.ToInteger())
+			byteLength = length * bytesPerElement
+		} else {
+			panic(runtime.NewTypeError("无法确定数组大小"))
+		}
+
+		// 🔥 Web Crypto API 限制：最大 65536 字节
+		if byteLength > MaxTypedArraySize {
+			panic(runtime.NewTypeError(fmt.Sprintf(
+				"The ArrayBufferView's byte length (%d) exceeds the number of bytes of entropy available via this API (65536)",
+				byteLength)))
+		}
+
+		if byteLength == 0 {
+			return arg // 空数组直接返回
+		}
+
+		// 生成随机字节
+		randomBytesData := make([]byte, byteLength)
+		_, err := rand.Read(randomBytesData)
+		if err != nil {
+			panic(runtime.NewGoError(fmt.Errorf("生成随机数失败: %w", err)))
+		}
+
+		// 填充数组
+		length := byteLength / bytesPerElement
+		for i := 0; i < length; i++ {
+			offset := i * bytesPerElement
+			var value int64
+
+			switch bytesPerElement {
+			case 1:
+				if typeName == "Int8Array" {
+					value = int64(int8(randomBytesData[offset]))
+				} else {
+					value = int64(randomBytesData[offset])
+				}
+			case 2:
+				if offset+1 < len(randomBytesData) {
+					val := uint16(randomBytesData[offset]) | (uint16(randomBytesData[offset+1]) << 8)
+					if typeName == "Int16Array" {
+						value = int64(int16(val))
+					} else {
+						value = int64(val)
+					}
+				}
+			case 4:
+				if offset+3 < len(randomBytesData) {
+					val := uint32(randomBytesData[offset]) |
+						(uint32(randomBytesData[offset+1]) << 8) |
+						(uint32(randomBytesData[offset+2]) << 16) |
+						(uint32(randomBytesData[offset+3]) << 24)
+					if typeName == "Int32Array" {
+						value = int64(int32(val))
+					} else {
+						value = int64(val)
+					}
+				}
+			case 8:
+				if offset+7 < len(randomBytesData) {
+					val := uint64(randomBytesData[offset]) |
+						(uint64(randomBytesData[offset+1]) << 8) |
+						(uint64(randomBytesData[offset+2]) << 16) |
+						(uint64(randomBytesData[offset+3]) << 24) |
+						(uint64(randomBytesData[offset+4]) << 32) |
+						(uint64(randomBytesData[offset+5]) << 40) |
+						(uint64(randomBytesData[offset+6]) << 48) |
+						(uint64(randomBytesData[offset+7]) << 56)
+					if typeName == "BigInt64Array" {
+						value = int64(val)
+					} else {
+						value = int64(val)
 					}
 				}
 			}
+
+			obj.Set(strconv.Itoa(i), runtime.ToValue(value))
 		}
 
 		return arg
@@ -1663,6 +1980,7 @@ func (ce *CryptoEnhancer) addNativeRandomUUID(runtime *goja.Runtime, cryptoObj *
 }
 
 // addNativeGetRandomValues 添加Go原生的getRandomValues实现
+// 🔥 修复：严格遵循 Node.js 规范，拒绝 Float32Array/Float64Array/DataView
 func (ce *CryptoEnhancer) addNativeGetRandomValues(runtime *goja.Runtime, cryptoObj *goja.Object) error {
 	getRandomValues := func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
@@ -1670,24 +1988,138 @@ func (ce *CryptoEnhancer) addNativeGetRandomValues(runtime *goja.Runtime, crypto
 		}
 
 		arg := call.Arguments[0]
-		if obj, ok := arg.(*goja.Object); ok && obj != nil {
-			if lengthVal := obj.Get("length"); !goja.IsUndefined(lengthVal) {
-				length := int(lengthVal.ToInteger())
-				if length > 0 && length <= MaxTypedArraySize {
-					// 生成随机字节并填充数组
-					randomBytes := make([]byte, length*4) // 假设最大4字节元素
-					rand.Read(randomBytes)
+		obj, ok := arg.(*goja.Object)
+		if !ok || obj == nil {
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
+		}
 
-					for i := 0; i < length; i++ {
-						// 简单的32位随机值
-						value := uint32(randomBytes[i*4]) |
-							(uint32(randomBytes[i*4+1]) << 8) |
-							(uint32(randomBytes[i*4+2]) << 16) |
-							(uint32(randomBytes[i*4+3]) << 24)
-						obj.Set(strconv.Itoa(i), runtime.ToValue(value))
+		// 获取数组类型名称
+		var typeName string
+		if constructor := obj.Get("constructor"); !goja.IsUndefined(constructor) {
+			if constructorObj, ok := constructor.(*goja.Object); ok && constructorObj != nil {
+				if nameVal := constructorObj.Get("name"); !goja.IsUndefined(nameVal) {
+					typeName = nameVal.String()
+				}
+			}
+		}
+
+		// 🔥 规范检查：只允许整型 TypedArray（Node.js 不支持 DataView）
+		var bytesPerElement int
+		var isValidType bool
+
+		switch typeName {
+		case "Int8Array", "Uint8Array", "Uint8ClampedArray":
+			bytesPerElement = 1
+			isValidType = true
+		case "Int16Array", "Uint16Array":
+			bytesPerElement = 2
+			isValidType = true
+		case "Int32Array", "Uint32Array":
+			bytesPerElement = 4
+			isValidType = true
+		case "BigInt64Array", "BigUint64Array":
+			bytesPerElement = 8
+			isValidType = true
+		case "DataView":
+			// 🔥 Node.js 不支持 DataView（与浏览器 Web Crypto API 不同）
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
+		case "Float32Array", "Float64Array":
+			// 🔥 规范：明确拒绝浮点数组（与 Node.js 一致）
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
+		case "Array":
+			// 🔥 规范：明确拒绝普通数组
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
+		default:
+			// 🔥 未知类型，直接拒绝
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
+		}
+
+		if !isValidType {
+			panic(runtime.NewTypeError("The data argument must be an integer-type TypedArray"))
+		}
+
+		// 获取字节长度
+		var byteLength int
+		if byteLengthVal := obj.Get("byteLength"); byteLengthVal != nil && !goja.IsUndefined(byteLengthVal) && !goja.IsNull(byteLengthVal) {
+			byteLength = int(byteLengthVal.ToInteger())
+		} else if lengthVal := obj.Get("length"); lengthVal != nil && !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
+			length := int(lengthVal.ToInteger())
+			byteLength = length * bytesPerElement
+		} else {
+			panic(runtime.NewTypeError("无法确定数组大小"))
+		}
+
+		// 🔥 Web Crypto API 限制：最大 65536 字节
+		if byteLength > MaxTypedArraySize {
+			panic(runtime.NewTypeError(fmt.Sprintf(
+				"The ArrayBufferView's byte length (%d) exceeds the number of bytes of entropy available via this API (65536)",
+				byteLength)))
+		}
+
+		if byteLength == 0 {
+			return arg
+		}
+
+		// 生成随机字节
+		randomBytesData := make([]byte, byteLength)
+		_, err := rand.Read(randomBytesData)
+		if err != nil {
+			panic(runtime.NewGoError(fmt.Errorf("生成随机数失败: %w", err)))
+		}
+
+		// 填充数组
+		length := byteLength / bytesPerElement
+		for i := 0; i < length; i++ {
+			offset := i * bytesPerElement
+			var value int64
+
+			switch bytesPerElement {
+			case 1:
+				if typeName == "Int8Array" {
+					value = int64(int8(randomBytesData[offset]))
+				} else {
+					value = int64(randomBytesData[offset])
+				}
+			case 2:
+				if offset+1 < len(randomBytesData) {
+					val := uint16(randomBytesData[offset]) | (uint16(randomBytesData[offset+1]) << 8)
+					if typeName == "Int16Array" {
+						value = int64(int16(val))
+					} else {
+						value = int64(val)
+					}
+				}
+			case 4:
+				if offset+3 < len(randomBytesData) {
+					val := uint32(randomBytesData[offset]) |
+						(uint32(randomBytesData[offset+1]) << 8) |
+						(uint32(randomBytesData[offset+2]) << 16) |
+						(uint32(randomBytesData[offset+3]) << 24)
+					if typeName == "Int32Array" {
+						value = int64(int32(val))
+					} else {
+						value = int64(val)
+					}
+				}
+			case 8:
+				if offset+7 < len(randomBytesData) {
+					val := uint64(randomBytesData[offset]) |
+						(uint64(randomBytesData[offset+1]) << 8) |
+						(uint64(randomBytesData[offset+2]) << 16) |
+						(uint64(randomBytesData[offset+3]) << 24) |
+						(uint64(randomBytesData[offset+4]) << 32) |
+						(uint64(randomBytesData[offset+5]) << 40) |
+						(uint64(randomBytesData[offset+6]) << 48) |
+						(uint64(randomBytesData[offset+7]) << 56)
+					if typeName == "BigInt64Array" {
+						value = int64(val)
+					} else {
+						value = int64(val)
 					}
 				}
 			}
+
+			obj.Set(strconv.Itoa(i), runtime.ToValue(value))
 		}
 
 		return arg
@@ -1947,18 +2379,40 @@ func (ce *CryptoEnhancer) addHelperMethods(runtime *goja.Runtime, cryptoObj *goj
 	// crypto.getHashes() - 返回支持的哈希算法列表
 	cryptoObj.Set("getHashes", func(call goja.FunctionCall) goja.Value {
 		hashes := []string{
+			// 基础算法
 			"md5",
 			"sha1",
 			"sha224",
 			"sha256",
 			"sha384",
 			"sha512",
+			// SHA-512 变体
+			"sha512-224",
+			"sha512-256",
+			// SHA3 系列
+			"sha3-224",
+			"sha3-256",
+			"sha3-384",
+			"sha3-512",
+			// SHAKE 系列
+			"shake128",
+			"shake256",
+			// BLAKE2 系列
+			"blake2b512",
+			"blake2s256",
+			// RSA 别名
 			"RSA-MD5",
 			"RSA-SHA1",
 			"RSA-SHA224",
 			"RSA-SHA256",
 			"RSA-SHA384",
 			"RSA-SHA512",
+			"RSA-SHA512/224",
+			"RSA-SHA512/256",
+			"RSA-SHA3-224",
+			"RSA-SHA3-256",
+			"RSA-SHA3-384",
+			"RSA-SHA3-512",
 		}
 		return runtime.ToValue(hashes)
 	})
@@ -3728,36 +4182,36 @@ func extractArrayBufferBytes(runtime *goja.Runtime, obj *goja.Object) ([]byte, e
 	if obj == nil {
 		return nil, fmt.Errorf("ArrayBuffer object is nil")
 	}
-	
+
 	// 方泓1：尝试直接导出
 	if exported := obj.Export(); exported != nil {
 		if bytes, ok := exported.([]byte); ok {
 			return bytes, nil
 		}
 	}
-	
+
 	// 方泓2：通过 Uint8Array 视图读取（通用方法）
 	ctor := runtime.Get("Uint8Array")
 	if goja.IsUndefined(ctor) || goja.IsNull(ctor) {
 		return nil, fmt.Errorf("Uint8Array constructor not available")
 	}
-	
+
 	ctorObj, ok := ctor.(*goja.Object)
 	if !ok {
 		return nil, fmt.Errorf("Uint8Array is not a constructor")
 	}
-	
+
 	// 创建 Uint8Array 视图：new Uint8Array(arrayBuffer)
 	viewObj, err := runtime.New(ctorObj, obj)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Uint8Array view: %w", err)
 	}
-	
+
 	lengthVal := viewObj.Get("length")
 	if goja.IsUndefined(lengthVal) || goja.IsNull(lengthVal) {
 		return nil, fmt.Errorf("Uint8Array view has no length")
 	}
-	
+
 	length := int(lengthVal.ToInteger())
 	out := make([]byte, length)
 	for i := 0; i < length; i++ {
@@ -3766,7 +4220,7 @@ func extractArrayBufferBytes(runtime *goja.Runtime, obj *goja.Object) ([]byte, e
 			out[i] = byte(val.ToInteger())
 		}
 	}
-	
+
 	return out, nil
 }
 
@@ -3787,7 +4241,7 @@ func convertToBytes(runtime *goja.Runtime, value goja.Value) ([]byte, error) {
 		className := obj.ClassName()
 		bufferProp := obj.Get("buffer")
 		byteLengthVal := obj.Get("byteLength")
-		
+
 		// 2.1 处理纯 ArrayBuffer（优先检查，因为它也有 byteLength 但没有 buffer）
 		if className == "ArrayBuffer" || (byteLengthVal != nil && !goja.IsUndefined(byteLengthVal) && (bufferProp == nil || goja.IsUndefined(bufferProp))) {
 			backing, err := extractArrayBufferBytes(runtime, obj)
@@ -3798,22 +4252,22 @@ func convertToBytes(runtime *goja.Runtime, value goja.Value) ([]byte, error) {
 			copy(out, backing)
 			return out, nil
 		}
-		
+
 		// 2.2 处理 TypedArray / DataView（都有 buffer/byteOffset/byteLength）
 		if bufferProp != nil && !goja.IsUndefined(bufferProp) && !goja.IsNull(bufferProp) &&
 			byteLengthVal != nil && !goja.IsUndefined(byteLengthVal) && !goja.IsNull(byteLengthVal) {
-			
+
 			byteLength := int(byteLengthVal.ToInteger())
 			if byteLength < 0 {
 				return nil, fmt.Errorf("invalid byteLength: %d", byteLength)
 			}
-			
+
 			byteOffsetVal := obj.Get("byteOffset")
 			byteOffset := 0
 			if byteOffsetVal != nil && !goja.IsUndefined(byteOffsetVal) && !goja.IsNull(byteOffsetVal) {
 				byteOffset = int(byteOffsetVal.ToInteger())
 			}
-			
+
 			// 从底层 ArrayBuffer 提取字节
 			if bufferObj, ok := bufferProp.(*goja.Object); ok {
 				backing, err := extractArrayBufferBytes(runtime, bufferObj)
@@ -3911,7 +4365,7 @@ func (ce *CryptoEnhancer) createPublicKey(runtime *goja.Runtime, call goja.Funct
 
 	// 支持字符串或对象参数
 	firstArg := call.Arguments[0]
-	
+
 	// 🔥 Node.js 18+ 行为：检查是否是 KeyObject
 	if obj, ok := firstArg.(*goja.Object); ok && obj != nil {
 		if keyObjType := obj.Get("type"); !goja.IsUndefined(keyObjType) && !goja.IsNull(keyObjType) {
@@ -3952,7 +4406,7 @@ func (ce *CryptoEnhancer) createPublicKey(runtime *goja.Runtime, call goja.Funct
 				}
 			}
 		}
-		
+
 		// 获取 format 和 type
 		keyFormat = safeGetString(obj.Get("format"))
 		keyType = safeGetString(obj.Get("type"))
@@ -3990,20 +4444,20 @@ func (ce *CryptoEnhancer) createPublicKey(runtime *goja.Runtime, call goja.Funct
 	} else if keyFormat == "der" {
 		// 🔥 修复：DER 格式需要正确处理 encoding
 		var keyBytes []byte
-		
+
 		// 检查 key 是否是 Buffer/TypedArray/ArrayBuffer
 		if obj, ok := firstArg.(*goja.Object); ok && obj != nil {
 			keyVal := obj.Get("key")
-			
+
 			// 🔥 关键修复：先判断是否是字符串
 			if keyStr, isStr := keyVal.Export().(string); isStr {
 				// 字符串路径：必须提供 encoding
 				encoding := strings.ToLower(safeGetString(obj.Get("encoding")))
-				
+
 				if encoding == "" {
 					panic(runtime.NewTypeError("If 'key' is a string and format is 'der', 'encoding' must be specified ('base64' or 'hex')"))
 				}
-				
+
 				switch encoding {
 				case "base64":
 					keyBytes, err = base64.StdEncoding.DecodeString(keyStr)
@@ -4030,7 +4484,7 @@ func (ce *CryptoEnhancer) createPublicKey(runtime *goja.Runtime, call goja.Funct
 			// 直接传入的字符串，应该报错
 			panic(runtime.NewTypeError("DER format requires an object with 'key' property"))
 		}
-		
+
 		switch strings.ToLower(keyType) {
 		case "spki", "subjectpublickeyinfo", "":
 			pub, parseErr := x509.ParsePKIXPublicKey(keyBytes)
@@ -4060,7 +4514,7 @@ func (ce *CryptoEnhancer) createPublicKey(runtime *goja.Runtime, call goja.Funct
 			// 字符串形式
 			keyPEM = safeGetString(firstArg)
 		}
-		
+
 		block, _ := pem.Decode([]byte(keyPEM))
 		if block == nil {
 			panic(runtime.NewTypeError("解码PEM块失败"))
@@ -4152,7 +4606,7 @@ func (ce *CryptoEnhancer) createPrivateKey(runtime *goja.Runtime, call goja.Func
 
 	// 支持字符串或对象参数
 	firstArg := call.Arguments[0]
-	
+
 	// 🔥 Node.js 18+ 行为：检查是否是 KeyObject
 	if obj, ok := firstArg.(*goja.Object); ok && obj != nil {
 		if keyObjType := obj.Get("type"); !goja.IsUndefined(keyObjType) && !goja.IsNull(keyObjType) {
@@ -4168,7 +4622,7 @@ func (ce *CryptoEnhancer) createPrivateKey(runtime *goja.Runtime, call goja.Func
 				}
 			}
 		}
-		
+
 		// 获取 format, type, passphrase
 		keyFormat = safeGetString(obj.Get("format"))
 		keyType = safeGetString(obj.Get("type"))
@@ -4207,20 +4661,20 @@ func (ce *CryptoEnhancer) createPrivateKey(runtime *goja.Runtime, call goja.Func
 	} else if keyFormat == "der" {
 		// 🔥 修复：DER 格式需要正确处理 encoding
 		var keyBytes []byte
-		
+
 		// 检查 key 是否是 Buffer/TypedArray/ArrayBuffer
 		if obj, ok := firstArg.(*goja.Object); ok && obj != nil {
 			keyVal := obj.Get("key")
-			
+
 			// 🔥 关键修复：先判断是否是字符串
 			if keyStr, isStr := keyVal.Export().(string); isStr {
 				// 字符串路径：必须提供 encoding
 				encoding := strings.ToLower(safeGetString(obj.Get("encoding")))
-				
+
 				if encoding == "" {
 					panic(runtime.NewTypeError("If 'key' is a string and format is 'der', 'encoding' must be specified ('base64' or 'hex')"))
 				}
-				
+
 				switch encoding {
 				case "base64":
 					keyBytes, err = base64.StdEncoding.DecodeString(keyStr)
@@ -4247,7 +4701,7 @@ func (ce *CryptoEnhancer) createPrivateKey(runtime *goja.Runtime, call goja.Func
 			// 直接传入的字符串，应该报错
 			panic(runtime.NewTypeError("DER format requires an object with 'key' property"))
 		}
-		
+
 		switch strings.ToLower(keyType) {
 		case "pkcs1":
 			privateKey, err = x509.ParsePKCS1PrivateKey(keyBytes)
@@ -4277,7 +4731,7 @@ func (ce *CryptoEnhancer) createPrivateKey(runtime *goja.Runtime, call goja.Func
 			// 字符串形式
 			keyPEM = safeGetString(firstArg)
 		}
-		
+
 		privateKey, err = parsePrivateKey(keyPEM, passphrase)
 		if err != nil {
 			panic(runtime.NewGoError(err))
@@ -4554,7 +5008,7 @@ func (ce *CryptoEnhancer) createBuffer(runtime *goja.Runtime, data []byte) goja.
 			// 获取另一个 Buffer 的长度
 			if lengthVal := otherObj.Get("length"); !goja.IsUndefined(lengthVal) {
 				otherLen := int(lengthVal.ToInteger())
-				
+
 				// 长度不同，直接返回 false
 				if otherLen != len(data) {
 					return runtime.ToValue(false)
@@ -4574,6 +5028,22 @@ func (ce *CryptoEnhancer) createBuffer(runtime *goja.Runtime, data []byte) goja.
 			}
 		}
 		return runtime.ToValue(false)
+	})
+
+	// 🔥 新增：toJSON方法 - 用于 JSON.stringify() 序列化
+	// Node.js Buffer 在序列化时返回 { type: "Buffer", data: [...] } 格式
+	bufferObj.Set("toJSON", func(call goja.FunctionCall) goja.Value {
+		result := runtime.NewObject()
+		result.Set("type", runtime.ToValue("Buffer"))
+
+		// 创建 data 数组
+		dataArray := make([]interface{}, len(data))
+		for i, b := range data {
+			dataArray[i] = int(b)
+		}
+		result.Set("data", runtime.ToValue(dataArray))
+
+		return result
 	})
 
 	return bufferObj

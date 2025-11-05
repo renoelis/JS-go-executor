@@ -1,20 +1,1700 @@
-<!doctype html> <html lang="zh-CN"> <head> <meta charset="UTF-8"> <meta name="viewport" content="width=device-width,initial-scale=1"> <title>Flow-CodeBlock 代码执行在线工具</title> <script src="/flow/assets/ace.js"></script> <script src="/flow/assets/mode-javascript.js"></script> <script src="/flow/assets/mode-json.js"></script> <script src="/flow/assets/theme-monokai.js"></script> <script src="/flow/assets/ext-searchbox.js"></script> <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:linear-gradient(135deg,#e3f2fd 0,#1976d2 100%);min-height:100vh;padding:20px}.container{max-width:1400px;margin:0 auto;background:#fff;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.3);overflow:hidden}.header{background:#fff;color:#1976d2;padding:25px 30px 20px;text-align:center;border-bottom:4px solid #1976d2;box-shadow:0 2px 8px rgba(25,118,210,.1)}.header-logo-link{display:inline-block;margin-bottom:15px;padding:8px 20px;border-radius:12px;transition:all .3s ease;outline:0;text-decoration:none;background:0 0}.header-logo-link:hover{transform:translateY(-2px);background:rgba(25,118,210,.05);box-shadow:0 4px 12px rgba(25,118,210,.15)}.header-logo-link:focus{outline:0;background:rgba(25,118,210,.08);box-shadow:0 0 0 3px rgba(25,118,210,.2)}.header-logo-link:active{transform:translateY(0)}.header-logo{max-height:70px;height:auto;display:block;margin:0 auto;border-radius:12px;transition:transform .3s ease}.header-logo-link:hover .header-logo{transform:scale(1.03)}.header h1{font-size:28px;margin-bottom:10px;color:#1976d2;font-weight:700}.header p{font-size:14px;color:#666;font-weight:500}.main-content{display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:30px}.section{background:#f8f9fa;border-radius:12px;padding:20px;border:1px solid #e9ecef}.section-title{font-size:18px;font-weight:600;color:#333;margin-bottom:15px;display:flex;align-items:center;gap:8px}.section-title .icon{font-size:20px}.form-group{margin-bottom:20px}.form-label{display:block;font-size:14px;font-weight:500;color:#495057;margin-bottom:8px}.form-input{width:100%;padding:12px;border:2px solid #e9ecef;border-radius:8px;font-size:14px;font-family:'Courier New',monospace;transition:all .3s}.form-input:focus{outline:0;border-color:#1976d2;box-shadow:0 0 0 3px rgba(25,118,210,.1)}textarea.form-input{resize:vertical;min-height:120px;line-height:1.5}.code-editor{min-height:300px;font-family:'Courier New',monospace;font-size:13px}.button-group{display:flex;gap:10px;margin-top:20px}.btn{flex:1;padding:10px 20px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:all .3s;display:flex;align-items:center;justify-content:center;gap:6px}.code-action-group{display:flex;gap:8px;margin-top:15px;flex-wrap:wrap}.code-action-group .btn{flex:1 1 auto;padding:8px 16px;border-radius:6px;font-size:13px;gap:5px;white-space:nowrap;min-width:fit-content}.btn-primary{background:linear-gradient(135deg,#1976d2 0,#42a5f5 100%);color:#fff}.btn-primary:hover{background:linear-gradient(135deg,#ffd740 0,#ffb300 100%);color:#1976d2;transform:translateY(-2px);box-shadow:0 4px 12px rgba(25,118,210,.4)}.btn-secondary{background:#6c757d;color:#fff}.btn-secondary:hover{background:#5a6268;transform:translateY(-2px)}.btn-success{background:linear-gradient(135deg,#1976d2 0,#42a5f5 100%);color:#fff;box-shadow:0 2px 6px rgba(25,118,210,.25)}.btn-success:hover{background:linear-gradient(135deg,#1565c0 0,#1976d2 100%);transform:translateY(-2px);box-shadow:0 4px 10px rgba(25,118,210,.35)}.btn-info{background:linear-gradient(135deg,#00acc1 0,#26c6da 100%);color:#fff;box-shadow:0 2px 6px rgba(0,172,193,.25)}.btn-info:hover{background:linear-gradient(135deg,#00838f 0,#00acc1 100%);transform:translateY(-2px);box-shadow:0 4px 10px rgba(0,172,193,.35)}.btn-warning{background:linear-gradient(135deg,#ff9800 0,#ffc107 100%);color:#fff;box-shadow:0 2px 6px rgba(255,152,0,.25)}.btn-warning:hover{background:linear-gradient(135deg,#f57c00 0,#ff9800 100%);transform:translateY(-2px);box-shadow:0 4px 10px rgba(255,152,0,.35)}.btn-danger{background:linear-gradient(135deg,#90a4ae 0,#78909c 100%);color:#fff;box-shadow:0 2px 6px rgba(120,144,156,.25)}.btn-danger:hover{background:linear-gradient(135deg,#78909c 0,#607d8b 100%);transform:translateY(-2px);box-shadow:0 4px 10px rgba(120,144,156,.35)}.btn:disabled{opacity:.6;cursor:not-allowed;transform:none!important}.btn-cancel{background:#ff6b6b;color:#fff;animation:pulse-cancel 1.5s ease-in-out infinite}.btn-cancel:hover{background:#ee5a52;transform:translateY(-2px)}@keyframes pulse-cancel{0%,100%{box-shadow:0 0 0 0 rgba(255,107,107,.7)}50%{box-shadow:0 0 0 8px rgba(255,107,107,0)}}.copy-result-btn{padding:8px 16px;background:linear-gradient(135deg,#28a745 0,#20c997 100%);color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;transition:all .3s ease;box-shadow:0 2px 4px rgba(40,167,69,.2);display:inline-flex;align-items:center;gap:6px}.copy-result-btn:hover{background:linear-gradient(135deg,#218838 0,#1aa179 100%);transform:translateY(-2px);box-shadow:0 4px 8px rgba(40,167,69,.3)}.copy-result-btn:active{transform:translateY(0)}.copy-result-btn.copied{background:linear-gradient(135deg,#17a2b8 0,#138496 100%)}.fullscreen-edit-btn{padding:8px 16px;background:linear-gradient(135deg,#1976d2 0,#42a5f5 100%);color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;transition:all .3s ease;box-shadow:0 2px 8px rgba(25,118,210,.3);display:inline-flex;align-items:center;gap:6px}.fullscreen-edit-btn:hover{background:linear-gradient(135deg,#1565c0 0,#1e88e5 100%);transform:translateY(-2px);box-shadow:0 4px 12px rgba(25,118,210,.5)}.fullscreen-edit-btn:active{transform:translateY(0)}.result-section{grid-column:1/-1}.result-box{background:#fff;color:#333;padding:20px;border-radius:8px;border:1px solid #e9ecef;font-family:Monaco,Menlo,Consolas,'Courier New',monospace;font-size:13px;line-height:1.8;min-height:400px;height:calc(100vh - 200px);max-height:600px;overflow-y:auto;overflow-x:auto;white-space:pre-wrap;word-wrap:break-word;word-break:break-all;overflow-wrap:break-word}.result-box.success{border-left:4px solid #28a745;background:#f8fff9}.result-box.error{border-left:4px solid #dc3545;background:#fff8f8}.json-key{color:#0b5394;font-weight:500}.json-string{color:#6a9955}.json-number{color:#b08968}.json-boolean{color:#0451a5;font-weight:700}.json-null{color:grey;font-weight:700}.json-bracket{color:#383838;font-weight:700}.json-punctuation{color:#383838}.alert{padding:15px;border-radius:8px;margin-bottom:20px;display:none}.alert.show{display:block;animation:slideIn .3s ease-out}@keyframes slideIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}.alert-success{background:#d4edda;color:#155724;border:1px solid #c3e6cb}.alert-error{background:#f8d7da;color:#721c24;border:1px solid #f5c6cb}.alert-warning{background:#fff3cd;color:#856404;border:1px solid #ffeaa7}.info-box{background:#f8f9fa;border-left:4px solid #28a745;padding:15px;border-radius:8px;margin-bottom:20px;font-size:15px;line-height:1.6}.info-box strong{display:block;margin-bottom:8px;color:#1976d2}.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:15px;margin-top:15px}.stat-card{background:#fff;padding:15px;border-radius:8px;border:1px solid #e9ecef;text-align:center}.stat-value{font-size:24px;font-weight:700;color:#1976d2;margin-bottom:5px}.stat-label{font-size:12px;color:#6c757d;text-transform:uppercase}.loading{display:none;text-align:center;padding:20px}.loading.show{display:block}.spinner{border:3px solid #f3f3f3;border-top:3px solid #1976d2;border-radius:50%;width:40px;height:40px;animation:spin 1s linear infinite;margin:0 auto 10px}@keyframes spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}.badge{display:inline-block;padding:4px 8px;border-radius:4px;font-size:11px;font-weight:600;text-transform:uppercase}.badge-success{background:#d4edda;color:#155724}.badge-error{background:#f8d7da;color:#721c24}.example-links{display:flex;gap:10px;margin-top:10px;flex-wrap:wrap}.example-link{padding:6px 12px;background:#e9ecef;border-radius:6px;font-size:12px;cursor:pointer;transition:all .2s;border:1px solid #dee2e6}.example-link:hover{background:#1976d2;color:#fff;border-color:#1976d2}.config-section{background:#fff9e6;border:1px solid #ffe066;border-radius:8px;padding:14px 15px;margin-bottom:15px}.config-label{font-size:13px;font-weight:600;color:#856404;margin-bottom:8px}.modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);z-index:9999;justify-content:center;align-items:center;animation:fadeIn .3s ease}.modal-overlay.show{display:flex}@keyframes fadeIn{from{opacity:0}to{opacity:1}}.modal-content{background:#fff;border-radius:16px;padding:30px;max-width:500px;width:90%;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.5);animation:slideUp .3s ease}@keyframes slideUp{from{opacity:0;transform:translateY(50px)}to{opacity:1;transform:translateY(0)}}.modal-header{font-size:22px;font-weight:700;color:#333;margin-bottom:20px;display:flex;align-items:center;gap:10px;border-bottom:2px solid #e9ecef;padding-bottom:15px}.modal-close{margin-left:auto;background:0 0;border:none;font-size:28px;color:#6c757d;cursor:pointer;transition:all .2s;padding:0;width:30px;height:30px;display:flex;align-items:center;justify-content:center}.modal-close:hover{color:#dc3545;transform:rotate(90deg)}.token-result{background:#f8f9fa;border:1px solid #e9ecef;border-radius:8px;padding:15px;margin-top:20px}.token-item{padding:10px 0;border-bottom:1px solid #e9ecef}.token-item:last-child{border-bottom:none}.token-label{font-size:12px;color:#6c757d;font-weight:600;text-transform:uppercase;margin-bottom:5px}.token-value{font-size:14px;color:#333;font-family:'Courier New',monospace;word-break:break-all}.token-value.expired{color:#dc3545}.token-value.active{color:#28a745}.fullscreen-editor-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.95);z-index:10000;animation:fadeIn .3s ease}.fullscreen-editor-container{width:100%;height:100%;display:flex;flex-direction:column;padding:20px}.fullscreen-editor-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;color:#fff}.fullscreen-editor-title{font-size:20px;font-weight:700}.fullscreen-editor-actions{display:flex;gap:10px}.fullscreen-editor-textarea{flex:1;background:#1e1e1e;color:#d4d4d4;border:2px solid #333;border-radius:8px;padding:20px;font-family:Monaco,Menlo,'Ubuntu Mono',Consolas,source-code-pro,monospace;font-size:16px;line-height:1.6;resize:none;outline:0}.fullscreen-editor-textarea:focus{border-color:#1976d2}.fullscreen-btn{padding:10px 20px;border:none;border-radius:6px;font-size:14px;font-weight:700;cursor:pointer;transition:all .3s ease}.fullscreen-btn-save{background:linear-gradient(135deg,#28a745 0,#20c997 100%);color:#fff}.fullscreen-btn-save:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(40,167,69,.5)}.fullscreen-btn-close{background:linear-gradient(135deg,#6c757d 0,#495057 100%);color:#fff}.fullscreen-btn-close:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(108,117,125,.5)}@keyframes fadeIn{from{opacity:0}to{opacity:1}}#codeEditorContainer{margin-top:10px;border:1px solid #ddd;border-radius:8px;min-height:500px;height:500px;font-size:15px}#codeEditorContainer:focus-within{outline:2px solid #1976d2;outline-offset:2px}#inputEditorContainer{margin-top:10px;border:1px solid #ddd;border-radius:8px;min-height:250px;height:250px;font-size:14px}#inputEditorContainer:focus-within{outline:2px solid #1976d2;outline-offset:2px}#fullscreenEditorContainer{flex:1;display:flex;flex-direction:column}.ace_editor{font-family:Monaco,Menlo,'Ubuntu Mono',Consolas,source-code-pro,monospace;font-size:15px!important}.fullscreen-ace-editor{font-size:16px!important}@media screen and (max-width:768px){body{padding:10px}.container{border-radius:12px}.header{padding:20px 15px 15px;border-bottom-width:3px}.header-logo{max-height:50px}.header-logo-link{margin-bottom:10px;padding:6px 15px}.header h1{font-size:20px;margin-bottom:8px}.header p{font-size:12px}.main-content{grid-template-columns:1fr;gap:15px;padding:15px}.section{padding:15px}.section-title{font-size:16px;margin-bottom:12px}.form-input{padding:10px;font-size:13px}.button-group{flex-direction:column;gap:8px}.btn{width:100%;padding:10px;font-size:13px}#codeEditorContainer{min-height:300px;height:300px;font-size:13px}#inputEditorContainer{min-height:200px;height:200px;font-size:13px}.result-box{max-height:400px;font-size:12px}.stats-box{font-size:11px;padding:10px}.token-card{padding:10px;font-size:12px}.example-buttons{grid-template-columns:1fr;gap:8px}.example-btn{font-size:12px;padding:10px}.info-box{padding:10px;font-size:12px}.copy-result-btn{font-size:11px;padding:5px 10px}.fullscreen-edit-btn{font-size:11px;padding:5px 10px}.fullscreen-editor{padding:10px}.fullscreen-editor-header{flex-direction:column;gap:10px;align-items:flex-start}.fullscreen-editor-title{font-size:16px}.fullscreen-editor-actions{width:100%;justify-content:space-between}.fullscreen-btn{padding:8px 15px;font-size:12px}.ace_editor{font-size:13px!important}}@media screen and (min-width:769px) and (max-width:1024px){.main-content{gap:20px;padding:20px}#codeEditorContainer{height:400px}.header{padding:22px 20px 18px}.header-logo{max-height:60px}.header-logo-link{padding:7px 18px}.header h1{font-size:24px}}@media screen and (max-width:374px){body{padding:5px}.header{padding:15px 10px 12px;border-bottom-width:2px}.header-logo{max-height:45px}.header-logo-link{margin-bottom:8px;padding:5px 12px}.header h1{font-size:18px}.main-content{padding:10px;gap:10px}.section{padding:12px}.btn{font-size:12px;padding:10px}.copy-result-btn{font-size:10px;padding:4px 8px}.fullscreen-edit-btn{font-size:10px;padding:4px 8px}#codeEditorContainer{min-height:250px;height:250px;font-size:12px}#inputEditorContainer{min-height:180px;height:180px;font-size:12px}.ace_editor{font-size:12px!important}}.ace_bracket{border:1px solid rgba(128,128,128,.5)!important;background-color:rgba(255,100,200,.3)!important}.ace-textmate .ace_bracket{border:2px solid #e91e63!important;background-color:rgba(233,30,99,.15)!important;border-radius:2px;box-shadow:0 0 4px rgba(233,30,99,.3)}.ace-monokai .ace_bracket{border:2px solid #ff6ec7!important;background-color:rgba(255,110,199,.25)!important;border-radius:2px;box-shadow:0 0 4px rgba(255,110,199,.4)}.ace_bracket_error{border:2px solid #f44!important;background-color:rgba(255,68,68,.2)!important}.ace_search{background-color:rgba(255,255,255,.98)!important;border:1px solid #dee2e6!important;border-radius:6px!important;padding:6px!important;padding-top:32px!important;box-shadow:0 2px 12px rgba(0,0,0,.15)!important;z-index:10000!important;top:10px!important;right:10px!important;min-width:380px!important;max-width:420px!important;position:absolute!important}.ace_search_form{margin:0!important;display:flex!important;align-items:center!important;gap:4px!important;padding:4px!important}.ace_replace_form{margin:0!important;display:none!important;align-items:center!important;gap:4px!important;padding:4px!important;margin-top:4px!important}.ace_replace_form[style*="display: block"],.ace_replace_form[style*="display: flex"]{display:flex!important}.ace_search_field{background-color:#fff!important;border:1px solid #ced4da!important;border-radius:4px!important;padding:6px 10px!important;font-size:13px!important;color:#212529!important;flex:1!important;min-width:0!important;width:100%!important}.ace_search_field:focus{border-color:#1976d2!important;box-shadow:0 0 0 2px rgba(25,118,210,.15)!important;outline:0!important}.ace_searchbtn.next,.ace_searchbtn.prev{background:0 0!important;border:1px solid #ced4da!important;border-radius:4px!important;color:#495057!important;padding:6px 8px!important;font-size:12px!important;cursor:pointer!important;transition:all .2s!important;margin:0!important;min-width:28px!important;display:inline-flex!important;align-items:center!important;justify-content:center!important}.ace_searchbtn.next:hover,.ace_searchbtn.prev:hover{background:#e9ecef!important;border-color:#adb5bd!important}.ace_searchbtn{background:#1976d2!important;border:none!important;border-radius:4px!important;color:#fff!important;padding:6px 10px!important;font-size:12px!important;font-weight:500!important;cursor:pointer!important;transition:all .2s!important;margin:0!important}.ace_searchbtn:hover{background:#1565c0!important}.ace_searchbtn:active{transform:scale(.98)}.ace_searchbtn_close{background:0 0!important;background-image:none!important;border:none!important;border-radius:4px!important;color:#6c757d!important;font-weight:700!important;padding:0!important;font-size:20px!important;line-height:24px!important;width:24px!important;height:24px!important;position:absolute!important;top:4px!important;right:6px!important;cursor:pointer!important;z-index:10!important;display:flex!important;align-items:center!important;justify-content:center!important}.ace_searchbtn_close::before{content:'×'!important;display:block!important;font-size:24px!important;line-height:1!important}.ace_searchbtn_close:hover{background:#e9ecef!important;color:#495057!important}.ace_searchbtn_minimize{background:0 0!important;border:none!important;border-radius:4px!important;color:#6c757d!important;font-weight:700!important;padding:0!important;font-size:18px!important;line-height:24px!important;width:24px!important;height:24px!important;position:absolute!important;top:4px!important;right:34px!important;cursor:pointer!important;z-index:10!important;display:flex!important;align-items:center!important;justify-content:center!important;transition:all .2s!important}.ace_searchbtn_minimize::before{content:'−'!important;display:block!important;font-size:20px!important;line-height:1!important}.ace_searchbtn_minimize:hover{background:#e9ecef!important;color:#495057!important}.ace_search{transition:all .25s cubic-bezier(.4, 0, .2, 1)!important}.ace_search.minimized{min-width:48px!important;max-width:48px!important;width:48px!important;height:48px!important;padding:0!important;overflow:hidden!important}.ace_search.minimized .ace_replace_form,.ace_search.minimized .ace_search_form,.ace_search.minimized .ace_search_options,.ace_search.minimized .ace_searchbtn_close{display:none!important}.ace_search.minimized .ace_searchbtn_minimize{position:static!important;width:100%!important;height:100%!important;font-size:24px!important;right:auto!important;top:auto!important}.ace_search.minimized .ace_searchbtn_minimize::before{content:'🔍'!important;font-size:24px!important}.ace-monokai .ace_search .ace_searchbtn_minimize,.ace-monokai~.ace_search .ace_searchbtn_minimize{color:#f8f8f2!important}.ace-monokai .ace_search .ace_searchbtn_minimize:hover,.ace-monokai~.ace_search .ace_searchbtn_minimize:hover{background:#49483e!important;color:#66d9ef!important}.ace-monokai .ace_search.minimized,.ace-monokai~.ace_search.minimized{background-color:rgba(39,40,34,.95)!important}.ace_search_options{margin:0!important;padding:4px!important;border-top:none!important;display:flex!important;align-items:center!important;gap:4px!important;flex-wrap:nowrap!important}.ace_button[action=toggleReplace]{background:0 0!important;border:1px solid #ced4da!important;border-radius:4px!important;color:#495057!important;padding:4px 8px!important;font-size:14px!important;font-weight:700!important;margin:0!important;margin-right:4px!important;cursor:pointer!important;transition:all .2s!important;min-width:28px!important}.ace_button[action=toggleReplace]:hover{background:#e9ecef!important;border-color:#adb5bd!important}.ace_button[action=toggleReplace].checked{background:#e9ecef!important;border-color:#ced4da!important;color:#495057!important}.ace_button{background:0 0!important;border:1px solid #ced4da!important;border-radius:4px!important;color:#495057!important;padding:4px 8px!important;font-size:11px!important;margin:0!important;cursor:pointer!important;transition:all .2s!important;white-space:nowrap!important}.ace_button:hover{background:#e9ecef!important;border-color:#adb5bd!important}.ace_button.checked{background:#1976d2!important;border-color:#1976d2!important;color:#fff!important}.ace_button.checked:hover{background:#1565c0!important;border-color:#1565c0!important}.ace_search_counter{background:0 0!important;color:#6c757d!important;padding:0 6px!important;border-radius:0!important;font-size:11px!important;font-weight:500!important;margin:0!important;white-space:nowrap!important;flex-shrink:0!important}.ace_marker-layer .ace_selection{background-color:rgba(255,200,0,.3)!important;border:1px solid rgba(255,200,0,.5)!important;border-radius:2px}.ace_marker-layer .ace_selected-word{background-color:rgba(255,153,0,.5)!important;border:1px solid rgba(255,153,0,.7)!important;border-radius:2px}.ace_marker-layer .ace_active-line{background-color:rgba(255,153,0,.08)!important}.ace-monokai .ace_marker-layer .ace_selection{background-color:rgba(200,200,150,.25)!important;border:1px solid rgba(200,200,150,.4)!important;border-radius:2px}.ace-monokai .ace_marker-layer .ace_selected-word{background-color:rgba(200,200,100,.4)!important;border:1px solid rgba(200,200,100,.6)!important;border-radius:2px}.ace-monokai .ace_marker-layer .ace_active-line{background-color:rgba(200,200,100,.1)!important}.ace-monokai .ace_search,.ace-monokai~.ace_search{background-color:rgba(39,40,34,.98)!important;border:1px solid #75715e!important}.ace-monokai .ace_search_field{background-color:#3e3d32!important;border:1px solid #75715e!important;color:#f8f8f2!important}.ace-monokai .ace_search_field:focus{border-color:#66d9ef!important;box-shadow:0 0 0 2px rgba(102,217,239,.2)!important}.ace-monokai .ace_search_counter{color:#f8f8f2!important}.ace-monokai .ace_searchbtn_close{color:#a59f85!important}.ace-monokai .ace_searchbtn_close:hover{background:#49483e!important;color:#f8f8f2!important}.ace-monokai .ace_button{background:#3e3d32!important;border:1px solid #75715e!important;color:#f8f8f2!important}.ace-monokai .ace_button:hover{background:#49483e!important}.ace-monokai .ace_button.checked{background:#66d9ef!important;border-color:#66d9ef!important;color:#272822!important}</style> </head> <body> <div class="container"> <div class="header"> <a href="{{.LogoUrl}}" target="_blank" class="header-logo-link" title="访问轻流官网"> <img src="{{.LogoImageUrl}}" alt="轻流 Logo" class="header-logo"> </a> <h1> Flow-CodeBlock 代码执行在线工具</h1> <p>支持 数据处理、异步操作、HTTP 请求、加密等功能</p> </div> <div class="main-content"> <div class="section"> <div class="section-title"> <span class="icon">📌</span> 使用说明 </div> <div class="info-box"> <strong style="color:#495057">📚 相关链接：</strong> <div style="margin-top:8px;line-height:1.8"> • <a href="{{.HelpDocUrl}}" target="_blank" style="color:#1976d2;text-decoration:none;font-weight:600">📖 Flow CodeBlock 帮助文档</a> <span style="color:#6c757d;font-size:13px"> - 完整的功能介绍和使用指南</span><br> • <a href="{{.ApiDocUrl}}" target="_blank" style="color:#1976d2;text-decoration:none;font-weight:600">📘 Flow CodeBlock API 接口文档</a> <span style="color:#6c757d;font-size:13px"> - 详细说明 API 接口调用规则</span><br> • <a href="{{.TestToolGuideUrl}}" target="_blank" style="color:#1976d2;text-decoration:none;font-weight:600">🛠️ Flow CodeBlock 在线测试工具使用指南</a> <span style="color:#6c757d;font-size:13px"> - 功能强大的在线测试工具详解</span><br> • <a href="{{.ExampleDocUrl}}" target="_blank" style="color:#1976d2;text-decoration:none;font-weight:600">💡 Flow CodeBlock 代码示例</a> <span style="color:#6c757d;font-size:13px"> - 结合轻流的多种代码块示例</span><br> • <a href="{{.AiAssistantUrl}}" target="_blank" style="color:#1976d2;text-decoration:none;font-weight:600">🤖 轻翼AI：Flow CodeBlock 代码AI助手</a> <span style="color:#6c757d;font-size:13px"> - 帮助用户快速编写代码</span> </div> <div style="margin-top:15px;padding-top:12px;border-top:1px solid #dee2e6"> <strong style="color:#495057;font-size:15px">💡 快速开始：</strong> <div style="margin-top:8px;background:#fff8e6;border-left:4px solid #ffc107;padding:12px 15px;border-radius:6px"> <div style="color:#333;font-size:14px;line-height:1.8;font-weight:500"> <div style="margin-bottom:6px">1️⃣ 输入 <span style="color:#dc3545;font-weight:600">Access Token</span>（必需）</div> <div style="margin-bottom:6px">2️⃣ 填写 <span style="color:#17a2b8;font-weight:600">Input 参数</span>（JSON 格式）</div> <div style="margin-bottom:6px">3️⃣ 编写 <span style="color:#28a745;font-weight:600">JavaScript 代码</span></div> <div style="margin-bottom:6px">4️⃣ 点击 <span style="color:#1976d2;font-weight:600">"运行代码"</span> 执行测试</div> <div style="margin-bottom:6px">5️⃣ 查看 <span style="color:#fd7e14;font-weight:600">执行结果</span> 或报错信息</div> </div> </div> </div> <div style="margin-top:15px;padding:8px 10px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:6px;font-size:13px;color:#6c757d;line-height:1.6"> <div style="margin-bottom:4px">💬 如有疑问，请查阅上方文档或联系技术支持</div> <div>🌟 建议先查看代码示例，快速掌握使用方法</div> </div> </div> </div> <div class="section"> <div class="section-title" style="margin-bottom:15px"> <span class="icon">🔐</span> 认证配置 </div> <div class="config-section" style="margin-bottom:12px"> <div class="config-label">API 服务地址</div> <input type="text" id="apiUrl" class="form-input" value="{{.ApiUrl}}" placeholder="{{.ApiUrl}}"> </div> <div class="config-section" style="margin-bottom:12px"> <div class="config-label">Access Token <span style="color:red">*</span></div> <input type="text" id="accessToken" class="form-input" placeholder="请输入您的 Access Token"> </div> <div style="margin-top:8px;display:flex;gap:10px"> <a href="{{.ApplyServiceUrl}}" target="_blank" style="flex:1;background:linear-gradient(135deg,#1976d2 0,#42a5f5 100%);color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 15px rgba(25,118,210,.4);transition:all .3s ease;font-size:14px;text-align:center" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(25, 118, 210, 0.6)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(25, 118, 210, 0.4)';">🎯 申请试用服务</a> <button onclick="showTokenQuery()" style="flex:1;background:linear-gradient(135deg,#20b2aa 0,#008b8b 100%);color:#fff;padding:12px 20px;border:none;border-radius:8px;font-weight:700;box-shadow:0 4px 15px rgba(32,178,170,.4);transition:all .3s ease;font-size:14px;cursor:pointer" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(32, 178, 170, 0.6)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(32, 178, 170, 0.4)';">🔍 查询 Token</button> </div> <div style="margin-top:15px;background:#f0f7ff;border:1px solid #b3d9ff;border-radius:8px;padding:12px 15px"> <div style="color:#2c5aa0;font-size:13px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px"> 💡 配置说明 </div> <div style="color:#495057;font-size:13px;line-height:1.8"> <div style="margin-bottom:6px"> <strong style="color:#856404">📍 API 服务地址：</strong> <span style="color:#666">代码执行服务的接口地址，默认已配置无需修改</span> </div> <div style="margin-bottom:6px"> <strong style="color:#856404">🔑 Access Token：</strong> <span style="color:#666">您的访问凭证（必填），用于身份验证和权限控制</span> </div> <div style="margin-bottom:6px"> <strong style="color:#1976d2">🎯 申请试用服务：</strong> <span style="color:#666">首次使用可申请试用 Token，点击跳转到申请页面</span> </div> <div style="margin-bottom:6px"> <strong style="color:#20b2aa">🔍 查询 Token：</strong> <span style="color:#666">已有 Token 但忘记了？点击查询您的历史 Token 信息</span> </div> <div style="margin-top:8px;padding:8px 10px;background:#fff3cd;border-left:3px solid #ffc107;border-radius:4px"> <strong style="color:#d97706">⚠️ 重要提示：</strong> <span style="color:#666">若需要申请正式开通服务，请联系<strong style="color:#d97706">轻流售后服务人员</strong></span> </div> </div> </div> </div> <div class="section result-section"> <div class="section-title" style="display:flex;justify-content:space-between;align-items:center"> <div> <span class="icon">📥</span> Input 参数 </div> <div style="display:flex;gap:10px;align-items:center"> <button onclick="openFullscreenInputEditor()" class="fullscreen-edit-btn" title="全屏编辑 Input 参数"> 🖥️ 全屏编辑 </button> <button id="copyInputBtn" class="copy-result-btn" onclick="copyInputData()" title="复制 Input 参数"> 📋 复制内容 </button> </div> </div> <div id="inputAlertBox" class="alert"></div> <div class="form-group"> <label class="form-label">输入数据（JSON 格式）</label> <small style="color:#6c757d;font-size:12px;display:block;margin-bottom:8px"> 💡 <strong>完整示例：</strong>点击下方按钮同时加载 Input 数据和代码 </small> <div class="example-links" style="margin-bottom:15px"> <div class="example-link" onclick="loadCompleteExample('simple')" style="background:linear-gradient(135deg,#1976d2 0,#42a5f5 100%);color:#fff;font-weight:700">✨ 简单计算</div> <div class="example-link" onclick="loadCompleteExample('async')" style="background:linear-gradient(135deg,#f093fb 0,#f5576c 100%);color:#fff;font-weight:700">✨ Axios 请求</div> <div class="example-link" onclick="loadCompleteExample('fetch')" style="background:linear-gradient(135deg,#fa709a 0,#fee140 100%);color:#fff;font-weight:700">✨ Fetch 请求</div> <div class="example-link" onclick="loadCompleteExample('lodash')" style="background:linear-gradient(135deg,#4facfe 0,#00f2fe 100%);color:#fff;font-weight:700">✨ Lodash 工具</div> <div class="example-link" onclick="loadCompleteExample('crypto')" style="background:linear-gradient(135deg,#43e97b 0,#38f9d7 100%);color:#fff;font-weight:700">✨ 数据加密</div> <div class="example-link" onclick="loadCompleteExample('datefns')" style="background:linear-gradient(135deg,#a8edea 0,#fed6e3 100%);color:#fff;font-weight:700">✨ 日期处理</div> <div class="example-link" onclick="loadCompleteExample('xlsx')" style="background:linear-gradient(135deg,#ff9a56 0,#ffcd39 100%);color:#fff;font-weight:700">✨ Excel 处理</div> </div> <div id="inputEditorContainer" style="min-height:250px;height:250px;border:1px solid #ddd;border-radius:8px"></div> <textarea id="inputData" style="display:none">{
+<!doctype html>
+<html lang="zh-CN">
+
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>Flow-CodeBlock 代码执行在线工具</title>
+        <script src="/flow/assets/ace.js"></script>
+        <script src="/flow/assets/mode-javascript.js"></script>
+        <script src="/flow/assets/mode-json.js"></script>
+        <script src="/flow/assets/theme-monokai.js"></script>
+        <script src="/flow/assets/ext-searchbox.js"></script>
+        <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: linear-gradient(135deg, #e3f2fd 0, #1976d2 100%);
+            min-height: 100vh;
+            padding: 20px
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: #fff;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, .3);
+            overflow: hidden
+        }
+
+        .header {
+            background: #fff;
+            color: #1976d2;
+            padding: 25px 30px 20px;
+            text-align: center;
+            border-bottom: 4px solid #1976d2;
+            box-shadow: 0 2px 8px rgba(25, 118, 210, .1)
+        }
+
+        .header-logo-link {
+            display: inline-block;
+            margin-bottom: 15px;
+            padding: 8px 20px;
+            border-radius: 12px;
+            transition: all .3s ease;
+            outline: 0;
+            text-decoration: none;
+            background: 0 0
+        }
+
+        .header-logo-link:hover {
+            transform: translateY(-2px);
+            background: rgba(25, 118, 210, .05);
+            box-shadow: 0 4px 12px rgba(25, 118, 210, .15)
+        }
+
+        .header-logo-link:focus {
+            outline: 0;
+            background: rgba(25, 118, 210, .08);
+            box-shadow: 0 0 0 3px rgba(25, 118, 210, .2)
+        }
+
+        .header-logo-link:active {
+            transform: translateY(0)
+        }
+
+        .header-logo {
+            max-height: 70px;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+            border-radius: 12px;
+            transition: transform .3s ease
+        }
+
+        .header-logo-link:hover .header-logo {
+            transform: scale(1.03)
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+            color: #1976d2;
+            font-weight: 700
+        }
+
+        .header p {
+            font-size: 14px;
+            color: #666;
+            font-weight: 500
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            padding: 30px
+        }
+
+        .section {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #e9ecef
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px
+        }
+
+        .section-title .icon {
+            font-size: 20px
+        }
+
+        .form-group {
+            margin-bottom: 20px
+        }
+
+        .form-label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            color: #495057;
+            margin-bottom: 8px
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: 'Courier New', monospace;
+            transition: all .3s
+        }
+
+        .form-input:focus {
+            outline: 0;
+            border-color: #1976d2;
+            box-shadow: 0 0 0 3px rgba(25, 118, 210, .1)
+        }
+
+        textarea.form-input {
+            resize: vertical;
+            min-height: 120px;
+            line-height: 1.5
+        }
+
+        .code-editor {
+            min-height: 300px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px
+        }
+
+        .btn {
+            flex: 1;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all .3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px
+        }
+
+        .code-action-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 15px;
+            flex-wrap: wrap
+        }
+
+        .code-action-group .btn {
+            flex: 1 1 auto;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            gap: 5px;
+            white-space: nowrap;
+            min-width: fit-content
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #1976d2 0, #42a5f5 100%);
+            color: #fff
+        }
+
+        .btn-primary:hover {
+            background: linear-gradient(135deg, #ffd740 0, #ffb300 100%);
+            color: #1976d2;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(25, 118, 210, .4)
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: #fff
+        }
+
+        .btn-secondary:hover {
+            background: #5a6268;
+            transform: translateY(-2px)
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #1976d2 0, #42a5f5 100%);
+            color: #fff;
+            box-shadow: 0 2px 6px rgba(25, 118, 210, .25)
+        }
+
+        .btn-success:hover {
+            background: linear-gradient(135deg, #1565c0 0, #1976d2 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(25, 118, 210, .35)
+        }
+
+        .btn-info {
+            background: linear-gradient(135deg, #00acc1 0, #26c6da 100%);
+            color: #fff;
+            box-shadow: 0 2px 6px rgba(0, 172, 193, .25)
+        }
+
+        .btn-info:hover {
+            background: linear-gradient(135deg, #00838f 0, #00acc1 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0, 172, 193, .35)
+        }
+
+        .btn-warning {
+            background: linear-gradient(135deg, #ff9800 0, #ffc107 100%);
+            color: #fff;
+            box-shadow: 0 2px 6px rgba(255, 152, 0, .25)
+        }
+
+        .btn-warning:hover {
+            background: linear-gradient(135deg, #f57c00 0, #ff9800 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(255, 152, 0, .35)
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #90a4ae 0, #78909c 100%);
+            color: #fff;
+            box-shadow: 0 2px 6px rgba(120, 144, 156, .25)
+        }
+
+        .btn-danger:hover {
+            background: linear-gradient(135deg, #78909c 0, #607d8b 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(120, 144, 156, .35)
+        }
+
+        .btn:disabled {
+            opacity: .6;
+            cursor: not-allowed;
+            transform: none !important
+        }
+
+        .btn-cancel {
+            background: #ff6b6b;
+            color: #fff;
+            animation: pulse-cancel 1.5s ease-in-out infinite
+        }
+
+        .btn-cancel:hover {
+            background: #ee5a52;
+            transform: translateY(-2px)
+        }
+
+        @keyframes pulse-cancel {
+
+            0%,
+            100% {
+                box-shadow: 0 0 0 0 rgba(255, 107, 107, .7)
+            }
+
+            50% {
+                box-shadow: 0 0 0 8px rgba(255, 107, 107, 0)
+            }
+        }
+
+        .copy-result-btn {
+            padding: 8px 16px;
+            background: linear-gradient(135deg, #28a745 0, #20c997 100%);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all .3s ease;
+            box-shadow: 0 2px 4px rgba(40, 167, 69, .2);
+            display: inline-flex;
+            align-items: center;
+            gap: 6px
+        }
+
+        .copy-result-btn:hover {
+            background: linear-gradient(135deg, #218838 0, #1aa179 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(40, 167, 69, .3)
+        }
+
+        .copy-result-btn:active {
+            transform: translateY(0)
+        }
+
+        .copy-result-btn.copied {
+            background: linear-gradient(135deg, #17a2b8 0, #138496 100%)
+        }
+
+        .fullscreen-edit-btn {
+            padding: 8px 16px;
+            background: linear-gradient(135deg, #1976d2 0, #42a5f5 100%);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all .3s ease;
+            box-shadow: 0 2px 8px rgba(25, 118, 210, .3);
+            display: inline-flex;
+            align-items: center;
+            gap: 6px
+        }
+
+        .fullscreen-edit-btn:hover {
+            background: linear-gradient(135deg, #1565c0 0, #1e88e5 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(25, 118, 210, .5)
+        }
+
+        .fullscreen-edit-btn:active {
+            transform: translateY(0)
+        }
+
+        .result-section {
+            grid-column: 1/-1
+        }
+
+        .result-box {
+            background: #fff;
+            color: #333;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            font-family: Monaco, Menlo, Consolas, 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.8;
+            min-height: 400px;
+            height: calc(100vh - 200px);
+            max-height: 600px;
+            overflow-y: auto;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            word-break: break-all;
+            overflow-wrap: break-word
+        }
+
+        .result-box.success {
+            border-left: 4px solid #28a745;
+            background: #f8fff9
+        }
+
+        .result-box.error {
+            border-left: 4px solid #dc3545;
+            background: #fff8f8
+        }
+
+        .json-key {
+            color: #0b5394;
+            font-weight: 500
+        }
+
+        .json-string {
+            color: #6a9955
+        }
+
+        .json-number {
+            color: #b08968
+        }
+
+        .json-boolean {
+            color: #0451a5;
+            font-weight: 700
+        }
+
+        .json-null {
+            color: grey;
+            font-weight: 700
+        }
+
+        .json-bracket {
+            color: #383838;
+            font-weight: 700
+        }
+
+        .json-punctuation {
+            color: #383838
+        }
+
+        .alert {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none
+        }
+
+        .alert.show {
+            display: block;
+            animation: slideIn .3s ease-out
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px)
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0)
+            }
+        }
+
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb
+        }
+
+        .alert-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb
+        }
+
+        .alert-warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7
+        }
+
+        .info-box {
+            background: #f8f9fa;
+            border-left: 4px solid #28a745;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 15px;
+            line-height: 1.6
+        }
+
+        .info-box strong {
+            display: block;
+            margin-bottom: 8px;
+            color: #1976d2
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 15px
+        }
+
+        .stat-card {
+            background: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            text-align: center
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #1976d2;
+            margin-bottom: 5px
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #6c757d;
+            text-transform: uppercase
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px
+        }
+
+        .loading.show {
+            display: block
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #1976d2;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0)
+            }
+
+            100% {
+                transform: rotate(360deg)
+            }
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase
+        }
+
+        .badge-success {
+            background: #d4edda;
+            color: #155724
+        }
+
+        .badge-error {
+            background: #f8d7da;
+            color: #721c24
+        }
+
+        .example-links {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+            flex-wrap: wrap
+        }
+
+        .example-link {
+            padding: 6px 12px;
+            background: #e9ecef;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all .2s;
+            border: 1px solid #dee2e6
+        }
+
+        .example-link:hover {
+            background: #1976d2;
+            color: #fff;
+            border-color: #1976d2
+        }
+
+        .config-section {
+            background: #fff9e6;
+            border: 1px solid #ffe066;
+            border-radius: 8px;
+            padding: 14px 15px;
+            margin-bottom: 15px
+        }
+
+        .config-label {
+            font-size: 13px;
+            font-weight: 600;
+            color: #856404;
+            margin-bottom: 8px
+        }
+
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, .7);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+            animation: fadeIn .3s ease
+        }
+
+        .modal-overlay.show {
+            display: flex
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0
+            }
+
+            to {
+                opacity: 1
+            }
+        }
+
+        .modal-content {
+            background: #fff;
+            border-radius: 16px;
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, .5);
+            animation: slideUp .3s ease
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(50px)
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0)
+            }
+        }
+
+        .modal-header {
+            font-size: 22px;
+            font-weight: 700;
+            color: #333;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-bottom: 2px solid #e9ecef;
+            padding-bottom: 15px
+        }
+
+        .modal-close {
+            margin-left: auto;
+            background: 0 0;
+            border: none;
+            font-size: 28px;
+            color: #6c757d;
+            cursor: pointer;
+            transition: all .2s;
+            padding: 0;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center
+        }
+
+        .modal-close:hover {
+            color: #dc3545;
+            transform: rotate(90deg)
+        }
+
+        .token-result {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 20px
+        }
+
+        .token-item {
+            padding: 10px 0;
+            border-bottom: 1px solid #e9ecef
+        }
+
+        .token-item:last-child {
+            border-bottom: none
+        }
+
+        .token-label {
+            font-size: 12px;
+            color: #6c757d;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-bottom: 5px
+        }
+
+        .token-value {
+            font-size: 14px;
+            color: #333;
+            font-family: 'Courier New', monospace;
+            word-break: break-all
+        }
+
+        .token-value.expired {
+            color: #dc3545
+        }
+
+        .token-value.active {
+            color: #28a745
+        }
+
+        .fullscreen-editor-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, .95);
+            z-index: 10000;
+            animation: fadeIn .3s ease
+        }
+
+        .fullscreen-editor-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            padding: 20px
+        }
+
+        .fullscreen-editor-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            color: #fff
+        }
+
+        .fullscreen-editor-title {
+            font-size: 20px;
+            font-weight: 700
+        }
+
+        .fullscreen-editor-actions {
+            display: flex;
+            gap: 10px
+        }
+
+        .fullscreen-editor-textarea {
+            flex: 1;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            border: 2px solid #333;
+            border-radius: 8px;
+            padding: 20px;
+            font-family: Monaco, Menlo, 'Ubuntu Mono', Consolas, source-code-pro, monospace;
+            font-size: 16px;
+            line-height: 1.6;
+            resize: none;
+            outline: 0
+        }
+
+        .fullscreen-editor-textarea:focus {
+            border-color: #1976d2
+        }
+
+        .fullscreen-btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all .3s ease
+        }
+
+        .fullscreen-btn-save {
+            background: linear-gradient(135deg, #28a745 0, #20c997 100%);
+            color: #fff
+        }
+
+        .fullscreen-btn-save:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(40, 167, 69, .5)
+        }
+
+        .fullscreen-btn-close {
+            background: linear-gradient(135deg, #6c757d 0, #495057 100%);
+            color: #fff
+        }
+
+        .fullscreen-btn-close:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(108, 117, 125, .5)
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0
+            }
+
+            to {
+                opacity: 1
+            }
+        }
+
+        #codeEditorContainer {
+            margin-top: 10px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            min-height: 500px;
+            height: 500px;
+            font-size: 15px
+        }
+
+        #codeEditorContainer:focus-within {
+            outline: 2px solid #1976d2;
+            outline-offset: 2px
+        }
+
+        #inputEditorContainer {
+            margin-top: 10px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            min-height: 250px;
+            height: 250px;
+            font-size: 14px
+        }
+
+        #inputEditorContainer:focus-within {
+            outline: 2px solid #1976d2;
+            outline-offset: 2px
+        }
+
+        #fullscreenEditorContainer {
+            flex: 1;
+            display: flex;
+            flex-direction: column
+        }
+
+        .ace_editor {
+            font-family: Monaco, Menlo, 'Ubuntu Mono', Consolas, source-code-pro, monospace;
+            font-size: 15px !important
+        }
+
+        .fullscreen-ace-editor {
+            font-size: 16px !important
+        }
+
+        @media screen and (max-width:768px) {
+            body {
+                padding: 10px
+            }
+
+            .container {
+                border-radius: 12px
+            }
+
+            .header {
+                padding: 20px 15px 15px;
+                border-bottom-width: 3px
+            }
+
+            .header-logo {
+                max-height: 50px
+            }
+
+            .header-logo-link {
+                margin-bottom: 10px;
+                padding: 6px 15px
+            }
+
+            .header h1 {
+                font-size: 20px;
+                margin-bottom: 8px
+            }
+
+            .header p {
+                font-size: 12px
+            }
+
+            .main-content {
+                grid-template-columns: 1fr;
+                gap: 15px;
+                padding: 15px
+            }
+
+            .section {
+                padding: 15px
+            }
+
+            .section-title {
+                font-size: 16px;
+                margin-bottom: 12px
+            }
+
+            .form-input {
+                padding: 10px;
+                font-size: 13px
+            }
+
+            .button-group {
+                flex-direction: column;
+                gap: 8px
+            }
+
+            .btn {
+                width: 100%;
+                padding: 10px;
+                font-size: 13px
+            }
+
+            #codeEditorContainer {
+                min-height: 300px;
+                height: 300px;
+                font-size: 13px
+            }
+
+            #inputEditorContainer {
+                min-height: 200px;
+                height: 200px;
+                font-size: 13px
+            }
+
+            .result-box {
+                max-height: 400px;
+                font-size: 12px
+            }
+
+            .stats-box {
+                font-size: 11px;
+                padding: 10px
+            }
+
+            .token-card {
+                padding: 10px;
+                font-size: 12px
+            }
+
+            .example-buttons {
+                grid-template-columns: 1fr;
+                gap: 8px
+            }
+
+            .example-btn {
+                font-size: 12px;
+                padding: 10px
+            }
+
+            .info-box {
+                padding: 10px;
+                font-size: 12px
+            }
+
+            .copy-result-btn {
+                font-size: 11px;
+                padding: 5px 10px
+            }
+
+            .fullscreen-edit-btn {
+                font-size: 11px;
+                padding: 5px 10px
+            }
+
+            .fullscreen-editor {
+                padding: 10px
+            }
+
+            .fullscreen-editor-header {
+                flex-direction: column;
+                gap: 10px;
+                align-items: flex-start
+            }
+
+            .fullscreen-editor-title {
+                font-size: 16px
+            }
+
+            .fullscreen-editor-actions {
+                width: 100%;
+                justify-content: space-between
+            }
+
+            .fullscreen-btn {
+                padding: 8px 15px;
+                font-size: 12px
+            }
+
+            .ace_editor {
+                font-size: 13px !important
+            }
+        }
+
+        @media screen and (min-width:769px) and (max-width:1024px) {
+            .main-content {
+                gap: 20px;
+                padding: 20px
+            }
+
+            #codeEditorContainer {
+                height: 400px
+            }
+
+            .header {
+                padding: 22px 20px 18px
+            }
+
+            .header-logo {
+                max-height: 60px
+            }
+
+            .header-logo-link {
+                padding: 7px 18px
+            }
+
+            .header h1 {
+                font-size: 24px
+            }
+        }
+
+        @media screen and (max-width:374px) {
+            body {
+                padding: 5px
+            }
+
+            .header {
+                padding: 15px 10px 12px;
+                border-bottom-width: 2px
+            }
+
+            .header-logo {
+                max-height: 45px
+            }
+
+            .header-logo-link {
+                margin-bottom: 8px;
+                padding: 5px 12px
+            }
+
+            .header h1 {
+                font-size: 18px
+            }
+
+            .main-content {
+                padding: 10px;
+                gap: 10px
+            }
+
+            .section {
+                padding: 12px
+            }
+
+            .btn {
+                font-size: 12px;
+                padding: 10px
+            }
+
+            .copy-result-btn {
+                font-size: 10px;
+                padding: 4px 8px
+            }
+
+            .fullscreen-edit-btn {
+                font-size: 10px;
+                padding: 4px 8px
+            }
+
+            #codeEditorContainer {
+                min-height: 250px;
+                height: 250px;
+                font-size: 12px
+            }
+
+            #inputEditorContainer {
+                min-height: 180px;
+                height: 180px;
+                font-size: 12px
+            }
+
+            .ace_editor {
+                font-size: 12px !important
+            }
+        }
+
+        .ace_bracket {
+            border: 1px solid rgba(128, 128, 128, .5) !important;
+            background-color: rgba(255, 100, 200, .3) !important
+        }
+
+        .ace-textmate .ace_bracket {
+            border: 2px solid #e91e63 !important;
+            background-color: rgba(233, 30, 99, .15) !important;
+            border-radius: 2px;
+            box-shadow: 0 0 4px rgba(233, 30, 99, .3)
+        }
+
+        .ace-monokai .ace_bracket {
+            border: 2px solid #ff6ec7 !important;
+            background-color: rgba(255, 110, 199, .25) !important;
+            border-radius: 2px;
+            box-shadow: 0 0 4px rgba(255, 110, 199, .4)
+        }
+
+        .ace_bracket_error {
+            border: 2px solid #f44 !important;
+            background-color: rgba(255, 68, 68, .2) !important
+        }
+
+        .ace_search {
+            background-color: rgba(255, 255, 255, .98) !important;
+            border: 1px solid #dee2e6 !important;
+            border-radius: 6px !important;
+            padding: 6px !important;
+            padding-top: 32px !important;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, .15) !important;
+            z-index: 10000 !important;
+            top: 10px !important;
+            right: 10px !important;
+            min-width: 380px !important;
+            max-width: 420px !important;
+            position: absolute !important
+        }
+
+        .ace_search_form {
+            margin: 0 !important;
+            display: flex !important;
+            align-items: center !important;
+            gap: 4px !important;
+            padding: 4px !important
+        }
+
+        .ace_replace_form {
+            margin: 0 !important;
+            display: none !important;
+            align-items: center !important;
+            gap: 4px !important;
+            padding: 4px !important;
+            margin-top: 4px !important
+        }
+
+        .ace_replace_form[style*="display: block"],
+        .ace_replace_form[style*="display: flex"] {
+            display: flex !important
+        }
+
+        .ace_search_field {
+            background-color: #fff !important;
+            border: 1px solid #ced4da !important;
+            border-radius: 4px !important;
+            padding: 6px 10px !important;
+            font-size: 13px !important;
+            color: #212529 !important;
+            flex: 1 !important;
+            min-width: 0 !important;
+            width: 100% !important
+        }
+
+        .ace_search_field:focus {
+            border-color: #1976d2 !important;
+            box-shadow: 0 0 0 2px rgba(25, 118, 210, .15) !important;
+            outline: 0 !important
+        }
+
+        .ace_searchbtn.next,
+        .ace_searchbtn.prev {
+            background: 0 0 !important;
+            border: 1px solid #ced4da !important;
+            border-radius: 4px !important;
+            color: #495057 !important;
+            padding: 6px 8px !important;
+            font-size: 12px !important;
+            cursor: pointer !important;
+            transition: all .2s !important;
+            margin: 0 !important;
+            min-width: 28px !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important
+        }
+
+        .ace_searchbtn.next:hover,
+        .ace_searchbtn.prev:hover {
+            background: #e9ecef !important;
+            border-color: #adb5bd !important
+        }
+
+        .ace_searchbtn {
+            background: #1976d2 !important;
+            border: none !important;
+            border-radius: 4px !important;
+            color: #fff !important;
+            padding: 6px 10px !important;
+            font-size: 12px !important;
+            font-weight: 500 !important;
+            cursor: pointer !important;
+            transition: all .2s !important;
+            margin: 0 !important
+        }
+
+        .ace_searchbtn:hover {
+            background: #1565c0 !important
+        }
+
+        .ace_searchbtn:active {
+            transform: scale(.98)
+        }
+
+        .ace_searchbtn_close {
+            background: 0 0 !important;
+            background-image: none !important;
+            border: none !important;
+            border-radius: 4px !important;
+            color: #6c757d !important;
+            font-weight: 700 !important;
+            padding: 0 !important;
+            font-size: 20px !important;
+            line-height: 24px !important;
+            width: 24px !important;
+            height: 24px !important;
+            position: absolute !important;
+            top: 4px !important;
+            right: 6px !important;
+            cursor: pointer !important;
+            z-index: 10 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important
+        }
+
+        .ace_searchbtn_close::before {
+            content: '×' !important;
+            display: block !important;
+            font-size: 24px !important;
+            line-height: 1 !important
+        }
+
+        .ace_searchbtn_close:hover {
+            background: #e9ecef !important;
+            color: #495057 !important
+        }
+
+        .ace_searchbtn_minimize {
+            background: 0 0 !important;
+            border: none !important;
+            border-radius: 4px !important;
+            color: #6c757d !important;
+            font-weight: 700 !important;
+            padding: 0 !important;
+            font-size: 18px !important;
+            line-height: 24px !important;
+            width: 24px !important;
+            height: 24px !important;
+            position: absolute !important;
+            top: 4px !important;
+            right: 34px !important;
+            cursor: pointer !important;
+            z-index: 10 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            transition: all .2s !important
+        }
+
+        .ace_searchbtn_minimize::before {
+            content: '−' !important;
+            display: block !important;
+            font-size: 20px !important;
+            line-height: 1 !important
+        }
+
+        .ace_searchbtn_minimize:hover {
+            background: #e9ecef !important;
+            color: #495057 !important
+        }
+
+        .ace_search {
+            transition: all .25s cubic-bezier(.4, 0, .2, 1) !important
+        }
+
+        .ace_search.minimized {
+            min-width: 48px !important;
+            max-width: 48px !important;
+            width: 48px !important;
+            height: 48px !important;
+            padding: 0 !important;
+            overflow: hidden !important
+        }
+
+        .ace_search.minimized .ace_replace_form,
+        .ace_search.minimized .ace_search_form,
+        .ace_search.minimized .ace_search_options,
+        .ace_search.minimized .ace_searchbtn_close {
+            display: none !important
+        }
+
+        .ace_search.minimized .ace_searchbtn_minimize {
+            position: static !important;
+            width: 100% !important;
+            height: 100% !important;
+            font-size: 24px !important;
+            right: auto !important;
+            top: auto !important
+        }
+
+        .ace_search.minimized .ace_searchbtn_minimize::before {
+            content: '🔍' !important;
+            font-size: 24px !important
+        }
+
+        .ace-monokai .ace_search .ace_searchbtn_minimize,
+        .ace-monokai~.ace_search .ace_searchbtn_minimize {
+            color: #f8f8f2 !important
+        }
+
+        .ace-monokai .ace_search .ace_searchbtn_minimize:hover,
+        .ace-monokai~.ace_search .ace_searchbtn_minimize:hover {
+            background: #49483e !important;
+            color: #66d9ef !important
+        }
+
+        .ace-monokai .ace_search.minimized,
+        .ace-monokai~.ace_search.minimized {
+            background-color: rgba(39, 40, 34, .95) !important
+        }
+
+        .ace_search_options {
+            margin: 0 !important;
+            padding: 4px !important;
+            border-top: none !important;
+            display: flex !important;
+            align-items: center !important;
+            gap: 4px !important;
+            flex-wrap: nowrap !important
+        }
+
+        .ace_button[action=toggleReplace] {
+            background: 0 0 !important;
+            border: 1px solid #ced4da !important;
+            border-radius: 4px !important;
+            color: #495057 !important;
+            padding: 4px 8px !important;
+            font-size: 14px !important;
+            font-weight: 700 !important;
+            margin: 0 !important;
+            margin-right: 4px !important;
+            cursor: pointer !important;
+            transition: all .2s !important;
+            min-width: 28px !important
+        }
+
+        .ace_button[action=toggleReplace]:hover {
+            background: #e9ecef !important;
+            border-color: #adb5bd !important
+        }
+
+        .ace_button[action=toggleReplace].checked {
+            background: #e9ecef !important;
+            border-color: #ced4da !important;
+            color: #495057 !important
+        }
+
+        .ace_button {
+            background: 0 0 !important;
+            border: 1px solid #ced4da !important;
+            border-radius: 4px !important;
+            color: #495057 !important;
+            padding: 4px 8px !important;
+            font-size: 11px !important;
+            margin: 0 !important;
+            cursor: pointer !important;
+            transition: all .2s !important;
+            white-space: nowrap !important
+        }
+
+        .ace_button:hover {
+            background: #e9ecef !important;
+            border-color: #adb5bd !important
+        }
+
+        .ace_button.checked {
+            background: #1976d2 !important;
+            border-color: #1976d2 !important;
+            color: #fff !important
+        }
+
+        .ace_button.checked:hover {
+            background: #1565c0 !important;
+            border-color: #1565c0 !important
+        }
+
+        .ace_search_counter {
+            background: 0 0 !important;
+            color: #6c757d !important;
+            padding: 0 6px !important;
+            border-radius: 0 !important;
+            font-size: 11px !important;
+            font-weight: 500 !important;
+            margin: 0 !important;
+            white-space: nowrap !important;
+            flex-shrink: 0 !important
+        }
+
+        .ace_marker-layer .ace_selection {
+            background-color: rgba(255, 200, 0, .3) !important;
+            border: 1px solid rgba(255, 200, 0, .5) !important;
+            border-radius: 2px
+        }
+
+        .ace_marker-layer .ace_selected-word {
+            background-color: rgba(255, 153, 0, .5) !important;
+            border: 1px solid rgba(255, 153, 0, .7) !important;
+            border-radius: 2px
+        }
+
+        .ace_marker-layer .ace_active-line {
+            background-color: rgba(255, 153, 0, .08) !important
+        }
+
+        .ace-monokai .ace_marker-layer .ace_selection {
+            background-color: rgba(200, 200, 150, .25) !important;
+            border: 1px solid rgba(200, 200, 150, .4) !important;
+            border-radius: 2px
+        }
+
+        .ace-monokai .ace_marker-layer .ace_selected-word {
+            background-color: rgba(200, 200, 100, .4) !important;
+            border: 1px solid rgba(200, 200, 100, .6) !important;
+            border-radius: 2px
+        }
+
+        .ace-monokai .ace_marker-layer .ace_active-line {
+            background-color: rgba(200, 200, 100, .1) !important
+        }
+
+        .ace-monokai .ace_search,
+        .ace-monokai~.ace_search {
+            background-color: rgba(39, 40, 34, .98) !important;
+            border: 1px solid #75715e !important
+        }
+
+        .ace-monokai .ace_search_field {
+            background-color: #3e3d32 !important;
+            border: 1px solid #75715e !important;
+            color: #f8f8f2 !important
+        }
+
+        .ace-monokai .ace_search_field:focus {
+            border-color: #66d9ef !important;
+            box-shadow: 0 0 0 2px rgba(102, 217, 239, .2) !important
+        }
+
+        .ace-monokai .ace_search_counter {
+            color: #f8f8f2 !important
+        }
+
+        .ace-monokai .ace_searchbtn_close {
+            color: #a59f85 !important
+        }
+
+        .ace-monokai .ace_searchbtn_close:hover {
+            background: #49483e !important;
+            color: #f8f8f2 !important
+        }
+
+        .ace-monokai .ace_button {
+            background: #3e3d32 !important;
+            border: 1px solid #75715e !important;
+            color: #f8f8f2 !important
+        }
+
+        .ace-monokai .ace_button:hover {
+            background: #49483e !important
+        }
+
+        .ace-monokai .ace_button.checked {
+            background: #66d9ef !important;
+            border-color: #66d9ef !important;
+            color: #272822 !important
+        }
+
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+            <div class="header"> <a href="{{.LogoUrl}}" target="_blank" class="header-logo-link" title="访问轻流官网"> <img
+                        src="{{.LogoImageUrl}}" alt="轻流 Logo" class="header-logo"> </a>
+                <h1> Flow-CodeBlock 代码执行在线工具</h1>
+                <p>支持 数据处理、异步操作、HTTP 请求、加密等功能</p>
+            </div>
+            <div class="main-content">
+                <div class="section">
+                    <div class="section-title"> <span class="icon">📌</span> 使用说明 </div>
+                    <div class="info-box"> <strong style="color:#495057">📚 相关链接：</strong>
+                        <div style="margin-top:8px;line-height:1.8"> • <a href="{{.HelpDocUrl}}" target="_blank"
+                                style="color:#1976d2;text-decoration:none;font-weight:600">📖 Flow CodeBlock 帮助文档</a>
+                            <span style="color:#6c757d;font-size:13px"> - 完整的功能介绍和使用指南</span><br> • <a
+                                href="{{.ApiDocUrl}}" target="_blank"
+                                style="color:#1976d2;text-decoration:none;font-weight:600">📘 Flow CodeBlock API
+                                接口文档</a> <span style="color:#6c757d;font-size:13px"> - 详细说明 API 接口调用规则</span><br> • <a
+                                href="{{.TestToolGuideUrl}}" target="_blank"
+                                style="color:#1976d2;text-decoration:none;font-weight:600">🛠️ Flow CodeBlock
+                                在线测试工具使用指南</a> <span style="color:#6c757d;font-size:13px"> - 功能强大的在线测试工具详解</span><br> •
+                            <a href="{{.ExampleDocUrl}}" target="_blank"
+                                style="color:#1976d2;text-decoration:none;font-weight:600">💡 Flow CodeBlock 代码示例</a>
+                            <span style="color:#6c757d;font-size:13px"> - 结合轻流的多种代码块示例</span><br> • <a
+                                href="{{.AiAssistantUrl}}" target="_blank"
+                                style="color:#1976d2;text-decoration:none;font-weight:600">🤖 轻翼AI：Flow CodeBlock
+                                代码AI助手</a> <span style="color:#6c757d;font-size:13px"> - 帮助用户快速编写代码</span> </div>
+                        <div style="margin-top:15px;padding-top:12px;border-top:1px solid #dee2e6"> <strong
+                                style="color:#495057;font-size:15px">💡 快速开始：</strong>
+                            <div
+                                style="margin-top:8px;background:#fff8e6;border-left:4px solid #ffc107;padding:12px 15px;border-radius:6px">
+                                <div style="color:#333;font-size:14px;line-height:1.8;font-weight:500">
+                                    <div style="margin-bottom:6px">1️⃣ 输入 <span
+                                            style="color:#dc3545;font-weight:600">Access Token</span>（必需）</div>
+                                    <div style="margin-bottom:6px">2️⃣ 填写 <span
+                                            style="color:#17a2b8;font-weight:600">Input 参数</span>（JSON 格式）</div>
+                                    <div style="margin-bottom:6px">3️⃣ 编写 <span
+                                            style="color:#28a745;font-weight:600">JavaScript 代码</span></div>
+                                    <div style="margin-bottom:6px">4️⃣ 点击 <span
+                                            style="color:#1976d2;font-weight:600">"运行代码"</span> 执行测试</div>
+                                    <div style="margin-bottom:6px">5️⃣ 查看 <span
+                                            style="color:#fd7e14;font-weight:600">执行结果</span> 或报错信息</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div
+                            style="margin-top:15px;padding:8px 10px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:6px;font-size:13px;color:#6c757d;line-height:1.6">
+                            <div style="margin-bottom:4px">💬 如有疑问，请查阅上方文档或联系技术支持</div>
+                            <div>🌟 建议先查看代码示例，快速掌握使用方法</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="section">
+                    <div class="section-title" style="margin-bottom:15px"> <span class="icon">🔐</span> 认证配置 </div>
+                    <div class="config-section" style="margin-bottom:12px">
+                        <div class="config-label">API 服务地址</div> <input type="text" id="apiUrl" class="form-input"
+                            value="{{.ApiUrl}}" placeholder="{{.ApiUrl}}">
+                    </div>
+                    <div class="config-section" style="margin-bottom:12px">
+                        <div class="config-label">Access Token <span style="color:red">*</span></div> <input type="text"
+                            id="accessToken" class="form-input" placeholder="请输入您的 Access Token">
+                    </div>
+                    <div style="margin-top:8px;display:flex;gap:10px"> <a href="{{.ApplyServiceUrl}}" target="_blank"
+                            style="flex:1;background:linear-gradient(135deg,#1976d2 0,#42a5f5 100%);color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 15px rgba(25,118,210,.4);transition:all .3s ease;font-size:14px;text-align:center"
+                            onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(25, 118, 210, 0.6)';"
+                            onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(25, 118, 210, 0.4)';">🎯
+                            申请试用服务</a> <button onclick="showTokenQuery()"
+                            style="flex:1;background:linear-gradient(135deg,#20b2aa 0,#008b8b 100%);color:#fff;padding:12px 20px;border:none;border-radius:8px;font-weight:700;box-shadow:0 4px 15px rgba(32,178,170,.4);transition:all .3s ease;font-size:14px;cursor:pointer"
+                            onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(32, 178, 170, 0.6)';"
+                            onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(32, 178, 170, 0.4)';">🔍
+                            查询 Token</button> </div> {{if .VerifyCodeEnabled}}
+                    <div
+                        style="margin-top:12px;background:#fff3e0;border:1px solid #ffb74d;border-radius:8px;padding:12px 15px;font-size:13px;color:#e65100">
+                        <strong>🔐 安全提示：</strong> Token查询需要验证码验证，验证码将发送到您的邮箱 </div>{{end}}
+                    <div
+                        style="margin-top:15px;background:#f0f7ff;border:1px solid #b3d9ff;border-radius:8px;padding:12px 15px">
+                        <div
+                            style="color:#2c5aa0;font-size:13px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px">
+                            💡 配置说明 </div>
+                        <div style="color:#495057;font-size:13px;line-height:1.8">
+                            <div style="margin-bottom:6px"> <strong style="color:#856404">📍 API 服务地址：</strong> <span
+                                    style="color:#666">代码执行服务的接口地址，默认已配置无需修改</span> </div>
+                            <div style="margin-bottom:6px"> <strong style="color:#856404">🔑 Access Token：</strong>
+                                <span style="color:#666">您的访问凭证（必填），用于身份验证和权限控制</span> </div>
+                            <div style="margin-bottom:6px"> <strong style="color:#1976d2">🎯 申请试用服务：</strong> <span
+                                    style="color:#666">首次使用可申请试用 Token，点击跳转到申请页面</span> </div>
+                            <div style="margin-bottom:6px"> <strong style="color:#20b2aa">🔍 查询 Token：</strong> <span
+                                    style="color:#666">已有 Token 但忘记了？点击查询您的历史 Token 信息</span> </div>
+                            <div
+                                style="margin-top:8px;padding:8px 10px;background:#fff3cd;border-left:3px solid #ffc107;border-radius:4px">
+                                <strong style="color:#d97706">⚠️ 重要提示：</strong> <span
+                                    style="color:#666">若需要申请正式开通服务，请联系<strong
+                                        style="color:#d97706">轻流售后服务人员</strong></span> </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="section result-section">
+                    <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
+                        <div> <span class="icon">📥</span> Input 参数 </div>
+                        <div style="display:flex;gap:10px;align-items:center"> <button
+                                onclick="openFullscreenInputEditor()" class="fullscreen-edit-btn" title="全屏编辑 Input 参数">
+                                🖥️ 全屏编辑 </button> <button id="copyInputBtn" class="copy-result-btn"
+                                onclick="copyInputData()" title="复制 Input 参数"> 📋 复制内容 </button> </div>
+                    </div>
+                    <div id="inputAlertBox" class="alert"></div>
+                    <div class="form-group"> <label class="form-label">输入数据（JSON 格式）</label> <small
+                            style="color:#6c757d;font-size:12px;display:block;margin-bottom:8px"> 💡
+                            <strong>完整示例：</strong>点击下方按钮同时加载 Input 数据和代码 </small>
+                        <div class="example-links" style="margin-bottom:15px">
+                            <div class="example-link" onclick="loadCompleteExample('simple')"
+                                style="background:linear-gradient(135deg,#1976d2 0,#42a5f5 100%);color:#fff;font-weight:700">
+                                ✨ 简单计算</div>
+                            <div class="example-link" onclick="loadCompleteExample('async')"
+                                style="background:linear-gradient(135deg,#f093fb 0,#f5576c 100%);color:#fff;font-weight:700">
+                                ✨ Axios 请求</div>
+                            <div class="example-link" onclick="loadCompleteExample('fetch')"
+                                style="background:linear-gradient(135deg,#fa709a 0,#fee140 100%);color:#fff;font-weight:700">
+                                ✨ Fetch 请求</div>
+                            <div class="example-link" onclick="loadCompleteExample('lodash')"
+                                style="background:linear-gradient(135deg,#4facfe 0,#00f2fe 100%);color:#fff;font-weight:700">
+                                ✨ Lodash 工具</div>
+                            <div class="example-link" onclick="loadCompleteExample('crypto')"
+                                style="background:linear-gradient(135deg,#43e97b 0,#38f9d7 100%);color:#fff;font-weight:700">
+                                ✨ 数据加密</div>
+                            <div class="example-link" onclick="loadCompleteExample('datefns')"
+                                style="background:linear-gradient(135deg,#a8edea 0,#fed6e3 100%);color:#fff;font-weight:700">
+                                ✨ 日期处理</div>
+                            <div class="example-link" onclick="loadCompleteExample('xlsx')"
+                                style="background:linear-gradient(135deg,#ff9a56 0,#ffcd39 100%);color:#fff;font-weight:700">
+                                ✨ Excel 处理</div>
+                        </div>
+                        <div id="inputEditorContainer"
+                            style="min-height:250px;height:250px;border:1px solid #ddd;border-radius:8px"></div>
+                        <textarea id="inputData" style="display:none">{
   "name": "张三",
   "age": 25,
   "items": [1, 2, 3, 4, 5]
-}</textarea> </div> <div class="button-group"> <button class="btn btn-danger" onclick="clearInput()"> 🗑️ 清空输入 </button> </div> </div> <div class="section"> <div class="section-title" style="display:flex;justify-content:space-between;align-items:center"> <div> <span class="icon">💻</span> JavaScript 代码 </div> <button onclick="openFullscreenEditor()" class="fullscreen-edit-btn" title="全屏编辑代码"> 🖥️ 全屏编辑 </button> </div> <div id="jsAlertBox" class="alert"></div> <div class="form-group"> <label class="form-label">请编写符合项目规则的代码</label> <small style="color:#6c757d;font-size:12px;display:block;margin-bottom:8px"> 💡 提示：在上方 Input 参数区域点击<strong>完整示例</strong>按钮，可同时加载 Input 和代码 </small> <div id="codeEditorContainer"></div> <textarea id="jsCode" style="display:none">// 计算年龄的两倍
+}</textarea>
+                    </div>
+                    <div class="button-group"> <button class="btn btn-danger" onclick="clearInput()"> 🗑️ 清空输入 </button>
+                    </div>
+                </div>
+                <div class="section">
+                    <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
+                        <div> <span class="icon">💻</span> JavaScript 代码 </div> <button onclick="openFullscreenEditor()"
+                            class="fullscreen-edit-btn" title="全屏编辑代码"> 🖥️ 全屏编辑 </button>
+                    </div>
+                    <div id="jsAlertBox" class="alert"></div>
+                    <div class="form-group"> <label class="form-label">请编写符合项目规则的代码</label> <small
+                            style="color:#6c757d;font-size:12px;display:block;margin-bottom:8px"> 💡 提示：在上方 Input
+                            参数区域点击<strong>完整示例</strong>按钮，可同时加载 Input 和代码 </small>
+                        <div id="codeEditorContainer"></div> <textarea id="jsCode" style="display:none">// 计算年龄的两倍
 return {
   result: input.age * 2,
   name: input.name,
   items: input.items
-};</textarea> </div> <div class="button-group code-action-group"> <button class="btn btn-danger" onclick="clearCode()"> 🗑️ 清空代码 </button> <button class="btn btn-info" onclick="encodeToBase64()"> 🔒 Base64编码并复制 </button> <button class="btn btn-warning" onclick="decodeFromBase64()"> 🔓 Base64解码 </button> <button class="btn btn-success" onclick="executeCode()" id="runBtn"> ▶️ 运行代码 </button> </div> </div> <div class="section"> <div class="section-title" style="display:flex;justify-content:space-between;align-items:center"> <div> <span class="icon">📊</span> 执行结果 </div> <button id="copyResultBtn" class="copy-result-btn" onclick="copyExecutionResult()" style="display:none" title="复制执行结果"> 📋 复制结果 </button> </div> <div id="alertBox" class="alert"></div> <div class="loading" id="loadingBox"> <div class="spinner"></div> <div>正在执行代码...</div> </div> <div id="resultBox" class="result-box" style="display:none"></div> <div id="statsBox" style="display:none"> <div class="stats-grid"> <div class="stat-card"> <div class="stat-value" id="statExecutionTime">-</div> <div class="stat-label">执行时间 (ms)</div> </div> <div class="stat-card"> <div class="stat-value" id="statStatus">-</div> <div class="stat-label">状态</div> </div> <div class="stat-card"> <div class="stat-value" id="statRequestId">-</div> <div class="stat-label">Request ID</div> </div> </div> </div> </div> </div> </div> <script> // ==================== 全局变量 ====================
+};</textarea>
+                    </div>
+                    <div class="button-group code-action-group"> <button class="btn btn-danger" onclick="clearCode()">
+                            🗑️ 清空代码 </button> <button class="btn btn-info" onclick="encodeToBase64()"> 🔒 Base64编码并复制
+                        </button> <button class="btn btn-warning" onclick="decodeFromBase64()"> 🔓 Base64解码 </button>
+                        <button class="btn btn-success" onclick="executeCode()" id="runBtn"> ▶️ 运行代码 </button> </div>
+                </div>
+                <div class="section">
+                    <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
+                        <div> <span class="icon">📊</span> 执行结果 </div> <button id="copyResultBtn"
+                            class="copy-result-btn" onclick="copyExecutionResult()" style="display:none" title="复制执行结果">
+                            📋 复制结果 </button>
+                    </div>
+                    <div id="alertBox" class="alert"></div>
+                    <div class="loading" id="loadingBox">
+                        <div class="spinner"></div>
+                        <div>正在执行代码...</div>
+                    </div>
+                    <div id="resultBox" class="result-box" style="display:none"></div>
+                    <div id="statsBox" style="display:none">
+                        <div class="stats-grid">
+                            <div class="stat-card">
+                                <div class="stat-value" id="statExecutionTime">-</div>
+                                <div class="stat-label">执行时间 (ms)</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value" id="statStatus">-</div>
+                                <div class="stat-label">状态</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value" id="statRequestId">-</div>
+                                <div class="stat-label">Request ID</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <script>
+        // ==================== 全局变量 ====================
         let currentAbortController = null; // 用于取消请求的 AbortController
         let isExecuting = false; // 标记是否正在执行代码
 
         // ==================== Base64 编码并复制 ====================
         function encodeToBase64() {
             const code = document.getElementById('jsCode').value;
-            
+
             if (!code.trim()) {
                 showAlertInArea('jsAlertBox', '请先输入 JavaScript 代码', 'warning');
                 return;
@@ -24,7 +1704,7 @@ return {
                 // 使用 TextEncoder 确保 UTF-8 编码
                 const encoder = new TextEncoder();
                 const utf8Bytes = encoder.encode(code);
-                
+
                 // 转换为 base64
                 let binary = '';
                 const len = utf8Bytes.byteLength;
@@ -32,22 +1712,28 @@ return {
                     binary += String.fromCharCode(utf8Bytes[i]);
                 }
                 const base64 = btoa(binary);
-                
+
                 // 自动复制到剪贴板
                 if (navigator.clipboard && navigator.clipboard.writeText) {
                     navigator.clipboard.writeText(base64)
                         .then(() => {
-                            showAlertInArea('jsAlertBox', `✅ Base64 编码成功并已复制到剪贴板！\n原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`, 'success');
+                            showAlertInArea('jsAlertBox',
+                                `✅ Base64 编码成功并已复制到剪贴板！\n原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`,
+                                'success');
                         })
                         .catch(err => {
                             // 降级方案：使用传统方法
                             fallbackCopyToClipboard(base64);
-                            showAlertInArea('jsAlertBox', `✅ Base64 编码成功并已复制到剪贴板！\n原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`, 'success');
+                            showAlertInArea('jsAlertBox',
+                                `✅ Base64 编码成功并已复制到剪贴板！\n原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`,
+                                'success');
                         });
                 } else {
                     // 降级方案：使用传统方法
                     fallbackCopyToClipboard(base64);
-                    showAlertInArea('jsAlertBox', `✅ Base64 编码成功并已复制到剪贴板！\n原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`, 'success');
+                    showAlertInArea('jsAlertBox',
+                        `✅ Base64 编码成功并已复制到剪贴板！\n原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`,
+                        'success');
                 }
             } catch (error) {
                 showAlertInArea('jsAlertBox', '编码失败: ' + error.message, 'error');
@@ -60,88 +1746,88 @@ return {
             // 用户可以在输入框中使用 Ctrl+V 粘贴，体验更流畅
             showBase64InputModal();
         }
-        
+
         // 验证 Base64 格式
         function isValidBase64(str) {
             if (!str || typeof str !== 'string') {
                 return false;
             }
-            
+
             // 移除可能的空白字符
             str = str.replace(/\s/g, '');
-            
+
             // Base64 字符集检查 (包括 padding =)
             const base64Regex = /^[A-Za-z0-9+\/]*={0,2}$/;
             if (!base64Regex.test(str)) {
                 return false;
             }
-            
+
             // 长度必须是 4 的倍数
             if (str.length % 4 !== 0) {
                 return false;
             }
-            
+
             return true;
         }
-        
+
         // 执行 Base64 解码
         function performBase64Decode(base64String) {
             try {
                 // 移除空白字符
                 base64String = base64String.replace(/\s/g, '');
-                
+
                 // Base64 解码
                 const binaryString = atob(base64String);
-                
+
                 // 转换为 UTF-8
                 const bytes = new Uint8Array(binaryString.length);
                 for (let i = 0; i < binaryString.length; i++) {
                     bytes[i] = binaryString.charCodeAt(i);
                 }
-                
+
                 const decoder = new TextDecoder('utf-8');
                 const decodedCode = decoder.decode(bytes);
-                
+
                 // 更新到代码编辑器
                 if (mainEditor) {
                     mainEditor.setValue(decodedCode, -1);
                 }
                 document.getElementById('jsCode').value = decodedCode;
-                
+
                 // 显示成功提示
-                showAlertInArea('jsAlertBox', 
-                    `✅ Base64 解码成功！\nBase64 长度: ${base64String.length}, 解码后字符数: ${decodedCode.length}`, 
+                showAlertInArea('jsAlertBox',
+                    `✅ Base64 解码成功！\nBase64 长度: ${base64String.length}, 解码后字符数: ${decodedCode.length}`,
                     'success'
                 );
-                
+
                 // 关闭弹窗(如果是从弹窗触发的)
                 closeBase64InputModal();
-                
+
             } catch (error) {
-                showAlertInArea('jsAlertBox', 
-                    `❌ Base64 解码失败: ${error.message}\n请确保输入的是有效的 Base64 编码字符串`, 
+                showAlertInArea('jsAlertBox',
+                    `❌ Base64 解码失败: ${error.message}\n请确保输入的是有效的 Base64 编码字符串`,
                     'error'
                 );
             }
         }
-        
+
         // 显示 Base64 输入弹窗
         function showBase64InputModal() {
             const modal = document.getElementById('base64InputModal');
             const textarea = document.getElementById('base64Input');
             const errorMsg = document.getElementById('base64InputError');
-            
+
             // 清空之前的内容
             textarea.value = '';
             errorMsg.style.display = 'none';
-            
+
             // 显示弹窗
             modal.classList.add('show');
-            
+
             // 聚焦到输入框
             setTimeout(() => {
                 textarea.focus();
-                
+
                 // 添加快捷键支持：Ctrl+Enter 或 Command+Enter 快速确认
                 textarea.onkeydown = function(e) {
                     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -151,35 +1837,35 @@ return {
                 };
             }, 300);
         }
-        
+
         // 关闭 Base64 输入弹窗
         function closeBase64InputModal() {
             const modal = document.getElementById('base64InputModal');
             modal.classList.remove('show');
         }
-        
+
         // 从弹窗确认解码
         function confirmBase64Decode() {
             const textarea = document.getElementById('base64Input');
             const errorMsg = document.getElementById('base64InputError');
             const base64String = textarea.value.trim();
-            
+
             // 验证输入
             if (!base64String) {
                 errorMsg.textContent = '⚠️ 请输入 Base64 编码的内容';
                 errorMsg.style.display = 'block';
                 return;
             }
-            
+
             if (!isValidBase64(base64String)) {
                 errorMsg.textContent = '❌ 格式错误，请输入有效的 Base64 字符串';
                 errorMsg.style.display = 'block';
                 return;
             }
-            
+
             // 隐藏错误提示
             errorMsg.style.display = 'none';
-            
+
             // 执行解码
             performBase64Decode(base64String);
         }
@@ -192,13 +1878,13 @@ return {
             textArea.style.left = '-999999px';
             document.body.appendChild(textArea);
             textArea.select();
-            
+
             try {
                 document.execCommand('copy');
             } catch (err) {
                 // 静默处理复制失败
             }
-            
+
             document.body.removeChild(textArea);
         }
 
@@ -206,32 +1892,32 @@ return {
         function copyExecutionResult() {
             const resultBox = document.getElementById('resultBox');
             const copyBtn = document.getElementById('copyResultBtn');
-            
+
             if (!resultBox || resultBox.style.display === 'none') {
                 showAlertInArea('alertBox', '⚠️ 暂无执行结果可复制', 'warning');
                 return;
             }
-            
+
             // 获取纯文本内容（去除 HTML 标签）
             const resultText = resultBox.innerText || resultBox.textContent;
-            
+
             if (!resultText.trim()) {
                 showAlertInArea('alertBox', '⚠️ 执行结果为空，无法复制', 'warning');
                 return;
             }
-            
+
             // 使用现代的 Clipboard API
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 navigator.clipboard.writeText(resultText)
                     .then(() => {
                         // 显示成功提示
                         showAlertInArea('alertBox', '✅ 执行结果已复制到剪贴板！', 'success');
-                        
+
                         // 按钮视觉反馈
                         const originalText = copyBtn.innerHTML;
                         copyBtn.innerHTML = '✓ 已复制';
                         copyBtn.classList.add('copied');
-                        
+
                         // 2秒后恢复按钮
                         setTimeout(() => {
                             copyBtn.innerHTML = originalText;
@@ -247,7 +1933,7 @@ return {
                 fallbackCopyResult(resultText);
             }
         }
-        
+
         // 降级复制方案（用于执行结果）
         function fallbackCopyResult(text) {
             const textArea = document.createElement('textarea');
@@ -256,17 +1942,17 @@ return {
             textArea.style.left = '-999999px';
             document.body.appendChild(textArea);
             textArea.select();
-            
+
             try {
                 document.execCommand('copy');
                 showAlertInArea('alertBox', '✅ 执行结果已复制到剪贴板！', 'success');
-                
+
                 // 按钮视觉反馈
                 const copyBtn = document.getElementById('copyResultBtn');
                 const originalText = copyBtn.innerHTML;
                 copyBtn.innerHTML = '✓ 已复制';
                 copyBtn.classList.add('copied');
-                
+
                 setTimeout(() => {
                     copyBtn.innerHTML = originalText;
                     copyBtn.classList.remove('copied');
@@ -274,7 +1960,7 @@ return {
             } catch (err) {
                 showAlertInArea('alertBox', '❌ 复制失败，请手动复制', 'error');
             }
-            
+
             document.body.removeChild(textArea);
         }
 
@@ -282,26 +1968,26 @@ return {
         function copyInputData() {
             const inputData = document.getElementById('inputData');
             const copyBtn = document.getElementById('copyInputBtn');
-            
+
             if (!inputData || !inputData.value.trim()) {
                 showAlertInArea('inputAlertBox', '⚠️ Input 参数为空，无法复制', 'warning');
                 return;
             }
-            
+
             const inputText = inputData.value;
-            
+
             // 使用现代的 Clipboard API
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 navigator.clipboard.writeText(inputText)
                     .then(() => {
                         // 显示成功提示
                         showAlertInArea('inputAlertBox', '✅ Input 参数已复制到剪贴板！', 'success');
-                        
+
                         // 按钮视觉反馈
                         const originalText = copyBtn.innerHTML;
                         copyBtn.innerHTML = '✓ 已复制';
                         copyBtn.classList.add('copied');
-                        
+
                         // 2秒后恢复按钮
                         setTimeout(() => {
                             copyBtn.innerHTML = originalText;
@@ -317,7 +2003,7 @@ return {
                 fallbackCopyInput(inputText);
             }
         }
-        
+
         // 降级复制方案（用于 Input 参数）
         function fallbackCopyInput(text) {
             const textArea = document.createElement('textarea');
@@ -326,17 +2012,17 @@ return {
             textArea.style.left = '-999999px';
             document.body.appendChild(textArea);
             textArea.select();
-            
+
             try {
                 document.execCommand('copy');
                 showAlertInArea('inputAlertBox', '✅ Input 参数已复制到剪贴板！', 'success');
-                
+
                 // 按钮视觉反馈
                 const copyBtn = document.getElementById('copyInputBtn');
                 const originalText = copyBtn.innerHTML;
                 copyBtn.innerHTML = '✓ 已复制';
                 copyBtn.classList.add('copied');
-                
+
                 setTimeout(() => {
                     copyBtn.innerHTML = originalText;
                     copyBtn.classList.remove('copied');
@@ -344,14 +2030,14 @@ return {
             } catch (err) {
                 showAlertInArea('inputAlertBox', '❌ 复制失败，请手动复制', 'error');
             }
-            
+
             document.body.removeChild(textArea);
         }
 
         // ==================== 代码执行 ====================
         async function executeCode() {
             const runBtn = document.getElementById('runBtn');
-            
+
             // 如果正在执行,则点击按钮执行取消操作
             if (isExecuting) {
                 cancelExecution();
@@ -409,7 +2095,7 @@ return {
             document.getElementById('resultBox').style.display = 'none';
             document.getElementById('statsBox').style.display = 'none';
             document.getElementById('copyResultBtn').style.display = 'none';
-            
+
             // 修改按钮为取消状态
             runBtn.className = 'btn btn-cancel';
             runBtn.innerHTML = '⏹️ 取消执行';
@@ -430,7 +2116,7 @@ return {
                 });
 
                 const result = await response.json();
-                
+
                 // 执行成功,恢复按钮状态
                 resetExecutionState();
 
@@ -440,9 +2126,9 @@ return {
             } catch (error) {
                 // 恢复按钮状态
                 resetExecutionState();
-                
+
                 let errorMessage = '网络请求失败';
-                
+
                 // 检查是否是用户主动取消
                 if (error.name === 'AbortError') {
                     errorMessage = '代码执行已被用户取消';
@@ -455,13 +2141,13 @@ return {
                     }, false);
                     return;
                 }
-                
+
                 if (error.message.includes('Failed to fetch')) {
                     errorMessage = '无法连接到服务器，请检查：\n1. API 服务地址是否正确\n2. 服务是否已启动\n3. 是否存在跨域问题';
                 } else {
                     errorMessage = error.message;
                 }
-                
+
                 showAlert('❌ 请求失败: ' + errorMessage, 'error');
                 displayResult({
                     success: false,
@@ -486,7 +2172,7 @@ return {
             isExecuting = false;
             currentAbortController = null;
             showLoading(false);
-            
+
             // 恢复按钮为运行状态
             runBtn.className = 'btn btn-success';
             runBtn.innerHTML = '▶️ 运行代码';
@@ -497,15 +2183,15 @@ return {
             const resultBox = document.getElementById('resultBox');
             const statsBox = document.getElementById('statsBox');
             const copyBtn = document.getElementById('copyResultBtn');
-            
+
             resultBox.style.display = 'block';
             resultBox.className = 'result-box ' + (isSuccess ? 'success' : 'error');
-            
+
             // 显示复制按钮
             if (copyBtn) {
                 copyBtn.style.display = 'inline-flex';
             }
-            
+
             // 使用 Postman 风格的 JSON 语法高亮
             const jsonString = JSON.stringify(result, null, 2);
             resultBox.innerHTML = syntaxHighlight(jsonString);
@@ -514,12 +2200,12 @@ return {
             if (result.executionTime !== undefined) {
                 statsBox.style.display = 'block';
                 document.getElementById('statExecutionTime').textContent = result.executionTime || '-';
-                document.getElementById('statStatus').innerHTML = result.success 
-                    ? '<span class="badge badge-success">成功</span>' 
-                    : '<span class="badge badge-error">失败</span>';
-                document.getElementById('statRequestId').textContent = result.request_id 
-                    ? result.request_id.substring(0, 8) + '...' 
-                    : '-';
+                document.getElementById('statStatus').innerHTML = result.success ?
+                    '<span class="badge badge-success">成功</span>' :
+                    '<span class="badge badge-error">失败</span>';
+                document.getElementById('statRequestId').textContent = result.request_id ?
+                    result.request_id.substring(0, 8) + '...' :
+                    '-';
             }
 
             // 显示提示信息
@@ -533,31 +2219,33 @@ return {
         // JSON 语法高亮函数（Postman 风格）
         function syntaxHighlight(json) {
             if (!json) return '';
-            
+
             // 对特殊字符进行 HTML 转义
             json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            
-            return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
-                let cls = 'json-number';
-                
-                if (/^"/.test(match)) {
-                    if (/:$/.test(match)) {
-                        // JSON key
-                        cls = 'json-key';
-                    } else {
-                        // JSON string value
-                        cls = 'json-string';
+
+            return json.replace(
+                /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+                function(match) {
+                    let cls = 'json-number';
+
+                    if (/^"/.test(match)) {
+                        if (/:$/.test(match)) {
+                            // JSON key
+                            cls = 'json-key';
+                        } else {
+                            // JSON string value
+                            cls = 'json-string';
+                        }
+                    } else if (/true|false/.test(match)) {
+                        // Boolean
+                        cls = 'json-boolean';
+                    } else if (/null/.test(match)) {
+                        // Null
+                        cls = 'json-null';
                     }
-                } else if (/true|false/.test(match)) {
-                    // Boolean
-                    cls = 'json-boolean';
-                } else if (/null/.test(match)) {
-                    // Null
-                    cls = 'json-null';
-                }
-                
-                return '<span class="' + cls + '">' + match + '</span>';
-            }).replace(/([{}[\],])/g, '<span class="json-bracket">$1</span>');
+
+                    return '<span class="' + cls + '">' + match + '</span>';
+                }).replace(/([{}[\],])/g, '<span class="json-bracket">$1</span>');
         }
 
         // ==================== 示例代码加载 ====================
@@ -690,12 +2378,12 @@ return {
 
             const inputStr = JSON.stringify(examples[type] || examples.simple, null, 2);
             document.getElementById('inputData').value = inputStr;
-            
+
             // 更新 Input 编辑器
             if (inputEditor) {
                 inputEditor.setValue(inputStr, -1);
             }
-            
+
             showAlertInArea('inputAlertBox', '✅ 示例 Input 已加载', 'success');
         }
 
@@ -806,10 +2494,21 @@ return fetchUserData();`
                 },
                 lodash: {
                     input: {
-                        users: [
-                            { name: "张三", age: 25, city: "北京" },
-                            { name: "李四", age: 30, city: "上海" },
-                            { name: "王五", age: 28, city: "北京" }
+                        users: [{
+                                name: "张三",
+                                age: 25,
+                                city: "北京"
+                            },
+                            {
+                                name: "李四",
+                                age: 30,
+                                city: "上海"
+                            },
+                            {
+                                name: "王五",
+                                age: 28,
+                                city: "北京"
+                            }
                         ],
                         targetCity: "北京"
                     },
@@ -1077,30 +2776,33 @@ return readExcelFromUrl();`
             };
 
             const example = examples[type] || examples.simple;
-            
+
             // 同时加载 Input 和代码
             const inputStr = JSON.stringify(example.input, null, 2);
             document.getElementById('inputData').value = inputStr;
             document.getElementById('jsCode').value = example.code;
-            
+
             // 更新 Input 编辑器
             if (inputEditor) {
                 inputEditor.setValue(inputStr, -1);
             }
-            
+
             // 更新代码编辑器
             if (mainEditor) {
                 mainEditor.setValue(example.code, -1);
             }
-            
+
             // 显示成功提示
             showAlertInArea('inputAlertBox', '✅ 完整示例已加载！Input 数据和代码已同步填充', 'success');
-            
+
             // 滚动到代码区域
             setTimeout(() => {
                 const container = document.getElementById('codeEditorContainer');
                 if (container) {
-                    container.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    container.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'center'
+                    });
                 }
             }, 300);
         }
@@ -1145,7 +2847,7 @@ return readExcelFromUrl();`
         function showTokenQuery() {
             document.getElementById('tokenModal').classList.add('show');
             document.getElementById('tokenResult').style.display = 'none';
-            
+
             // 🔥 自动填充已有的Token（如果存在）
             const currentToken = document.getElementById('accessToken').value.trim();
             if (currentToken) {
@@ -1153,69 +2855,270 @@ return readExcelFromUrl();`
             } else {
                 document.getElementById('queryTokenDirect').value = '';
             }
-            
+
             document.getElementById('queryWsId').value = '';
             document.getElementById('queryEmail').value = '';
         }
-
+        
+        // 🔥 发送验证码（仅发送，不验证）
+        async function sendVerifyCodeOnly() {
+            const wsId = document.getElementById('queryWsId').value.trim();
+            const email = document.getElementById('queryEmail').value.trim();
+            const sendBtn = document.getElementById('sendVerifyCodeBtn');
+            const apiUrl = document.getElementById('apiUrl').value.trim();
+            
+            // 验证输入
+            if (!wsId || !email) {
+                showAlertInModal('❌ 请填写 Workspace ID 和 Email', 'error');
+                return;
+            }
+            
+            // 验证邮箱格式
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (!emailRegex.test(email)) {
+                showAlertInModal('❌ 邮箱格式不正确', 'error');
+                return;
+            }
+            
+            // 禁用按钮
+            if (sendBtn) {
+                sendBtn.disabled = true;
+                sendBtn.textContent = '发送中...';
+            }
+            
+            try {
+                const response = await fetch('/flow/token/request-verify-code', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ ws_id: wsId, email: email })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    // 显示提示信息
+                    const verifyCodeHint = document.getElementById('verifyCodeHint');
+                    if (verifyCodeHint) verifyCodeHint.style.display = 'block';
+                    
+                    // 聚焦到验证码输入框
+                    const verifyInput = document.getElementById('verifyCodeInput');
+                    if (verifyInput) verifyInput.focus();
+                    
+                    // 🔥 开始60秒倒计时，期间按钮置灰
+                    startSendCodeCooldown(sendBtn, 60);
+                    
+                    showAlertInModal('✅ 验证码已发送到您的邮箱，请查收', 'success');
+                } else {
+                    if (sendBtn) {
+                        sendBtn.disabled = false;
+                        sendBtn.textContent = '📧 发送验证码';
+                    }
+                    // 🔥 优先使用 error.message，其次是 message，最后是默认提示
+                    const errorMsg = data.error?.message || data.message || '发送失败';
+                    showAlertInModal('❌ ' + errorMsg, 'error');
+                }
+            } catch (error) {
+                if (sendBtn) {
+                    sendBtn.disabled = false;
+                    sendBtn.textContent = '📧 发送验证码';
+                }
+                showAlertInModal('❌ 网络错误，请稍后重试', 'error');
+            }
+        }
+        
+        // 🔥 发送验证码倒计时（按钮置灰）
+        let sendCodeCooldownTimer = null;
+        function startSendCodeCooldown(buttonElement, seconds) {
+            // 清除旧的定时器
+            if (sendCodeCooldownTimer) {
+                clearInterval(sendCodeCooldownTimer);
+                sendCodeCooldownTimer = null;
+            }
+            
+            // 使用ID引用按钮，确保引用稳定
+            const buttonId = 'sendVerifyCodeBtn';
+            let remaining = seconds;
+            
+            // 立即更新按钮状态
+            const btn = document.getElementById(buttonId);
+            if (!btn) {
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.textContent = `⏰ ${remaining}秒后可重发`;
+            
+            // 启动定时器
+            sendCodeCooldownTimer = setInterval(() => {
+                remaining--;
+                const button = document.getElementById(buttonId);
+                
+                if (!button) {
+                    clearInterval(sendCodeCooldownTimer);
+                    sendCodeCooldownTimer = null;
+                    return;
+                }
+                
+                if (remaining > 0) {
+                    button.textContent = `⏰ ${remaining}秒后可重发`;
+                } else {
+                    button.disabled = false;
+                    button.textContent = '📧 发送验证码';
+                    clearInterval(sendCodeCooldownTimer);
+                    sendCodeCooldownTimer = null;
+                }
+            }, 1000);
+        }
+        
         function hideTokenQuery() {
             document.getElementById('tokenModal').classList.remove('show');
+            // 清理倒计时
+            if (sendCodeCooldownTimer) {
+                clearInterval(sendCodeCooldownTimer);
+                sendCodeCooldownTimer = null;
+            }
         }
 
         async function queryToken() {
             const tokenDirect = document.getElementById('queryTokenDirect').value.trim();
             const wsId = document.getElementById('queryWsId').value.trim();
             const email = document.getElementById('queryEmail').value.trim();
+            const verifyCode = document.getElementById('verifyCodeInput') ? document.getElementById('verifyCodeInput').value.trim() : '';
             const apiUrl = document.getElementById('apiUrl').value.trim();
 
-            // 🔥 智能判断查询方式（统一使用 /flow/query-token 接口）
-            let queryUrl = '';
-            let queryMethod = '';
-            
+            // 🔥 智能判断查询方式
+            // 方式1：直接通过Token查询
             if (tokenDirect) {
-                // 方式1：直接通过Token查询
-                queryUrl = `${apiUrl}/flow/query-token?token=${encodeURIComponent(tokenDirect)}`;
-                queryMethod = 'token';
-            } else if (wsId && email) {
-                // 方式2：通过ws_id + email查询
-                queryUrl = `${apiUrl}/flow/query-token?ws_id=${encodeURIComponent(wsId)}&email=${encodeURIComponent(email)}`;
-                queryMethod = 'wsid_email';
-            } else {
-                // 验证必填项
-                showAlertInModal('❌ 请输入 Token，或者同时输入 Workspace ID 和 Email', 'error');
+                await queryTokenDirect(tokenDirect, apiUrl);
+                return;
+            }
+            
+            // 方式2：通过验证码验证并查询
+            if (verifyCode && wsId && email) {
+                await queryTokenByVerifyCode(wsId, email, verifyCode);
+                return;
+            }
+            
+            // 方式3：直接通过ws_id + email查询（非验证码模式）
+            if (wsId && email && !document.getElementById('verifyCodeInput')) {
+                await queryTokenByWsIdEmail(wsId, email, apiUrl);
+                return;
+            }
+            
+            // 方式4：验证码模式下，但未输入验证码
+            if (wsId && email && document.getElementById('verifyCodeInput') && !verifyCode) {
+                showAlertInModal('❌ 请先发送验证码并输入验证码', 'error');
+                return;
+            }
+            
+            // 验证必填项
+            showAlertInModal('❌ 请输入 Token，或者同时输入 Workspace ID 和 Email', 'error');
+        }
+        
+        // 🔥 直接Token查询
+        async function queryTokenDirect(token, apiUrl) {
+            const queryUrl = `${apiUrl}/flow/query-token?token=${encodeURIComponent(token)}`;
+            await executeQuery(queryUrl, 'token');
+        }
+        
+        // 🔥 通过ws_id + email查询
+        async function queryTokenByWsIdEmail(wsId, email, apiUrl) {
+            const queryUrl = `${apiUrl}/flow/query-token?ws_id=${encodeURIComponent(wsId)}&email=${encodeURIComponent(email)}`;
+            await executeQuery(queryUrl, 'wsid_email');
+        }
+        
+        // 🔥 通过验证码验证并查询
+        async function queryTokenByVerifyCode(wsId, email, code) {
+            // 验证码格式检查
+            if (!/^[0-9]{6}$/.test(code)) {
+                showAlertInModal('❌ 验证码格式不正确（应为6位数字）', 'error');
                 return;
             }
 
-            // 显示加载状态
-            document.getElementById('queryBtn').disabled = true;
-            document.getElementById('queryBtn').textContent = '查询中...';
+            const queryBtn = document.getElementById('queryBtn');
+            if (queryBtn) {
+                queryBtn.disabled = true;
+                queryBtn.textContent = '查询中...';
+            }
+            
+            try {
+                const response = await fetch('/flow/token/verify-and-query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ ws_id: wsId, email: email, code: code })
+                });
+                
+                const result = await response.json();
+                
+                if (queryBtn) {
+                    queryBtn.disabled = false;
+                    queryBtn.textContent = '🔍 查询Token';
+                }
+                
+                if (result.success) {
+                    const tokens = result.data.tokens || [];
+                    if (tokens.length > 0) {
+                        handleTokensResult(tokens);
+                        showAlertInModal(`✅ 验证成功！找到 ${tokens.length} 个 Token`, 'success');
+                        // 清空验证码
+                        document.getElementById('verifyCodeInput').value = '';
+                        // 隐藏提示
+                        const verifyCodeHint = document.getElementById('verifyCodeHint');
+                        if (verifyCodeHint) verifyCodeHint.style.display = 'none';
+                    } else {
+                        showAlertInModal('❌ 未找到Token信息', 'error');
+                    }
+                } else {
+                    // 🔥 优先使用 error.message，其次是 message，最后是默认提示
+                    const errorMsg = result.error?.message || result.message || '验证失败';
+                    showAlertInModal('❌ ' + errorMsg, 'error');
+                }
+            } catch (error) {
+                if (queryBtn) {
+                    queryBtn.disabled = false;
+                    queryBtn.textContent = '🔍 查询Token';
+                }
+                showAlertInModal('❌ 网络错误，请稍后重试', 'error');
+            }
+        }
+        
+        // 🔥 执行查询（GET方式）
+        async function executeQuery(queryUrl, queryMethod) {
+            const queryBtn = document.getElementById('queryBtn');
+            if (queryBtn) {
+                queryBtn.disabled = true;
+                queryBtn.textContent = '查询中...';
+            }
+            
             document.getElementById('tokenResult').style.display = 'none';
 
             try {
                 const response = await fetch(queryUrl, {
                     method: 'GET',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    }
+                    headers: { 'Content-Type': 'application/json' }
                 });
 
                 const result = await response.json();
-                
-                document.getElementById('queryBtn').disabled = false;
-                document.getElementById('queryBtn').textContent = '🔍 查询';
+
+                if (queryBtn) {
+                    queryBtn.disabled = false;
+                    queryBtn.textContent = '🔍 查询Token';
+                }
 
                 if (response.ok && result.success && result.data) {
                     // 🔥 统一处理返回数据（两种查询方式返回格式相同）
                     // 返回格式：{ data: { count: 1, tokens: [...] } }
                     let tokens = result.data.tokens || [];
-                    
+
                     // 🔥 根据用户选择决定是否过滤已过期的 Token
                     const includeExpired = document.getElementById('includeExpiredTokens').checked;
                     const now = new Date();
-                    
+
                     let displayTokens;
                     let expiredCount = 0;
-                    
+
                     if (includeExpired) {
                         // 包含已失效Token，显示所有
                         displayTokens = tokens;
@@ -1235,7 +3138,7 @@ return readExcelFromUrl();`
                             return expiresAt > now; // 只保留未过期的
                         });
                     }
-                    
+
                     if (displayTokens.length > 0) {
                         handleTokensResult(displayTokens);
                         let message = `✅ 查询成功！找到 ${displayTokens.length} 个 Token`;
@@ -1247,7 +3150,8 @@ return readExcelFromUrl();`
                         showAlertInModal(message, 'success');
                     } else if (tokens.length > 0) {
                         // 所有 Token 都已过期
-                        showAlertInModal(`❌ 所有 ${tokens.length} 个 Token 均已过期。提示：勾选"包含已失效的 Token"可查看过期Token`, 'warning');
+                        showAlertInModal(`❌ 所有 ${tokens.length} 个 Token 均已过期。提示：勾选"包含已失效的 Token"可查看过期Token`,
+                            'warning');
                     } else {
                         showAlertInModal('❌ 未找到 Token 信息', 'error');
                     }
@@ -1256,8 +3160,10 @@ return readExcelFromUrl();`
                 }
 
             } catch (error) {
-                document.getElementById('queryBtn').disabled = false;
-                document.getElementById('queryBtn').textContent = '🔍 查询';
+                if (queryBtn) {
+                    queryBtn.disabled = false;
+                    queryBtn.textContent = '🔍 查询Token';
+                }
                 showAlertInModal('❌ 查询失败: ' + error.message, 'error');
             }
         }
@@ -1270,7 +3176,7 @@ return readExcelFromUrl();`
                 // 多个 Token，显示选择器
                 displayTokenSelector(tokens);
             }
-            
+
             // 自动滚动到结果区域（在模态框内滚动）
             setTimeout(() => {
                 const resultDiv = document.getElementById('tokenResult');
@@ -1290,14 +3196,14 @@ return readExcelFromUrl();`
         // 显示 Token 选择器
         function displayTokenSelector(tokens) {
             const resultDiv = document.getElementById('tokenResult');
-            
+
             let html = `
                 <div class="form-group">
                     <label class="form-label">选择 Token（共 ${tokens.length} 个）</label>
                     <select id="tokenSelector" class="form-input" onchange="onTokenSelect()">
                         <option value="">-- 请选择 Token --</option>
             `;
-            
+
             tokens.forEach((token, index) => {
                 const isActive = token.is_active !== undefined ? token.is_active : true;
                 const statusIcon = isActive ? '✅' : '❌';
@@ -1307,16 +3213,16 @@ return readExcelFromUrl();`
                 const tokenPreview = tokenStr.length > 20 ? tokenStr.substring(0, 20) + '...' : tokenStr;
                 html += `<option value="${index}">${statusIcon} ${tokenPreview} (${expireText})</option>`;
             });
-            
+
             html += `
                     </select>
                 </div>
                 <div id="selectedTokenInfo" style="display: none;"></div>
             `;
-            
+
             resultDiv.innerHTML = html;
             resultDiv.style.display = 'block';
-            
+
             // 保存 tokens 数据供选择时使用
             window.queriedTokens = tokens;
         }
@@ -1326,12 +3232,12 @@ return readExcelFromUrl();`
             const selector = document.getElementById('tokenSelector');
             const index = selector.value;
             const infoDiv = document.getElementById('selectedTokenInfo');
-            
+
             if (index === '' || !window.queriedTokens) {
                 infoDiv.style.display = 'none';
                 return;
             }
-            
+
             const token = window.queriedTokens[parseInt(index)];
             displaySelectedTokenInfo(token, infoDiv);
         }
@@ -1343,12 +3249,12 @@ return readExcelFromUrl();`
             const isExpired = expiresAt && expiresAt < now;
             const isActive = tokenData.is_active !== undefined ? tokenData.is_active : true;
             const tokenStr = tokenData.access_token || tokenData.token || '';
-            
+
             // 🔥 配额信息
             const quotaType = tokenData.quota_type || 'time';
             const totalQuota = tokenData.total_quota;
             const remainingQuota = tokenData.remaining_quota;
-            
+
             // 🔥 生成配额类型说明
             let quotaTypeText = '';
             let quotaTypeColor = '';
@@ -1362,7 +3268,7 @@ return readExcelFromUrl();`
                 quotaTypeText = '⚡ 时间+次数双重限制';
                 quotaTypeColor = '#e91e63';
             }
-            
+
             // 🔥 生成配额状态HTML
             let quotaStatusHTML = '';
             if (quotaType === 'count' || quotaType === 'hybrid') {
@@ -1370,7 +3276,7 @@ return readExcelFromUrl();`
                 let quotaColor = '#28a745';
                 if (quotaPercent < 20) quotaColor = '#dc3545';
                 else if (quotaPercent < 50) quotaColor = '#ffc107';
-                
+
                 quotaStatusHTML = `
                     <div class="token-item">
                         <div class="token-label">配额使用情况</div>
@@ -1439,7 +3345,7 @@ return readExcelFromUrl();`
                     </div>
                 </div>
             `;
-            
+
             targetDiv.style.display = 'block';
         }
 
@@ -1458,12 +3364,12 @@ return readExcelFromUrl();`
             const isExpired = expiresAt && expiresAt < now;
             const isActive = tokenData.is_active !== undefined ? tokenData.is_active : true;
             const tokenStr = tokenData.access_token || tokenData.token || '';
-            
+
             // 🔥 配额信息
             const quotaType = tokenData.quota_type || 'time';
             const totalQuota = tokenData.total_quota;
             const remainingQuota = tokenData.remaining_quota;
-            
+
             // 🔥 生成配额类型说明
             let quotaTypeText = '';
             let quotaTypeColor = '';
@@ -1477,7 +3383,7 @@ return readExcelFromUrl();`
                 quotaTypeText = '⚡ 时间+次数双重限制';
                 quotaTypeColor = '#e91e63';
             }
-            
+
             // 🔥 生成配额状态HTML
             let quotaStatusHTML = '';
             if (quotaType === 'count' || quotaType === 'hybrid') {
@@ -1485,7 +3391,7 @@ return readExcelFromUrl();`
                 let quotaColor = '#28a745';
                 if (quotaPercent < 20) quotaColor = '#dc3545';
                 else if (quotaPercent < 50) quotaColor = '#ffc107';
-                
+
                 quotaStatusHTML = `
                     <div class="token-item">
                         <div class="token-label">配额使用情况</div>
@@ -1552,7 +3458,7 @@ return readExcelFromUrl();`
                     </button>
                 </div>
             `;
-            
+
             resultDiv.style.display = 'block';
         }
 
@@ -1572,7 +3478,81 @@ return readExcelFromUrl();`
                 // 不执行关闭操作，用户必须点击右上角 × 按钮才能关闭
                 return;
             }
-        }); </script> <div id="tokenModal" class="modal-overlay"> <div class="modal-content"> <div class="modal-header"> <span>🔍 查询 Token 信息</span> <button class="modal-close" onclick="hideTokenQuery()">×</button> </div> <div style="background:#e7f3ff;border-left:4px solid #2196f3;padding:12px;margin-bottom:20px;border-radius:4px;font-size:13px;color:#333"> 💡 <strong>提示：</strong>点击右上角 <strong>×</strong> 或 <strong>取消</strong> 按钮关闭弹窗 </div> <div id="modalAlert" class="alert"></div> <div class="form-group"> <label class="form-label">🎯 Token（直接查询）</label> <input type="text" id="queryTokenDirect" class="form-input" placeholder="输入完整的 Token 进行查询（优先使用此方式）" style="font-family:'Courier New',monospace"> <div style="font-size:12px;color:#6c757d;margin-top:5px"> 💡 如果填写了 Token，将直接查询该 Token 信息（无需填写下方的 Workspace ID 和 Email） </div> </div> <div style="display:flex;align-items:center;margin:20px 0"> <div style="flex:1;height:1px;background:#e9ecef"></div> <span style="padding:0 15px;color:#6c757d;font-size:13px;font-weight:500">或者</span> <div style="flex:1;height:1px;background:#e9ecef"></div> </div> <div class="form-group"> <label class="form-label">📋 Workspace ID</label> <input type="text" id="queryWsId" class="form-input" placeholder="请输入 Workspace ID"> </div> <div class="form-group"> <label class="form-label">📧 Email</label> <input type="text" id="queryEmail" class="form-input" placeholder="请输入 Email 地址"> <div style="font-size:12px;color:#6c757d;margin-top:5px"> 💡 同时填写 Workspace ID 和 Email 可查询该用户的所有 Token </div> </div> <div class="form-group" style="margin-top:10px"> <label style="display:flex;align-items:center;cursor:pointer;font-size:14px;user-select:none"> <input type="checkbox" id="includeExpiredTokens" style="width:18px;height:18px;margin-right:8px;cursor:pointer"> <span style="color:#666">📋 包含已失效的 Token（用于查看过期Token以便续期）</span> </label> </div> <div class="button-group"> <button class="btn btn-secondary" onclick="hideTokenQuery()"> ❌ 取消 </button> <button class="btn btn-success" id="queryBtn" onclick="queryToken()"> 🔍 查询 </button> </div> <div id="tokenResult" class="token-result" style="display:none"></div> </div> </div> <div id="fullscreenEditor" class="fullscreen-editor-overlay"> <div class="fullscreen-editor-container"> <div class="fullscreen-editor-header"> <div class="fullscreen-editor-title">🖥️ 全屏代码编辑器</div> <div class="fullscreen-editor-actions"> <button class="fullscreen-btn fullscreen-btn-close" onclick="closeFullscreenEditorBtn()"> ❌ 取消 </button> <button class="fullscreen-btn fullscreen-btn-save" onclick="saveFullscreenCodeBtn()"> ✅ 保存并关闭 </button> </div> </div> <div id="fullscreenEditorContainer" style="flex:1;display:flex;flex-direction:column"></div> </div> </div> <script> // Ace Editor 编辑器实例
+        });
+
+        </script>
+        <div id="tokenModal" class="modal-overlay">
+            <div class="modal-content">
+                <div class="modal-header"> <span>🔍 查询 Token 信息</span> <button class="modal-close"
+                        onclick="hideTokenQuery()">×</button> </div>
+                <div
+                    style="background:#e7f3ff;border-left:4px solid #2196f3;padding:12px;margin-bottom:20px;border-radius:4px;font-size:13px;color:#333">
+                    💡 <strong>提示：</strong>点击右上角 <strong>×</strong> 或 <strong>取消</strong> 按钮关闭弹窗 </div>
+                <div id="modalAlert" class="alert"></div>
+                <div class="form-group"> <label class="form-label">🎯 Token（直接查询）</label> <input type="text"
+                        id="queryTokenDirect" class="form-input" placeholder="输入完整的 Token 进行查询（优先使用此方式）"
+                        style="font-family:'Courier New',monospace">
+                    <div style="font-size:12px;color:#6c757d;margin-top:5px"> 💡 如果填写了 Token，将直接查询该 Token 信息（无需填写下方的
+                        Workspace ID 和 Email） </div>
+                </div>
+                <div style="display:flex;align-items:center;margin:20px 0">
+                    <div style="flex:1;height:1px;background:#e9ecef"></div> <span
+                        style="padding:0 15px;color:#6c757d;font-size:13px;font-weight:500">或者</span>
+                    <div style="flex:1;height:1px;background:#e9ecef"></div>
+                </div>
+                <div class="form-group"> <label class="form-label">📋 Workspace ID</label> <input type="text"
+                        id="queryWsId" class="form-input" placeholder="请输入 Workspace ID"> </div>
+                <div class="form-group"> <label class="form-label">📧 Email</label> <input type="text" id="queryEmail"
+                        class="form-input" placeholder="请输入 Email 地址">
+                    <div style="font-size:12px;color:#6c757d;margin-top:5px"> 💡 同时填写 Workspace ID 和 Email 可查询该用户的所有
+                        Token </div>
+                </div>
+                {{if .VerifyCodeEnabled}}
+                <!-- 验证码功能UI -->
+                <div id="verifyCodeSection" style="margin-top:20px;background:#f0f7ff;border:1px solid #b3d9ff;border-radius:8px;padding:15px">
+                    <div style="margin-bottom:12px;font-size:14px;font-weight:600;color:#1976d2">📧 验证码验证</div>
+                    <div style="display:flex;gap:10px;align-items:flex-start">
+                        <div style="flex:1">
+                            <input type="text" id="verifyCodeInput" placeholder="请输入验证码" maxlength="6" 
+                                   class="form-input" style="font-size:14px;text-align:center;letter-spacing:3px">
+                        </div>
+                        <button type="button" id="sendVerifyCodeBtn" onclick="sendVerifyCodeOnly()" 
+                                class="btn btn-success" style="white-space:nowrap;min-width:120px">
+                            📧 发送验证码
+                        </button>
+                    </div>
+                    <div id="verifyCodeHint" style="margin-top:12px;font-size:13px;color:#666;text-align:center;display:none">
+                        ⏰ 验证码已发送到您的邮箱，有效期5分钟
+                    </div>
+                </div>
+                {{end}}
+                <div class="form-group" style="margin-top:10px"> <label
+                        style="display:flex;align-items:center;cursor:pointer;font-size:14px;user-select:none"> <input
+                            type="checkbox" id="includeExpiredTokens"
+                            style="width:18px;height:18px;margin-right:8px;cursor:pointer"> <span style="color:#666">📋
+                            包含已失效的 Token（用于查看过期Token以便续期）</span> </label> </div>
+                <!-- 统一的底部按钮 -->
+                <div class="button-group"> 
+                    <button class="btn btn-secondary" onclick="hideTokenQuery()"> ❌ 取消 </button>
+                    <button class="btn btn-success" id="queryBtn" onclick="queryToken()"> 🔍 查询Token </button>
+                </div>
+                <div id="tokenResult" class="token-result" style="display:none"></div>
+            </div>
+        </div>
+        <div id="fullscreenEditor" class="fullscreen-editor-overlay">
+            <div class="fullscreen-editor-container">
+                <div class="fullscreen-editor-header">
+                    <div class="fullscreen-editor-title">🖥️ 全屏代码编辑器</div>
+                    <div class="fullscreen-editor-actions"> <button class="fullscreen-btn fullscreen-btn-close"
+                            onclick="closeFullscreenEditorBtn()"> ❌ 取消 </button> <button
+                            class="fullscreen-btn fullscreen-btn-save" onclick="saveFullscreenCodeBtn()"> ✅ 保存并关闭
+                        </button> </div>
+                </div>
+                <div id="fullscreenEditorContainer" style="flex:1;display:flex;flex-direction:column"></div>
+            </div>
+        </div>
+        <script>
+        // Ace Editor 编辑器实例
         let mainEditor = null;
         let inputEditor = null;
         let fullscreenEditor = null;
@@ -1589,7 +3569,7 @@ return readExcelFromUrl();`
             ace.config.set('modePath', '/flow/assets');
             ace.config.set('themePath', '/flow/assets');
             ace.config.set('workerPath', '/flow/assets');
-            
+
             // 🔍 显式配置 worker 文件路径（确保语法检查功能正常）
             ace.config.setModuleUrl('ace/mode/javascript_worker', '/flow/assets/worker-javascript.js');
             ace.config.setModuleUrl('ace/mode/json_worker', '/flow/assets/worker-json.js');
@@ -1597,7 +3577,7 @@ return readExcelFromUrl();`
             // 初始化代码编辑器
             mainEditor = ace.edit('codeEditorContainer');
             const startCode = document.getElementById('jsCode').value;
-            
+
             // 设置代码编辑器选项
             mainEditor.setTheme('ace/theme/textmate'); // 亮色主题
             mainEditor.session.setMode('ace/mode/javascript');
@@ -1608,18 +3588,18 @@ return readExcelFromUrl();`
                 tabSize: 2,
                 useSoftTabs: true,
                 wrap: true,
-                useWorker: true,  // 🔍 启用 worker，支持实时 JavaScript 语法检查
-                highlightActiveLine: true,  // 🔍 高亮当前行
-                highlightSelectedWord: true  // 🔍 高亮选中的单词
+                useWorker: true, // 🔍 启用 worker，支持实时 JavaScript 语法检查
+                highlightActiveLine: true, // 🔍 高亮当前行
+                highlightSelectedWord: true // 🔍 高亮选中的单词
             });
-            
+
             // 🔍 启用实时语法验证
             mainEditor.session.setUseWorker(true);
-            
+
             // 🔍 启用括号匹配高亮
             mainEditor.setHighlightGutterLine(true);
-            mainEditor.setBehavioursEnabled(true);  // 启用自动配对括号
-            mainEditor.setShowInvisibles(false);  // 不显示空白字符
+            mainEditor.setBehavioursEnabled(true); // 启用自动配对括号
+            mainEditor.setShowInvisibles(false); // 不显示空白字符
 
             // 监听内容变化，同步到隐藏的 textarea
             mainEditor.session.on('change', function() {
@@ -1630,7 +3610,10 @@ return readExcelFromUrl();`
             ace.config.loadModule('ace/ext/searchbox', function(e) {
                 mainEditor.commands.addCommand({
                     name: 'find',
-                    bindKey: {win: 'Ctrl-F', mac: 'Command-F'},
+                    bindKey: {
+                        win: 'Ctrl-F',
+                        mac: 'Command-F'
+                    },
                     exec: function(editor) {
                         e.Search(editor, false);
                         setTimeout(function() {
@@ -1638,10 +3621,13 @@ return readExcelFromUrl();`
                         }, 50);
                     }
                 });
-                
+
                 mainEditor.commands.addCommand({
                     name: 'replace',
-                    bindKey: {win: 'Ctrl-H', mac: 'Command-Option-F'},
+                    bindKey: {
+                        win: 'Ctrl-H',
+                        mac: 'Command-Option-F'
+                    },
                     exec: function(editor) {
                         e.Search(editor, true);
                         setTimeout(function() {
@@ -1654,7 +3640,7 @@ return readExcelFromUrl();`
             // 🆕 初始化 Input 参数编辑器（JSON 模式）
             inputEditor = ace.edit('inputEditorContainer');
             const startInput = document.getElementById('inputData').value;
-            
+
             // 设置 Input 编辑器选项
             inputEditor.setTheme('ace/theme/textmate'); // 亮色主题
             inputEditor.session.setMode('ace/mode/json'); // JSON 模式
@@ -1665,15 +3651,15 @@ return readExcelFromUrl();`
                 tabSize: 2,
                 useSoftTabs: true,
                 wrap: true,
-                useWorker: true,  // 启用 worker，实时语法检查
-                highlightActiveLine: true,  // 🔍 高亮当前行
-                highlightSelectedWord: true  // 🔍 高亮选中的单词
+                useWorker: true, // 启用 worker，实时语法检查
+                highlightActiveLine: true, // 🔍 高亮当前行
+                highlightSelectedWord: true // 🔍 高亮选中的单词
             });
-            
+
             // 🔍 启用括号匹配高亮
             inputEditor.setHighlightGutterLine(true);
-            inputEditor.setBehavioursEnabled(true);  // 启用自动配对括号
-            inputEditor.setShowInvisibles(false);  // 不显示空白字符
+            inputEditor.setBehavioursEnabled(true); // 启用自动配对括号
+            inputEditor.setShowInvisibles(false); // 不显示空白字符
 
             // 监听内容变化，同步到隐藏的 textarea
             inputEditor.session.on('change', function() {
@@ -1684,7 +3670,10 @@ return readExcelFromUrl();`
             ace.config.loadModule('ace/ext/searchbox', function(e) {
                 inputEditor.commands.addCommand({
                     name: 'find',
-                    bindKey: {win: 'Ctrl-F', mac: 'Command-F'},
+                    bindKey: {
+                        win: 'Ctrl-F',
+                        mac: 'Command-F'
+                    },
                     exec: function(editor) {
                         e.Search(editor, false);
                         setTimeout(function() {
@@ -1692,10 +3681,13 @@ return readExcelFromUrl();`
                         }, 50);
                     }
                 });
-                
+
                 inputEditor.commands.addCommand({
                     name: 'replace',
-                    bindKey: {win: 'Ctrl-H', mac: 'Command-Option-F'},
+                    bindKey: {
+                        win: 'Ctrl-H',
+                        mac: 'Command-Option-F'
+                    },
                     exec: function(editor) {
                         e.Search(editor, true);
                         setTimeout(function() {
@@ -1715,18 +3707,18 @@ return readExcelFromUrl();`
         function openFullscreenEditor() {
             const editorOverlay = document.getElementById('fullscreenEditor');
             const container = document.getElementById('fullscreenEditorContainer');
-            
+
             if (typeof ace === 'undefined') {
                 alert('编辑器正在加载中，请稍候...');
                 return;
             }
-            
+
             // 获取当前代码
             const currentCode = mainEditor ? mainEditor.getValue() : document.getElementById('jsCode').value;
-            
+
             // 清空容器并创建新的编辑器容器
             container.innerHTML = '<div id="fullscreenAceEditor" style="width: 100%; height: 100%;"></div>';
-            
+
             // 创建全屏编辑器（使用深色主题）
             fullscreenEditor = ace.edit('fullscreenAceEditor');
             fullscreenEditor.setTheme('ace/theme/monokai'); // 深色主题
@@ -1738,32 +3730,38 @@ return readExcelFromUrl();`
                 tabSize: 2,
                 useSoftTabs: true,
                 wrap: true,
-                useWorker: true,  // 🔍 启用 worker，支持实时语法检查
-                highlightActiveLine: true,  // 🔍 高亮当前行
-                highlightSelectedWord: true  // 🔍 高亮选中的单词
+                useWorker: true, // 🔍 启用 worker，支持实时语法检查
+                highlightActiveLine: true, // 🔍 高亮当前行
+                highlightSelectedWord: true // 🔍 高亮选中的单词
             });
-            
+
             // 🔍 启用实时语法验证
             fullscreenEditor.session.setUseWorker(true);
-            
+
             // 🔍 启用括号匹配高亮
             fullscreenEditor.setHighlightGutterLine(true);
-            fullscreenEditor.setBehavioursEnabled(true);  // 启用自动配对括号
-            fullscreenEditor.setShowInvisibles(false);  // 不显示空白字符
+            fullscreenEditor.setBehavioursEnabled(true); // 启用自动配对括号
+            fullscreenEditor.setShowInvisibles(false); // 不显示空白字符
             fullscreenEditor.commands.addCommand({
                 name: 'save',
-                bindKey: {win: 'Ctrl-S', mac: 'Command-S'},
+                bindKey: {
+                    win: 'Ctrl-S',
+                    mac: 'Command-S'
+                },
                 exec: function(editor) {
                     saveFullscreenCode();
                 }
             });
-            
+
             // 🔍 加载搜索扩展模块并启用搜索功能（Command+F / Ctrl+F）
             ace.config.loadModule('ace/ext/searchbox', function(e) {
                 // 搜索模块加载成功，绑定快捷键
                 fullscreenEditor.commands.addCommand({
                     name: 'find',
-                    bindKey: {win: 'Ctrl-F', mac: 'Command-F'},
+                    bindKey: {
+                        win: 'Ctrl-F',
+                        mac: 'Command-F'
+                    },
                     exec: function(editor) {
                         e.Search(editor, false); // false 表示不显示替换选项
                         // 延迟调整搜索框布局，确保 DOM 已渲染，并隐藏替换框
@@ -1772,11 +3770,14 @@ return readExcelFromUrl();`
                         }, 50);
                     }
                 });
-                
+
                 // 🔍 启用替换功能（Command+Option+F / Ctrl+H）
                 fullscreenEditor.commands.addCommand({
                     name: 'replace',
-                    bindKey: {win: 'Ctrl-H', mac: 'Command-Option-F'},
+                    bindKey: {
+                        win: 'Ctrl-H',
+                        mac: 'Command-Option-F'
+                    },
                     exec: function(editor) {
                         e.Search(editor, true); // true 表示显示替换选项
                         // 延迟调整搜索框布局，确保 DOM 已渲染
@@ -1786,10 +3787,10 @@ return readExcelFromUrl();`
                     }
                 });
             });
-            
+
             // 显示编辑器
             editorOverlay.style.display = 'block';
-            
+
             // 聚焦
             setTimeout(() => {
                 fullscreenEditor.focus();
@@ -1798,14 +3799,14 @@ return readExcelFromUrl();`
 
         function saveFullscreenCode() {
             if (!fullscreenEditor) return;
-            
+
             // 获取全屏编辑器的代码
             const code = fullscreenEditor.getValue().trim();
-            
+
             // 🔍 检查 JavaScript 语法错误（通过 Ace Editor 的 annotations）
             const annotations = fullscreenEditor.session.getAnnotations();
             const errors = annotations.filter(ann => ann.type === 'error');
-            
+
             if (errors.length > 0) {
                 // 构建错误信息
                 let errorMsg = '❌ JavaScript 代码存在语法错误，无法保存！\n\n';
@@ -1814,31 +3815,31 @@ return readExcelFromUrl();`
                     errorMsg += `${index + 1}. 第 ${err.row + 1} 行: ${err.text}\n`;
                 });
                 errorMsg += '\n请修复错误后再保存。';
-                
+
                 // 显示错误提示
                 alert(errorMsg);
-                
+
                 // 聚焦到第一个错误行
                 if (errors[0]) {
                     fullscreenEditor.gotoLine(errors[0].row + 1, 0, true);
                     fullscreenEditor.focus();
                 }
-                
+
                 return; // 阻止保存
             }
-            
+
             // ✅ 没有错误，继续保存
             // 更新主编辑器
             if (mainEditor) {
                 mainEditor.setValue(code, -1);
             }
-            
+
             // 更新隐藏的 textarea
             document.getElementById('jsCode').value = code;
-            
+
             // 关闭编辑器
             closeFullscreenEditor();
-            
+
             // 显示成功提示
             showAlert('✅ 代码已保存（语法检查通过）', 'success');
         }
@@ -1846,14 +3847,14 @@ return readExcelFromUrl();`
         // 🎨 调整搜索框布局为 VSCode 风格
         function adjustSearchBoxLayout(editor, hideReplace) {
             if (!editor || !editor.searchBox) return;
-            
+
             const searchBox = editor.searchBox.element;
             if (!searchBox) return;
-            
+
             // 获取替换框和切换按钮
             const replaceBox = searchBox.querySelector('.ace_replace_form');
             const toggleBtn = searchBox.querySelector('[action="toggleReplace"]');
-            
+
             // 切换替换框显示/隐藏的函数
             const toggleReplaceBox = function(show) {
                 if (replaceBox) {
@@ -1875,7 +3876,7 @@ return readExcelFromUrl();`
                     editor.searchBox.replaceOption.checked = show;
                 }
             };
-            
+
             // 添加切换按钮的点击事件监听（必须在设置显示状态之前）
             if (toggleBtn && !toggleBtn.dataset.listenerAdded) {
                 toggleBtn.dataset.listenerAdded = 'true';
@@ -1886,47 +3887,47 @@ return readExcelFromUrl();`
                     toggleReplaceBox(!isVisible);
                 });
             }
-            
+
             // 如果需要隐藏替换框
             if (hideReplace === true) {
                 toggleReplaceBox(false);
             } else if (hideReplace === false) {
                 toggleReplaceBox(true);
             }
-            
+
             // 如果已经调整过布局，直接返回
             if (searchBox.dataset.layoutAdjusted === 'true') {
                 return;
             }
-            
+
             // 标记已调整，避免重复处理
             searchBox.dataset.layoutAdjusted = 'true';
-            
+
             // 获取搜索表单和按钮
             const searchForm = searchBox.querySelector('.ace_search_form');
             if (!searchForm) return;
-            
+
             // 获取上一个、下一个、全部按钮
             const prevBtn = searchForm.querySelector('[action="findPrev"]');
             const nextBtn = searchForm.querySelector('[action="findNext"]');
             const allBtn = searchForm.querySelector('[action="findAll"]');
-            
+
             if (!prevBtn || !nextBtn || !allBtn) return;
-            
+
             // 创建一个容器来放置导航按钮
             const navBtnContainer = document.createElement('div');
             navBtnContainer.style.display = 'flex';
             navBtnContainer.style.gap = '4px';
             navBtnContainer.style.marginLeft = 'auto';
-            
+
             // 将按钮移到容器中
             navBtnContainer.appendChild(prevBtn);
             navBtnContainer.appendChild(nextBtn);
             navBtnContainer.appendChild(allBtn);
-            
+
             // 将容器添加到搜索表单末尾
             searchForm.appendChild(navBtnContainer);
-            
+
             // 获取搜索选项区域
             const searchOptions = searchBox.querySelector('.ace_search_options');
             if (searchOptions) {
@@ -1936,25 +3937,25 @@ return readExcelFromUrl();`
                     searchOptions.insertBefore(toggleBtnInOptions, searchOptions.firstChild);
                 }
             }
-            
+
             // 🆕 添加收起/展开按钮和持久高亮功能
             if (!searchBox.dataset.minimizeBtnAdded) {
                 searchBox.dataset.minimizeBtnAdded = 'true';
-                
+
                 // 保存搜索状态
                 let isMinimized = false;
                 let persistentHighlight = false; // 是否启用持久高亮
                 let savedSearchMarkers = []; // 保存所有搜索高亮标记ID
                 let isInternalOperation = false; // 标记是否是内部操作（搜索、关闭等）
-                
+
                 // 保存原始的 hide 方法
                 const originalHide = editor.searchBox.hide.bind(editor.searchBox);
-                
+
                 // 覆盖 hide 方法，在有搜索内容时阻止关闭
                 editor.searchBox.hide = function() {
                     const searchInput = searchBox.querySelector('.ace_search_field');
                     const hasSearchValue = searchInput && searchInput.value.trim() !== '';
-                    
+
                     // 如果有搜索内容或处于收起状态，不关闭
                     if (hasSearchValue || isMinimized) {
                         return;
@@ -1962,24 +3963,24 @@ return readExcelFromUrl();`
                     // 否则执行原始的关闭操作
                     originalHide();
                 };
-                
+
                 // 监听搜索输入框的变化
                 const searchInput = searchBox.querySelector('.ace_search_field');
-                
+
                 // 拦截 removeMarker 方法，防止搜索高亮被清除
                 const originalRemoveMarker = editor.session.removeMarker.bind(editor.session);
                 editor.session.removeMarker = function(markerId) {
                     const searchInput = searchBox.querySelector('.ace_search_field');
                     const hasSearchValue = searchInput && searchInput.value.trim() !== '';
-                    
+
                     // 只要有搜索内容且不是内部操作，就保护搜索高亮标记
                     if (hasSearchValue && !isInternalOperation) {
                         // 检查这个 marker 是否是搜索高亮
                         const marker = editor.session.getMarkers()[markerId];
-                        if (marker && marker.clazz && 
-                            (marker.clazz.includes('ace_selected-word') || 
-                             marker.clazz.includes('ace_selection') ||
-                             marker.clazz.includes('ace_step'))) {
+                        if (marker && marker.clazz &&
+                            (marker.clazz.includes('ace_selected-word') ||
+                                marker.clazz.includes('ace_selection') ||
+                                marker.clazz.includes('ace_step'))) {
                             // 这是搜索高亮标记，保存ID但不删除
                             if (!savedSearchMarkers.includes(markerId)) {
                                 savedSearchMarkers.push(markerId);
@@ -1987,37 +3988,37 @@ return readExcelFromUrl();`
                             return;
                         }
                     }
-                    
+
                     // 其他标记正常删除
                     originalRemoveMarker(markerId);
                 };
-                
+
                 // 手动高亮所有搜索结果
                 function highlightAllSearchMatches() {
                     const searchValue = searchInput.value.trim();
                     if (!searchValue) return;
-                    
+
                     // 标记为内部操作
                     isInternalOperation = true;
-                    
+
                     // 先清除旧的高亮标记
                     savedSearchMarkers.forEach(function(markerId) {
                         originalRemoveMarker(markerId);
                     });
                     savedSearchMarkers = [];
-                    
+
                     // 获取编辑器内容
                     const content = editor.getValue();
                     const lines = content.split('\n');
-                    
+
                     // 搜索选项
-                    const caseSensitive = editor.searchBox.$searchOptions && 
-                                         editor.searchBox.$searchOptions.caseSensitive;
-                    const wholeWord = editor.searchBox.$searchOptions && 
-                                     editor.searchBox.$searchOptions.wholeWord;
-                    const regExp = editor.searchBox.$searchOptions && 
-                                  editor.searchBox.$searchOptions.regExp;
-                    
+                    const caseSensitive = editor.searchBox.$searchOptions &&
+                        editor.searchBox.$searchOptions.caseSensitive;
+                    const wholeWord = editor.searchBox.$searchOptions &&
+                        editor.searchBox.$searchOptions.wholeWord;
+                    const regExp = editor.searchBox.$searchOptions &&
+                        editor.searchBox.$searchOptions.regExp;
+
                     // 创建搜索正则表达式
                     let searchPattern;
                     try {
@@ -2033,39 +4034,39 @@ return readExcelFromUrl();`
                         isInternalOperation = false;
                         return;
                     }
-                    
+
                     // 获取当前光标位置
                     const cursorPosition = editor.getCursorPosition();
                     const currentRow = cursorPosition.row;
                     const currentColumn = cursorPosition.column;
-                    
+
                     // 遍历所有行，查找匹配项
                     const Range = ace.require('ace/range').Range;
                     let currentMatchFound = false;
-                    
+
                     lines.forEach(function(line, lineIndex) {
                         let match;
                         let lineHasCurrentMatch = false;
-                        
+
                         while ((match = searchPattern.exec(line)) !== null) {
                             const matchStart = match.index;
                             const matchEnd = match.index + match[0].length;
                             const range = new Range(
-                                lineIndex, 
-                                matchStart, 
-                                lineIndex, 
+                                lineIndex,
+                                matchStart,
+                                lineIndex,
                                 matchEnd
                             );
-                            
+
                             // 判断是否是当前选中的匹配项
-                            const isCurrentMatch = lineIndex === currentRow && 
-                                                   currentColumn >= matchStart && 
-                                                   currentColumn <= matchEnd;
-                            
+                            const isCurrentMatch = lineIndex === currentRow &&
+                                currentColumn >= matchStart &&
+                                currentColumn <= matchEnd;
+
                             if (isCurrentMatch) {
                                 currentMatchFound = true;
                                 lineHasCurrentMatch = true;
-                                
+
                                 // 当前匹配项使用特殊样式
                                 const markerId = editor.session.addMarker(
                                     range,
@@ -2083,7 +4084,7 @@ return readExcelFromUrl();`
                                 savedSearchMarkers.push(markerId);
                             }
                         }
-                        
+
                         // 如果当前行有选中的匹配项，添加整行高亮
                         if (lineHasCurrentMatch) {
                             const lineRange = new Range(lineIndex, 0, lineIndex, line.length);
@@ -2095,144 +4096,144 @@ return readExcelFromUrl();`
                             savedSearchMarkers.push(lineMarkerId);
                         }
                     });
-                    
+
                     // 恢复标志
                     setTimeout(function() {
                         isInternalOperation = false;
                     }, 100);
                 }
-                
+
                 if (searchInput) {
                     let inputTimer = null;
-                    
+
                     // 监听输入事件
                     searchInput.addEventListener('input', function() {
                         const currentValue = this.value.trim();
-                        
+
                         if (currentValue === '') {
                             // 搜索内容被清空，清除所有高亮
                             isInternalOperation = true;
                             persistentHighlight = false;
-                            
+
                             // 清除所有保存的搜索标记
                             savedSearchMarkers.forEach(function(markerId) {
                                 originalRemoveMarker(markerId);
                             });
                             savedSearchMarkers = [];
-                            
+
                             // 清除其他可能残留的搜索标记
                             const markers = editor.session.getMarkers();
                             Object.keys(markers).forEach(function(markerId) {
                                 const marker = markers[markerId];
-                                if (marker && marker.clazz && 
-                                    (marker.clazz.includes('ace_selected-word') || 
-                                     marker.clazz.includes('ace_selection') ||
-                                     marker.clazz.includes('ace_step'))) {
+                                if (marker && marker.clazz &&
+                                    (marker.clazz.includes('ace_selected-word') ||
+                                        marker.clazz.includes('ace_selection') ||
+                                        marker.clazz.includes('ace_step'))) {
                                     originalRemoveMarker(markerId);
                                 }
                             });
-                            
+
                             setTimeout(function() {
                                 isInternalOperation = false;
                             }, 100);
                         } else {
                             // 有搜索内容，启用持久高亮
                             persistentHighlight = true;
-                            
+
                             // 防抖：延迟触发搜索，避免频繁更新
                             if (inputTimer) {
                                 clearTimeout(inputTimer);
                             }
-                            
+
                             inputTimer = setTimeout(function() {
                                 // 实时搜索并高亮
                                 highlightAllSearchMatches();
                             }, 300);
                         }
                     });
-                    
+
                     // 监听搜索框的搜索事件（按Enter或点击搜索按钮）
                     const originalFind = editor.searchBox.find;
                     editor.searchBox.find = function(skipCurrent, backwards) {
                         // 标记为内部操作
                         isInternalOperation = true;
-                        
+
                         // 执行原始搜索
                         const result = originalFind.call(this, skipCurrent, backwards);
-                        
+
                         // 搜索完成后，手动高亮所有匹配项
                         setTimeout(function() {
                             highlightAllSearchMatches();
                             isInternalOperation = false;
                         }, 50);
-                        
+
                         return result;
                     };
-                    
+
                     // 拦截findAll方法，确保高亮所有结果
                     const originalFindAll = editor.searchBox.findAll;
                     if (originalFindAll) {
                         editor.searchBox.findAll = function() {
                             isInternalOperation = true;
                             const result = originalFindAll.call(this);
-                            
+
                             setTimeout(function() {
                                 highlightAllSearchMatches();
                                 isInternalOperation = false;
                             }, 50);
-                            
+
                             return result;
                         };
                     }
-                    
+
                     // 监听光标移动，在搜索状态下更新高亮（特别是整行高亮）
                     let lastCursorPosition = null;
                     let cursorMoveTimer = null;
-                    
+
                     editor.selection.on('changeCursor', function() {
                         // 只有在搜索框打开且有搜索内容时才处理
                         const searchValue = searchInput.value.trim();
                         if (!searchValue) return;
-                        
+
                         const currentPosition = editor.getCursorPosition();
-                        
+
                         // 如果光标位置没有变化，不处理
-                        if (lastCursorPosition && 
+                        if (lastCursorPosition &&
                             lastCursorPosition.row === currentPosition.row &&
                             lastCursorPosition.column === currentPosition.column) {
                             return;
                         }
-                        
+
                         lastCursorPosition = currentPosition;
-                        
+
                         // 防抖：避免频繁更新
                         if (cursorMoveTimer) {
                             clearTimeout(cursorMoveTimer);
                         }
-                        
+
                         cursorMoveTimer = setTimeout(function() {
                             // 重新高亮所有匹配项，更新当前行的整行高亮
                             highlightAllSearchMatches();
                         }, 100);
                     });
                 }
-                
+
                 // 创建收起按钮
                 const minimizeBtn = document.createElement('div');
                 minimizeBtn.className = 'ace_searchbtn_minimize';
                 minimizeBtn.title = '收起搜索框 (再次点击可展开)';
-                
+
                 // 点击事件：切换收起/展开状态
                 minimizeBtn.addEventListener('click', function(e) {
                     e.preventDefault();
                     e.stopPropagation();
-                    
+
                     if (isMinimized) {
                         // 展开搜索框
                         isMinimized = false;
                         searchBox.classList.remove('minimized');
                         minimizeBtn.title = '收起搜索框';
-                        
+
                         // 展开后自动聚焦到搜索输入框（等待动画完成）
                         setTimeout(function() {
                             const searchInput = searchBox.querySelector('.ace_search_field');
@@ -2248,7 +4249,7 @@ return readExcelFromUrl();`
                         minimizeBtn.title = '展开搜索框';
                     }
                 });
-                
+
                 // 先将收起按钮插入到搜索框中（在关闭按钮之前）
                 const closeBtn = searchBox.querySelector('.ace_searchbtn_close');
                 if (closeBtn) {
@@ -2256,52 +4257,52 @@ return readExcelFromUrl();`
                 } else {
                     searchBox.appendChild(minimizeBtn);
                 }
-                
+
                 // 覆盖关闭按钮的行为
                 if (closeBtn) {
                     // 移除原有的点击事件，添加新的
                     const newCloseBtn = closeBtn.cloneNode(true);
                     closeBtn.parentNode.replaceChild(newCloseBtn, closeBtn);
-                    
+
                     newCloseBtn.addEventListener('click', function(e) {
                         e.preventDefault();
                         e.stopPropagation();
-                        
+
                         // 标记为内部操作，允许清除标记
                         isInternalOperation = true;
-                        
+
                         // 清空搜索内容
                         const searchInput = searchBox.querySelector('.ace_search_field');
                         if (searchInput) {
                             searchInput.value = '';
                         }
-                        
+
                         // 重置状态
                         persistentHighlight = false;
                         isMinimized = false;
                         searchBox.classList.remove('minimized');
-                        
+
                         // 清除所有保存的搜索标记
                         savedSearchMarkers.forEach(function(markerId) {
                             originalRemoveMarker(markerId);
                         });
                         savedSearchMarkers = [];
-                        
+
                         // 清除所有搜索高亮标记
                         const markers = editor.session.getMarkers();
                         Object.keys(markers).forEach(function(markerId) {
                             const marker = markers[markerId];
-                            if (marker && marker.clazz && 
-                                (marker.clazz.includes('ace_selected-word') || 
-                                 marker.clazz.includes('ace_selection') ||
-                                 marker.clazz.includes('ace_step'))) {
+                            if (marker && marker.clazz &&
+                                (marker.clazz.includes('ace_selected-word') ||
+                                    marker.clazz.includes('ace_selection') ||
+                                    marker.clazz.includes('ace_step'))) {
                                 originalRemoveMarker(markerId);
                             }
                         });
-                        
+
                         // 执行原始的关闭操作
                         originalHide();
-                        
+
                         // 恢复标志
                         setTimeout(function() {
                             isInternalOperation = false;
@@ -2314,7 +4315,7 @@ return readExcelFromUrl();`
         function closeFullscreenEditor() {
             const editorOverlay = document.getElementById('fullscreenEditor');
             editorOverlay.style.display = 'none';
-            
+
             // 销毁全屏编辑器实例
             if (fullscreenEditor) {
                 fullscreenEditor.destroy();
@@ -2322,25 +4323,24 @@ return readExcelFromUrl();`
             }
         }
 
-
         // ==================== Input 全屏编辑器 ====================
         let fullscreenInputEditor = null;
 
         function openFullscreenInputEditor() {
             const editorOverlay = document.getElementById('fullscreenEditor');
             const container = document.getElementById('fullscreenEditorContainer');
-            
+
             if (typeof ace === 'undefined') {
                 alert('编辑器正在加载中，请稍候...');
                 return;
             }
-            
+
             // 获取当前 Input 数据（优先从编辑器获取）
             const currentInput = inputEditor ? inputEditor.getValue() : document.getElementById('inputData').value;
-            
+
             // 清空容器并创建新的编辑器容器
             container.innerHTML = '<div id="fullscreenInputAceEditor" style="width: 100%; height: 100%;"></div>';
-            
+
             // 创建全屏编辑器（使用深色主题，JSON 模式）
             fullscreenInputEditor = ace.edit('fullscreenInputAceEditor');
             fullscreenInputEditor.setTheme('ace/theme/monokai'); // 深色主题
@@ -2352,41 +4352,47 @@ return readExcelFromUrl();`
                 tabSize: 2,
                 useSoftTabs: true,
                 wrap: true,
-                useWorker: true,  // 🔍 启用 worker，支持实时 JSON 语法检查
-                highlightActiveLine: true,  // 🔍 高亮当前行
-                highlightSelectedWord: true  // 🔍 高亮选中的单词
+                useWorker: true, // 🔍 启用 worker，支持实时 JSON 语法检查
+                highlightActiveLine: true, // 🔍 高亮当前行
+                highlightSelectedWord: true // 🔍 高亮选中的单词
             });
-            
+
             // 🔍 启用实时语法验证
             fullscreenInputEditor.session.setUseWorker(true);
-            
+
             // 🔍 启用括号匹配高亮
             fullscreenInputEditor.setHighlightGutterLine(true);
-            fullscreenInputEditor.setBehavioursEnabled(true);  // 启用自动配对括号
-            fullscreenInputEditor.setShowInvisibles(false);  // 不显示空白字符
-            
+            fullscreenInputEditor.setBehavioursEnabled(true); // 启用自动配对括号
+            fullscreenInputEditor.setShowInvisibles(false); // 不显示空白字符
+
             // 🔍 监听语法错误
-            fullscreenInputEditor.session.on("changeAnnotation", function(){
+            fullscreenInputEditor.session.on("changeAnnotation", function() {
                 const annotations = fullscreenInputEditor.session.getAnnotations();
                 const hasErrors = annotations.some(ann => ann.type === 'error');
-                
+
                 // 在编辑器下方显示错误提示（可选）
                 // JSON 格式验证完成
             });
             fullscreenInputEditor.commands.addCommand({
                 name: 'save',
-                bindKey: {win: 'Ctrl-S', mac: 'Command-S'},
+                bindKey: {
+                    win: 'Ctrl-S',
+                    mac: 'Command-S'
+                },
                 exec: function(editor) {
                     saveFullscreenInputCode();
                 }
             });
-            
+
             // 🔍 加载搜索扩展模块并启用搜索功能（Command+F / Ctrl+F）
             ace.config.loadModule('ace/ext/searchbox', function(e) {
                 // 搜索模块加载成功，绑定快捷键
                 fullscreenInputEditor.commands.addCommand({
                     name: 'find',
-                    bindKey: {win: 'Ctrl-F', mac: 'Command-F'},
+                    bindKey: {
+                        win: 'Ctrl-F',
+                        mac: 'Command-F'
+                    },
                     exec: function(editor) {
                         e.Search(editor, false); // false 表示不显示替换选项
                         // 延迟调整搜索框布局，确保 DOM 已渲染，并隐藏替换框
@@ -2395,11 +4401,14 @@ return readExcelFromUrl();`
                         }, 50);
                     }
                 });
-                
+
                 // 🔍 启用替换功能（Command+Option+F / Ctrl+H）
                 fullscreenInputEditor.commands.addCommand({
                     name: 'replace',
-                    bindKey: {win: 'Ctrl-H', mac: 'Command-Option-F'},
+                    bindKey: {
+                        win: 'Ctrl-H',
+                        mac: 'Command-Option-F'
+                    },
                     exec: function(editor) {
                         e.Search(editor, true); // true 表示显示替换选项
                         // 延迟调整搜索框布局，确保 DOM 已渲染
@@ -2409,16 +4418,16 @@ return readExcelFromUrl();`
                     }
                 });
             });
-            
+
             // 显示编辑器
             editorOverlay.style.display = 'block';
-            
+
             // 更新标题
             const title = document.querySelector('.fullscreen-editor-title');
             if (title) {
                 title.textContent = '🖥️ Input 参数全屏编辑器';
             }
-            
+
             // 聚焦
             setTimeout(() => {
                 fullscreenInputEditor.focus();
@@ -2427,10 +4436,10 @@ return readExcelFromUrl();`
 
         function saveFullscreenInputCode() {
             if (!fullscreenInputEditor) return;
-            
+
             // 获取全屏编辑器的内容
             const inputData = fullscreenInputEditor.getValue().trim();
-            
+
             // 🔍 JSON 格式验证
             if (inputData) {
                 try {
@@ -2440,32 +4449,32 @@ return readExcelFromUrl();`
                     // JSON 格式错误，显示错误提示
                     const errorMsg = error.message || 'JSON 格式错误';
                     const errorLine = error.message.match(/position (\d+)/);
-                    
+
                     let alertMsg = `❌ JSON 格式错误: ${errorMsg}\n\n`;
                     alertMsg += '请检查:\n';
                     alertMsg += '• 括号、引号是否匹配\n';
                     alertMsg += '• 键名是否使用双引号\n';
                     alertMsg += '• 最后一项是否有多余逗号\n';
                     alertMsg += '• 是否有非法字符';
-                    
+
                     // 在编辑器中显示错误提示
                     alert(alertMsg);
-                    
+
                     // 聚焦回编辑器
                     fullscreenInputEditor.focus();
                     return; // 不保存，停留在编辑器
                 }
             }
-            
+
             // 更新 Input textarea 和编辑器
             document.getElementById('inputData').value = inputData;
             if (inputEditor) {
                 inputEditor.setValue(inputData, -1);
             }
-            
+
             // 关闭编辑器
             closeFullscreenInputEditor();
-            
+
             // 显示成功提示
             showAlertInArea('inputAlertBox', '✅ Input 数据已保存（JSON 格式正确）', 'success');
         }
@@ -2473,13 +4482,13 @@ return readExcelFromUrl();`
         function closeFullscreenInputEditor() {
             const editorOverlay = document.getElementById('fullscreenEditor');
             editorOverlay.style.display = 'none';
-            
+
             // 恢复标题
             const title = document.querySelector('.fullscreen-editor-title');
             if (title) {
                 title.textContent = '🖥️ 全屏代码编辑器';
             }
-            
+
             // 销毁全屏编辑器实例
             if (fullscreenInputEditor) {
                 fullscreenInputEditor.destroy();
@@ -2527,4 +4536,41 @@ return readExcelFromUrl();`
             } else if (fullscreenEditor) {
                 closeFullscreenEditor();
             }
-        } </script> <div id="base64InputModal" class="modal-overlay"> <div class="modal-content"> <div class="modal-header"> <span>🔓 Base64 解码</span> <button class="modal-close" onclick="closeBase64InputModal()">&times;</button> </div> <div class="form-group"> <label class="form-label">请粘贴 Base64 编码的代码:</label> <div style="margin-bottom:8px;color:#666;font-size:13px"> 💡 提示：使用 <kbd style="padding:2px 6px;background:#f5f5f5;border:1px solid #ccc;border-radius:3px;font-size:12px">Ctrl+V</kbd> 或 <kbd style="padding:2px 6px;background:#f5f5f5;border:1px solid #ccc;border-radius:3px;font-size:12px">⌘+V</kbd> 快速粘贴 </div> <textarea id="base64Input" class="form-input" placeholder="在此处粘贴 Base64 字符串...\n\n示例: Y29uc29sZS5sb2coJ0hlbGxvIFdvcmxkJyk7\n\n支持多行粘贴，会自动去除空白字符" style="min-height:200px;font-family:'Courier New',monospace;font-size:14px;line-height:1.6"></textarea> <div id="base64InputError" style="display:none;color:#dc3545;font-size:13px;margin-top:8px;font-weight:500"></div> </div> <div class="button-group"> <button class="btn btn-secondary" onclick="closeBase64InputModal()"> ❌ 取消 </button> <button class="btn btn-success" onclick="confirmBase64Decode()"> ✅ 确认解码 </button> </div> <div style="text-align:center;margin-top:12px;color:#999;font-size:12px"> 💡 快捷键：<kbd style="padding:2px 5px;background:#f5f5f5;border:1px solid #ddd;border-radius:3px;font-size:11px">Ctrl+Enter</kbd> 或 <kbd style="padding:2px 5px;background:#f5f5f5;border:1px solid #ddd;border-radius:3px;font-size:11px">⌘+Enter</kbd> 快速确认 </div> </div> </div> </body> </html> 
+        }
+
+
+        </script>
+        {{if .VerifyCodeEnabled}}
+        <script>
+            // 从后端传递的配置
+            window.verifyCodeEnabled = true;
+            window.hasSession = '{{.HasSession}}' === 'true';
+        </script>
+        <script src="/flow/assets/verify-code.js"></script>
+        {{end}}
+        <div id="base64InputModal" class="modal-overlay">
+            <div class="modal-content">
+                <div class="modal-header"> <span>🔓 Base64 解码</span> <button class="modal-close"
+                        onclick="closeBase64InputModal()">&times;</button> </div>
+                <div class="form-group"> <label class="form-label">请粘贴 Base64 编码的代码:</label>
+                    <div style="margin-bottom:8px;color:#666;font-size:13px"> 💡 提示：使用 <kbd
+                            style="padding:2px 6px;background:#f5f5f5;border:1px solid #ccc;border-radius:3px;font-size:12px">Ctrl+V</kbd>
+                        或 <kbd
+                            style="padding:2px 6px;background:#f5f5f5;border:1px solid #ccc;border-radius:3px;font-size:12px">⌘+V</kbd>
+                        快速粘贴 </div>
+                    <textarea id="base64Input" class="form-input" placeholder="在此处粘贴 Base64 字符串...\n\n示例: Y29uc29sZS5sb2coJ0hlbGxvIFdvcmxkJyk7\n\n支持多行粘贴，会自动去除空白字符" style="min-height:200px;font-family:'Courier New',monospace;font-size:14px;line-height:1.6"></textarea>
+                    <div id="base64InputError"
+                        style="display:none;color:#dc3545;font-size:13px;margin-top:8px;font-weight:500"></div>
+                </div>
+                <div class="button-group"> <button class="btn btn-secondary" onclick="closeBase64InputModal()"> ❌ 取消
+                    </button> <button class="btn btn-success" onclick="confirmBase64Decode()"> ✅ 确认解码 </button> </div>
+                <div style="text-align:center;margin-top:12px;color:#999;font-size:12px"> 💡 快捷键：<kbd
+                        style="padding:2px 5px;background:#f5f5f5;border:1px solid #ddd;border-radius:3px;font-size:11px">Ctrl+Enter</kbd>
+                    或 <kbd
+                        style="padding:2px 5px;background:#f5f5f5;border:1px solid #ddd;border-radius:3px;font-size:11px">⌘+Enter</kbd>
+                    快速确认 </div>
+            </div>
+        </div>
+    </body>
+
+</html>

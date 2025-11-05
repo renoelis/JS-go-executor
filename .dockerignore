@@ -120,3 +120,4 @@ tools
 test_*.go
 scripts/minify-html.js
 temp_test
+scripts/beautify-html.js

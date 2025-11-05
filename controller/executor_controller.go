@@ -21,21 +21,23 @@ import (
 
 // ExecutorController 执行器控制器
 type ExecutorController struct {
-	executor     *service.JSExecutor
-	config       *config.Config
-	tokenService *service.TokenService
-	statsService *service.StatsService // 🆕 统计服务
-	quotaService *service.QuotaService // 🔥 配额服务
+	executor       *service.JSExecutor
+	config         *config.Config
+	tokenService   *service.TokenService
+	statsService   *service.StatsService       // 🆕 统计服务
+	quotaService   *service.QuotaService       // 🔥 配额服务
+	sessionService *service.PageSessionService // 🔐 Session服务
 }
 
 // NewExecutorController 创建新的执行器控制器
-func NewExecutorController(executor *service.JSExecutor, cfg *config.Config, tokenService *service.TokenService, statsService *service.StatsService, quotaService *service.QuotaService) *ExecutorController {
+func NewExecutorController(executor *service.JSExecutor, cfg *config.Config, tokenService *service.TokenService, statsService *service.StatsService, quotaService *service.QuotaService, sessionService *service.PageSessionService) *ExecutorController {
 	return &ExecutorController{
-		executor:     executor,
-		config:       cfg,
-		tokenService: tokenService,
-		statsService: statsService, // 🆕 统计服务
-		quotaService: quotaService, // 🔥 配额服务
+		executor:       executor,
+		config:         cfg,
+		tokenService:   tokenService,
+		statsService:   statsService,   // 🆕 统计服务
+		quotaService:   quotaService,   // 🔥 配额服务
+		sessionService: sessionService, // 🔐 Session服务
 	}
 }
 
@@ -673,15 +675,42 @@ func (c *ExecutorController) TestTool(ctx *gin.Context) {
 		logoImageUrl = testToolCfg.CustomLogoUrl // 使用自定义外部URL
 	}
 
+	// 🔐 创建Session（如果启用）
+	hasSession := false
+	if c.sessionService != nil && c.sessionService.IsEnabled() {
+		ip := ctx.ClientIP()
+		userAgent := ctx.GetHeader("User-Agent")
+
+		sessionID, signedCookie, err := c.sessionService.CreateSession(ctx.Request.Context(), ip, userAgent)
+		if err != nil {
+			utils.Warn("创建Session失败", zap.Error(err), zap.String("ip", ip))
+		} else {
+			// 设置Session Cookie（HttpOnly + SameSite）
+			ctx.SetCookie(
+				"flow_page_session", // cookie名称
+				signedCookie,        // cookie值（签名后的）
+				3600,                // maxAge（秒，1小时）
+				"/",                 // path
+				"",                  // domain（空表示当前域名）
+				false,               // secure（HTTPS环境应设为true）
+				true,                // httpOnly（防XSS）
+			)
+			hasSession = true
+			utils.Debug("Session创建成功并设置Cookie", zap.String("session_id", sessionID[:16]+"..."))
+		}
+	}
+
 	ctx.HTML(http.StatusOK, "test-tool.html", gin.H{
-		"ApiUrl":           testToolCfg.ApiUrl,
-		"LogoUrl":          testToolCfg.LogoUrl,
-		"LogoImageUrl":     logoImageUrl, // 🔧 新增：动态Logo图片URL
-		"AiAssistantUrl":   testToolCfg.AiAssistantUrl,
-		"HelpDocUrl":       testToolCfg.HelpDocUrl,
-		"ApiDocUrl":        testToolCfg.ApiDocUrl,
-		"TestToolGuideUrl": testToolCfg.TestToolGuideUrl,
-		"ExampleDocUrl":    testToolCfg.ExampleDocUrl,
-		"ApplyServiceUrl":  testToolCfg.ApplyServiceUrl,
+		"ApiUrl":            testToolCfg.ApiUrl,
+		"LogoUrl":           testToolCfg.LogoUrl,
+		"LogoImageUrl":      logoImageUrl, // 🔧 新增：动态Logo图片URL
+		"AiAssistantUrl":    testToolCfg.AiAssistantUrl,
+		"HelpDocUrl":        testToolCfg.HelpDocUrl,
+		"ApiDocUrl":         testToolCfg.ApiDocUrl,
+		"TestToolGuideUrl":  testToolCfg.TestToolGuideUrl,
+		"ExampleDocUrl":     testToolCfg.ExampleDocUrl,
+		"ApplyServiceUrl":   testToolCfg.ApplyServiceUrl,
+		"VerifyCodeEnabled": c.config.TokenVerify.Enabled, // 🔐 是否启用验证码功能
+		"HasSession":        hasSession,                   // 🔐 Session状态
 	})
 }

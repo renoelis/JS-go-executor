@@ -30,6 +30,7 @@ type Config struct {
 	QuotaSync    QuotaSyncConfig    // 🔥 配额同步配置
 	XLSX         XLSXConfig         // 🔥 XLSX 模块配置
 	TestTool     TestToolConfig     // 🔧 测试工具页面配置
+	TokenVerify  TokenVerifyConfig  // 🔐 Token查询验证码配置
 }
 
 // ServerConfig HTTP服务器配置
@@ -208,6 +209,31 @@ type TestToolConfig struct {
 	TestToolGuideUrl string // 测试工具使用指南链接
 	ExampleDocUrl    string // 代码示例文档链接
 	ApplyServiceUrl  string // 申请试用服务链接
+}
+
+// TokenVerifyConfig Token查询验证码配置
+type TokenVerifyConfig struct {
+	// 功能开关
+	Enabled bool // 是否启用验证码功能
+
+	// Session配置
+	SessionEnabled bool          // 是否启用Session防护
+	SessionTTL     time.Duration // Session有效期（默认60分钟）
+	SessionSecret  string        // Session签名密钥
+
+	// Webhook邮件配置
+	EmailWebhookURL     string        // Webhook邮件服务URL
+	EmailWebhookTimeout time.Duration // Webhook请求超时时间
+
+	// 验证码配置
+	CodeLength   int           // 验证码长度（默认6位）
+	CodeExpiry   time.Duration // 验证码有效期（默认5分钟）
+	MaxAttempts  int           // 最大验证失败次数（默认3次）
+	CooldownTime time.Duration // 重新发送冷却时间（默认60秒）
+
+	// 频率限制配置
+	RateLimitEmail int // 每邮箱每小时最多请求次数（默认3次）
+	RateLimitIP    int // 每IP每小时最多请求次数（默认10次）
 }
 
 // calculateMaxConcurrent 基于系统内存智能计算并发限制
@@ -566,6 +592,31 @@ func LoadConfig() *Config {
 		TestToolGuideUrl: getEnvString("TEST_TOOL_GUIDE_URL", ""),
 		ExampleDocUrl:    getEnvString("TEST_TOOL_EXAMPLE_URL", ""),
 		ApplyServiceUrl:  getEnvString("TEST_TOOL_APPLY_URL", ""),
+	}
+
+	// 🔐 加载Token查询验证码配置
+	cfg.TokenVerify = TokenVerifyConfig{
+		// 功能开关
+		Enabled: getEnvBool("TOKEN_VERIFY_ENABLED", false), // 默认关闭，渐进式部署
+
+		// Session配置
+		SessionEnabled: getEnvBool("PAGE_SESSION_ENABLED", true),                           // 默认启用Session防护
+		SessionTTL:     time.Duration(getEnvInt("PAGE_SESSION_TTL_MIN", 60)) * time.Minute, // Session有效期，默认60分钟
+		SessionSecret:  getEnvString("PAGE_SESSION_SECRET", ""),                            // Session签名密钥（必须配置）
+
+		// Webhook邮件配置
+		EmailWebhookURL:     getEnvString("EMAIL_WEBHOOK_URL", ""),                                   // Webhook邮件服务URL
+		EmailWebhookTimeout: time.Duration(getEnvInt("EMAIL_WEBHOOK_TIMEOUT_SEC", 10)) * time.Second, // Webhook请求超时，默认10秒
+
+		// 验证码配置
+		CodeLength:   getEnvInt("TOKEN_VERIFY_CODE_LENGTH", 6),                                    // 验证码长度，默认6位
+		CodeExpiry:   time.Duration(getEnvInt("TOKEN_VERIFY_CODE_EXPIRY_SEC", 300)) * time.Second, // 验证码有效期，默认5分钟
+		MaxAttempts:  getEnvInt("TOKEN_VERIFY_MAX_ATTEMPTS", 3),                                   // 最大尝试次数，默认3次
+		CooldownTime: time.Duration(getEnvInt("TOKEN_VERIFY_COOLDOWN_SEC", 60)) * time.Second,     // 冷却时间，默认60秒
+
+		// 频率限制配置
+		RateLimitEmail: getEnvInt("TOKEN_VERIFY_RATE_LIMIT_EMAIL", 3), // 邮箱频率限制，默认3次/小时
+		RateLimitIP:    getEnvInt("TOKEN_VERIFY_RATE_LIMIT_IP", 10),   // IP频率限制，默认10次/小时
 	}
 
 	// 🔒 加载和验证认证配置

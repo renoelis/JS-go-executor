@@ -223,6 +223,29 @@ services:
       # 优先级：CUSTOM_LOGO_URL（最高）> CUSTOM_LOGO_PATH > 默认Logo
       - CUSTOM_LOGO_URL=${CUSTOM_LOGO_URL:-}              # 🎨 自定义Logo外部URL（如CDN链接）
       - CUSTOM_LOGO_PATH=${CUSTOM_LOGO_PATH:-}            # 🎨 自定义Logo本地路径（容器内路径，如：/app/logos/your-logo.png）
+      
+      # ==================== 🔐 Token查询验证码配置 ====================
+      # 重要：生产环境请务必配置强随机密钥
+      - TOKEN_VERIFY_ENABLED=${TOKEN_VERIFY_ENABLED:-false}                   # 是否启用验证码功能（默认：false，渐进式部署）
+      
+      # Session配置
+      - PAGE_SESSION_ENABLED=${PAGE_SESSION_ENABLED:-true}                    # 是否启用Session防护（默认：true）
+      - PAGE_SESSION_TTL_MIN=${PAGE_SESSION_TTL_MIN:-60}                      # Session有效期（分钟，默认：60）
+      - PAGE_SESSION_SECRET=${PAGE_SESSION_SECRET}                            # 🔒 Session签名密钥（必须配置！）
+      
+      # Webhook邮件配置
+      - EMAIL_WEBHOOK_URL=${EMAIL_WEBHOOK_URL}                                # 🔒 Webhook邮件服务URL（轻流或其他平台）
+      - EMAIL_WEBHOOK_TIMEOUT_SEC=${EMAIL_WEBHOOK_TIMEOUT_SEC:-10}            # Webhook请求超时（秒，默认：10）
+      
+      # 验证码配置
+      - TOKEN_VERIFY_CODE_LENGTH=${TOKEN_VERIFY_CODE_LENGTH:-6}               # 验证码长度（默认：6位）
+      - TOKEN_VERIFY_CODE_EXPIRY_SEC=${TOKEN_VERIFY_CODE_EXPIRY_SEC:-300}     # 验证码有效期（秒，默认：300，即5分钟）
+      - TOKEN_VERIFY_MAX_ATTEMPTS=${TOKEN_VERIFY_MAX_ATTEMPTS:-3}             # 最大验证失败次数（默认：3次）
+      - TOKEN_VERIFY_COOLDOWN_SEC=${TOKEN_VERIFY_COOLDOWN_SEC:-60}            # 重新发送冷却时间（秒，默认：60）
+      
+      # 频率限制配置
+      - TOKEN_VERIFY_RATE_LIMIT_EMAIL=${TOKEN_VERIFY_RATE_LIMIT_EMAIL:-3}     # 每邮箱每小时最多请求次数（默认：3次）
+      - TOKEN_VERIFY_RATE_LIMIT_IP=${TOKEN_VERIFY_RATE_LIMIT_IP:-10}          # 每IP每小时最多请求次数（默认：10次）
     
     restart: unless-stopped
     

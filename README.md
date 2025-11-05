@@ -71,6 +71,17 @@
 - **降级保护**: Redis故障自动降级，连续错误自动禁用
 - **完善监控**: 缓存统计、限流统计、命中率分析
 
+### 🔒 Token查询验证码功能 (v2.8+)
+- **邮件验证码**: 通过Webhook发送6位数字验证码到用户邮箱
+- **Session防护**: 基于Cookie的Session机制，防止脚本自动化攻击
+- **安全验证**: Token存在性后端验证，防止开发者工具泄露信息
+- **智能限流**: 
+  - 冷却时间：同一邮箱60秒内只能请求1次
+  - 邮箱频率限制：每小时最多3次
+  - IP频率限制：每小时最多10次
+- **验证失败保护**: 最多3次验证失败，超过后需重新获取验证码
+- **渐进式部署**: 可选功能，支持兼容模式（无验证码）和验证码模式平滑切换
+
 ### 💰 Token配额系统 (v2.6+)
 - **3种配额类型**: time（仅时间）、count（仅次数）、hybrid（时间+次数双重限制）
 - **调用即消耗**: 无论执行成功失败都消耗配额，确保公平计费
@@ -219,6 +230,11 @@ http://your-server:3002/flow/test-tool
 - ✅ **全屏编辑模式**: 一键切换大屏编辑，提供更舒适的代码编写体验（500px 高度 + 全屏模式）
 - ✅ **完整示例库**: 预置 8 种完整示例（简单计算、Axios 请求、Fetch API、Lodash、加密、日期处理、XLSX 处理等）
 - ✅ **Token 查询**: 通过 ws_id 和 email 快速查询和填充 Access Token（支持单/多 Token 智能展示）
+- ✅ **🔒 验证码验证** (v2.8+): 支持邮件验证码验证（可选功能，渐进式部署）
+  - 兼容模式：直接查询Token（`TOKEN_VERIFY_ENABLED=false`）
+  - 验证码模式：邮件验证码 + Session防护（`TOKEN_VERIFY_ENABLED=true`）
+  - 智能UI：根据配置自动显示/隐藏验证码区域
+  - 安全可靠：后端验证Token存在性，防止信息泄露
 - ✅ **Base64 编解码**: 内置编解码工具，支持一键复制和验证
 - ✅ **实时执行结果**: 黑色终端风格的结果展示区，支持语法高亮和 JSON 格式化
 - ✅ **响应式设计**: 桌面两栏布局，移动端自动切换单栏，完美适配各种设备
@@ -334,7 +350,10 @@ Flow-codeblock_goja/
 │   ├── stats_service.go     # 📊 统计分析服务
 │   ├── quota_service.go     # 💰 配额管理服务（Redis+DB双存储）
 │   ├── quota_cleanup_service.go  # 💰 配额日志清理服务
-│   └── cache_write_pool.go  # 缓存写入池
+│   ├── cache_write_pool.go  # 缓存写入池
+│   ├── token_verify_service.go   # 🔒 Token验证码服务（验证码生成/验证/限流）
+│   ├── email_webhook_service.go  # 📧 邮件Webhook服务（验证码邮件发送）
+│   └── page_session_service.go   # 🛡️ 页面Session服务（防脚本攻击）
 ├── router/
 │   └── router.go            # 路由配置（集成认证和限流）
 ├── enhance_modules/         # 模块增强器
@@ -396,7 +415,8 @@ Flow-codeblock_goja/
 │   ├── check_security.sh    # 安全检查脚本
 │   └── test-race.sh         # 竞态条件测试
 ├── templates/               # 🎨 HTML模板
-│   └── test-tool.html       # 在线测试工具页面
+│   ├── test-tool.html       # 在线测试工具页面（支持验证码功能）
+│   └── verify-code.js       # 🔒 验证码功能JS模块（UI交互逻辑）
 ├── assets/
 │   ├── embedded.go          # 嵌入式资源（包含Ace Editor）
 │   ├── codemirror/          # 🎨 Ace Editor本地资源
@@ -697,21 +717,115 @@ GET /flow/query-token?ws_id=my_workspace&email=user@example.com
 ```json
 {
   "success": true,
-  "data": [
-    {
-      "id": 1,
-      "ws_id": "my_workspace",
-      "email": "user@example.com",
-      "access_token": "flow_a1b2c3d4...",
-      "created_at": "2025-10-06 10:00:00",
-      "expires_at": "2025-11-05 10:00:00",
-      "is_active": true,
-      "rate_limit_per_minute": 60,
-      "rate_limit_burst": 10
-    }
-  ]
+  "data": {
+    "count": 1,
+    "tokens": [
+      {
+        "id": 1,
+        "ws_id": "my_workspace",
+        "email": "user@example.com",
+        "access_token": "flow_a1b2c3d4...",
+        "created_at": "2025-10-06 10:00:00",
+        "expires_at": "2025-11-05 10:00:00",
+        "is_active": true,
+        "rate_limit_per_minute": 60,
+        "rate_limit_burst": 10
+      }
+    ]
+  }
 }
 ```
+
+### POST /flow/token/request-verify-code - 发送验证码 🔒
+
+发送验证码到用户邮箱（需要启用 `TOKEN_VERIFY_ENABLED=true`）。
+
+**请求格式:**
+```json
+{
+  "ws_id": "my_workspace",
+  "email": "user@example.com"
+}
+```
+
+**成功响应:**
+```json
+{
+  "success": true,
+  "message": "验证码已发送到您的邮箱"
+}
+```
+
+**错误响应:**
+```json
+{
+  "success": false,
+  "error": {
+    "type": "NotFoundError",
+    "message": "该 Workspace ID 和 Email 组合未找到 Token，无法发送验证码"
+  }
+}
+```
+
+**安全机制:**
+- ✅ Session验证（防止脚本攻击）
+- ✅ 后端Token存在性校验（防止信息泄露）
+- ✅ 冷却时间限制（60秒）
+- ✅ 频率限制（邮箱3次/小时，IP 10次/小时）
+
+### POST /flow/token/verify-code - 验证验证码并查询Token 🔒
+
+验证验证码并返回Token信息（需要启用 `TOKEN_VERIFY_ENABLED=true`）。
+
+**请求格式:**
+```json
+{
+  "ws_id": "my_workspace",
+  "email": "user@example.com",
+  "code": "123456"
+}
+```
+
+**成功响应:**
+```json
+{
+  "success": true,
+  "data": {
+    "count": 1,
+    "tokens": [
+      {
+        "id": 1,
+        "ws_id": "my_workspace",
+        "email": "user@example.com",
+        "access_token": "flow_a1b2c3d4...",
+        "created_at": "2025-10-06 10:00:00",
+        "expires_at": "2025-11-05 10:00:00",
+        "is_active": true,
+        "rate_limit_per_minute": 60,
+        "rate_limit_burst": 10
+      }
+    ]
+  },
+  "message": "Token查询成功"
+}
+```
+
+**错误响应:**
+```json
+{
+  "success": false,
+  "error": {
+    "type": "ValidationError",
+    "message": "验证码错误，剩余 2 次尝试机会"
+  }
+}
+```
+
+**验证机制:**
+- ✅ 验证码格式检查（6位数字）
+- ✅ 验证码有效期检查（5分钟）
+- ✅ 最大尝试次数限制（3次）
+- ✅ 一次性使用（验证成功后自动删除）
 
 ## 🔧 配置参数
 
@@ -884,6 +998,65 @@ ENABLE_SSRF_PROTECTION=false
   - 本地路径示例：`CUSTOM_LOGO_PATH=/data/logos/custom-logo.png`
   - 图片要求：支持PNG/JPG/SVG，建议高度70px左右
   - 修改后重启服务即生效，无需重新打包
+
+### Token查询验证码配置 (v2.8+)
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| **功能开关** | | |
+| `TOKEN_VERIFY_ENABLED` | false | 🔒 是否启用验证码功能（默认：false，渐进式部署） |
+| `PAGE_SESSION_ENABLED` | true | 🛡️ 是否启用Session防护（默认：true，防止脚本攻击） |
+| **Session配置** | | |
+| `PAGE_SESSION_TTL_MIN` | 60 | Session有效期（分钟，默认：60） |
+| `PAGE_SESSION_SECRET` | （必须配置） | 🔒 Session签名密钥（强随机字符串，生产环境必须配置） |
+| **邮件服务配置** | | |
+| `EMAIL_WEBHOOK_URL` | （空） | 📧 Webhook邮件服务URL（轻流或其他平台） |
+| `EMAIL_WEBHOOK_TIMEOUT_SEC` | 10 | Webhook请求超时（秒，默认：10） |
+| **验证码配置** | | |
+| `TOKEN_VERIFY_CODE_LENGTH` | 6 | 验证码长度（默认：6位数字） |
+| `TOKEN_VERIFY_CODE_EXPIRY_SEC` | 300 | 验证码有效期（秒，默认：300，即5分钟） |
+| `TOKEN_VERIFY_MAX_ATTEMPTS` | 3 | 最大验证失败次数（默认：3次） |
+| `TOKEN_VERIFY_COOLDOWN_SEC` | 60 | 重新发送冷却时间（秒，默认：60） |
+| **频率限制配置** | | |
+| `TOKEN_VERIFY_RATE_LIMIT_EMAIL` | 3 | 每邮箱每小时最多请求次数（默认：3次） |
+| `TOKEN_VERIFY_RATE_LIMIT_IP` | 10 | 每IP每小时最多请求次数（默认：10次） |
+
+**配置说明**：
+
+**1. 渐进式部署（推荐）**
+```bash
+# 阶段1：兼容模式（默认）- 无验证码，有Session防护
+TOKEN_VERIFY_ENABLED=false
+PAGE_SESSION_ENABLED=true
+PAGE_SESSION_SECRET=your_strong_random_secret_here
+
+# 阶段2：完整验证码模式
+TOKEN_VERIFY_ENABLED=true
+PAGE_SESSION_ENABLED=true
+PAGE_SESSION_SECRET=your_strong_random_secret_here
+EMAIL_WEBHOOK_URL=https://your-webhook-endpoint.com/send-email
+```
+
+**2. Session密钥生成**
+```bash
+# 生成强随机密钥
+openssl rand -base64 32
+# 或
+uuidgen | base64
+```
+
+**3. 邮件Webhook配置**
+- 支持任何HTTP Webhook服务（轻流、自建等）
+- 请求格式：`POST` 到 `EMAIL_WEBHOOK_URL`
+- 请求体：`{ "email": "user@example.com", "code": "123456" }`
+- 响应：`{ "success": true }`
+
+**4. 安全建议**
+- ✅ 生产环境**必须**配置强随机的 `PAGE_SESSION_SECRET`
+- ✅ 使用HTTPS保护Webhook通信
+- ✅ 限制邮件Webhook的来源IP
+- ✅ 定期轮换Session密钥
+- ⚠️ 不要在代码中硬编码密钥
 
 ### 推荐配置场景
 
@@ -1850,6 +2023,140 @@ MIT License
 ---
 
 ## 📝 版本更新记录
+
+### v2.8.0 (2025-11-05) - Token查询验证码功能 🔒
+
+**🎯 核心升级：完整的验证码验证系统**
+
+#### ✨ 新增功能
+
+**1. Token查询验证码验证**
+- ✅ 邮件验证码发送（通过Webhook）
+  - 6位数字验证码
+  - 5分钟有效期
+  - 60秒冷却时间
+- ✅ 验证码验证功能
+  - 最多3次验证失败
+  - 一次性使用（验证成功后自动删除）
+  - 完整的错误提示
+- ✅ Session防护机制
+  - 基于Cookie的Session
+  - 60分钟有效期（可配置）
+  - 防止脚本自动化攻击
+- ✅ 智能频率限制
+  - 同一邮箱60秒内只能请求1次
+  - 每邮箱每小时最多3次
+  - 每IP每小时最多10次
+
+**2. 邮件Webhook服务**
+- ✅ 支持任何HTTP Webhook服务
+- ✅ 10秒超时保护
+- ✅ 完整的错误处理
+- ✅ 支持轻流等第三方平台
+
+**3. 安全增强**
+- ✅ 后端Token存在性校验（防止开发者工具泄露）
+- ✅ 不在前端调用查询接口验证Token
+- ✅ 验证码存储在Redis（支持自动过期）
+- ✅ Session签名防止伪造
+
+**4. 测试工具集成**
+- ✅ 验证码UI集成（`verify-code.js`）
+- ✅ 智能按钮切换
+  - 有Token：显示"查询Token"按钮
+  - 无Token但有ws_id+email：显示"发送验证码"按钮
+- ✅ 验证码输入框
+  - 固定显示（启用验证码模式时）
+  - 自动数字限制和回车提交
+  - 60秒倒计时显示
+- ✅ 统一错误提示（使用`showAlertInModal`）
+
+**5. 渐进式部署支持**
+- ✅ 兼容模式（`TOKEN_VERIFY_ENABLED=false`）
+  - 保留原有查询功能
+  - 只启用Session防护
+- ✅ 验证码模式（`TOKEN_VERIFY_ENABLED=true`）
+  - 完整验证码流程
+  - Session + 验证码双重保护
+
+#### 🔧 新增配置参数
+
+**功能开关**:
+- `TOKEN_VERIFY_ENABLED` - 是否启用验证码功能（默认：false）
+- `PAGE_SESSION_ENABLED` - 是否启用Session防护（默认：true）
+
+**Session配置**:
+- `PAGE_SESSION_TTL_MIN` - Session有效期（默认：60分钟）
+- `PAGE_SESSION_SECRET` - Session签名密钥（必须配置）
+
+**邮件服务**:
+- `EMAIL_WEBHOOK_URL` - Webhook邮件服务URL
+- `EMAIL_WEBHOOK_TIMEOUT_SEC` - 请求超时（默认：10秒）
+
+**验证码配置**:
+- `TOKEN_VERIFY_CODE_LENGTH` - 验证码长度（默认：6位）
+- `TOKEN_VERIFY_CODE_EXPIRY_SEC` - 有效期（默认：300秒）
+- `TOKEN_VERIFY_MAX_ATTEMPTS` - 最大尝试次数（默认：3次）
+- `TOKEN_VERIFY_COOLDOWN_SEC` - 冷却时间（默认：60秒）
+
+**频率限制**:
+- `TOKEN_VERIFY_RATE_LIMIT_EMAIL` - 邮箱限制（默认：3次/小时）
+- `TOKEN_VERIFY_RATE_LIMIT_IP` - IP限制（默认：10次/小时）
+
+#### 📚 新增文件
+
+**后端服务**:
+- `service/token_verify_service.go` - 验证码服务（296行）
+- `service/email_webhook_service.go` - 邮件Webhook服务（188行）
+- `service/page_session_service.go` - Session服务（253行）
+
+**前端模块**:
+- `templates/verify-code.js` - 验证码UI模块（44行，已简化）
+
+**新增接口**:
+- `POST /flow/token/request-verify-code` - 发送验证码
+- `POST /flow/token/verify-code` - 验证验证码并查询Token
+
+#### 🎯 使用场景
+
+**场景1：开发/测试环境**
+```bash
+TOKEN_VERIFY_ENABLED=false  # 关闭验证码
+PAGE_SESSION_ENABLED=true   # 保留Session防护
+```
+
+**场景2：生产环境（渐进式）**
+```bash
+# 阶段1：先启用Session
+TOKEN_VERIFY_ENABLED=false
+PAGE_SESSION_ENABLED=true
+PAGE_SESSION_SECRET=your_strong_random_secret
+
+# 阶段2：再启用验证码
+TOKEN_VERIFY_ENABLED=true
+EMAIL_WEBHOOK_URL=https://your-webhook-endpoint.com
+```
+
+#### 🔒 安全优势
+
+1. **防止信息泄露**
+   - 不在前端调用查询接口
+   - 后端验证Token存在性
+   - 开发者工具看不到Token信息
+
+2. **防止脚本攻击**
+   - Session机制防止自动化脚本
+   - 多层频率限制
+   - 验证码冷却时间
+
+3. **防止暴力破解**
+   - 最多3次验证失败
+   - 验证码5分钟过期
+   - 邮箱和IP双重限流
+
+**现在支持完整的验证码验证流程，更安全、更可控！** 🎉
+
+---
 
 ### v2.7.1 (2025-11-02) - GZIP 压缩 & 性能优化 ⚡
 

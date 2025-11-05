@@ -13,12 +13,14 @@ import (
 
 // TokenController Token管理控制器
 type TokenController struct {
-	tokenService         *service.TokenService
-	rateLimiterService   *service.RateLimiterService
-	cacheWritePool       *service.CacheWritePool       // 🔥 新增：缓存写入池
-	adminToken           string                        // 🔒 管理员令牌（用于内部API调用）
-	quotaService         *service.QuotaService         // 🔥 配额服务
-	quotaCleanupService  *service.QuotaCleanupService  // 🔥 配额清理服务
+	tokenService        *service.TokenService
+	rateLimiterService  *service.RateLimiterService
+	cacheWritePool      *service.CacheWritePool      // 🔥 新增：缓存写入池
+	adminToken          string                       // 🔒 管理员令牌（用于内部API调用）
+	quotaService        *service.QuotaService        // 🔥 配额服务
+	quotaCleanupService *service.QuotaCleanupService // 🔥 配额清理服务
+	sessionService      *service.PageSessionService  // 🔐 Session服务
+	verifyService       *service.TokenVerifyService  // 🔐 验证码服务
 }
 
 // NewTokenController 创建Token控制器
@@ -29,6 +31,8 @@ func NewTokenController(
 	adminToken string,
 	quotaService *service.QuotaService,
 	quotaCleanupService *service.QuotaCleanupService,
+	sessionService *service.PageSessionService,
+	verifyService *service.TokenVerifyService,
 ) *TokenController {
 	return &TokenController{
 		tokenService:        tokenService,
@@ -37,6 +41,8 @@ func NewTokenController(
 		adminToken:          adminToken,
 		quotaService:        quotaService,
 		quotaCleanupService: quotaCleanupService,
+		sessionService:      sessionService,
+		verifyService:       verifyService,
 	}
 }
 
@@ -251,7 +257,7 @@ func (tc *TokenController) GetQuota(c *gin.Context) {
 	if token == "" {
 		utils.RespondError(c, http.StatusBadRequest,
 			utils.ErrorTypeValidation,
-		"缺少token参数",
+			"缺少token参数",
 			nil)
 		return
 	}
@@ -315,11 +321,11 @@ func (tc *TokenController) GetQuota(c *gin.Context) {
 	}
 
 	utils.RespondSuccess(c, map[string]interface{}{
-		"quota_type":       info.QuotaType,
-		"total_quota":      totalQuota,
-		"remaining_quota":  remainingQuota,
-		"consumed_quota":   consumedQuota,
-		"quota_synced_at":  info.QuotaSyncedAt,
+		"quota_type":      info.QuotaType,
+		"total_quota":     totalQuota,
+		"remaining_quota": remainingQuota,
+		"consumed_quota":  consumedQuota,
+		"quota_synced_at": info.QuotaSyncedAt,
 	}, "")
 }
 
@@ -407,4 +413,192 @@ func (tc *TokenController) TriggerQuotaCleanup(c *gin.Context) {
 	utils.RespondSuccess(c, map[string]interface{}{
 		"message": "清理任务已提交，正在后台执行",
 	}, "清理任务已启动")
+}
+
+// ========== Token查询验证码相关接口 ==========
+
+// RequestVerifyCode 请求验证码
+func (tc *TokenController) RequestVerifyCode(c *gin.Context) {
+	// 1. 检查验证码服务是否启用
+	if tc.verifyService == nil || !tc.verifyService.IsEnabled() {
+		utils.RespondError(c, http.StatusServiceUnavailable,
+			utils.ErrorTypeInternal,
+			"验证码服务未启用",
+			nil)
+		return
+	}
+
+	// 2. 验证Session（如果启用）
+	if tc.sessionService != nil && tc.sessionService.IsEnabled() {
+		sessionCookie, err := c.Cookie("flow_page_session")
+		if err != nil || sessionCookie == "" {
+			utils.RespondError(c, http.StatusUnauthorized,
+				utils.ErrorTypeAuthentication,
+				"Session无效，请刷新页面",
+				nil)
+			return
+		}
+
+		// 验证Session
+		ip := c.ClientIP()
+		userAgent := c.GetHeader("User-Agent")
+		_, err = tc.sessionService.ValidateAndRenewSession(c.Request.Context(), sessionCookie, ip, userAgent)
+		if err != nil {
+			utils.Warn("Session验证失败", zap.Error(err), zap.String("ip", ip))
+			utils.RespondError(c, http.StatusUnauthorized,
+				utils.ErrorTypeAuthentication,
+				err.Error(),
+				nil)
+			return
+		}
+	}
+
+	// 3. 解析请求参数
+	var req model.RequestVerifyCodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.RespondError(c, http.StatusBadRequest,
+			utils.ErrorTypeValidation,
+			"请求参数错误: "+err.Error(),
+			nil)
+		return
+	}
+
+	// 4. 🔒 安全检查：验证Token是否存在（防止通过开发者工具泄露Token）
+	tokenInfoList, err := tc.tokenService.GetTokenInfo(c.Request.Context(), &model.TokenQueryRequest{
+		WsID:  req.WsID,
+		Email: req.Email,
+	})
+	if err != nil || len(tokenInfoList) == 0 {
+		utils.Warn("Token不存在，拒绝发送验证码",
+			zap.String("email", req.Email),
+			zap.String("ws_id", req.WsID),
+		)
+		utils.RespondError(c, http.StatusNotFound,
+			utils.ErrorTypeNotFound,
+			"该 Workspace ID 和 Email 组合未找到 Token，无法发送验证码",
+			nil)
+		return
+	}
+
+	// 5. 发送验证码
+	ip := c.ClientIP()
+	err = tc.verifyService.SendVerificationCode(c.Request.Context(), req.WsID, req.Email, ip)
+	if err != nil {
+		utils.Warn("发送验证码失败",
+			zap.Error(err),
+			zap.String("email", req.Email),
+			zap.String("ws_id", req.WsID),
+		)
+		utils.RespondError(c, http.StatusBadRequest,
+			utils.ErrorTypeInternal,
+			err.Error(),
+			nil)
+		return
+	}
+
+	utils.RespondSuccess(c, map[string]interface{}{
+		"message": "验证码已发送到邮箱",
+	}, "验证码已发送")
+}
+
+// VerifyCodeAndQueryToken 验证验证码并查询Token
+func (tc *TokenController) VerifyCodeAndQueryToken(c *gin.Context) {
+	// 1. 检查验证码服务是否启用
+	if tc.verifyService == nil || !tc.verifyService.IsEnabled() {
+		utils.RespondError(c, http.StatusServiceUnavailable,
+			utils.ErrorTypeInternal,
+			"验证码服务未启用",
+			nil)
+		return
+	}
+
+	// 2. 验证Session（如果启用）
+	if tc.sessionService != nil && tc.sessionService.IsEnabled() {
+		sessionCookie, err := c.Cookie("flow_page_session")
+		if err != nil || sessionCookie == "" {
+			utils.RespondError(c, http.StatusUnauthorized,
+				utils.ErrorTypeAuthentication,
+				"Session无效，请刷新页面",
+				nil)
+			return
+		}
+
+		// 验证Session
+		ip := c.ClientIP()
+		userAgent := c.GetHeader("User-Agent")
+		_, err = tc.sessionService.ValidateAndRenewSession(c.Request.Context(), sessionCookie, ip, userAgent)
+		if err != nil {
+			utils.Warn("Session验证失败", zap.Error(err), zap.String("ip", ip))
+			utils.RespondError(c, http.StatusUnauthorized,
+				utils.ErrorTypeAuthentication,
+				err.Error(),
+				nil)
+			return
+		}
+	}
+
+	// 3. 解析请求参数
+	var req model.VerifyCodeAndQueryTokenRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.RespondError(c, http.StatusBadRequest,
+			utils.ErrorTypeValidation,
+			"请求参数错误: "+err.Error(),
+			nil)
+		return
+	}
+
+	// 4. 验证验证码
+	err := tc.verifyService.VerifyCode(c.Request.Context(), req.WsID, req.Email, req.Code)
+	if err != nil {
+		utils.Warn("验证码验证失败",
+			zap.Error(err),
+			zap.String("email", req.Email),
+			zap.String("ws_id", req.WsID),
+		)
+		utils.RespondError(c, http.StatusBadRequest,
+			utils.ErrorTypeValidation,
+			err.Error(),
+			nil)
+		return
+	}
+
+	// 5. 查询Token信息
+	tokenInfoList, err := tc.tokenService.GetTokenInfo(c.Request.Context(), &model.TokenQueryRequest{
+		WsID:  req.WsID,
+		Email: req.Email,
+	})
+	if err != nil {
+		utils.Error("查询Token失败",
+			zap.Error(err),
+			zap.String("email", req.Email),
+			zap.String("ws_id", req.WsID),
+		)
+		utils.RespondError(c, http.StatusInternalServerError,
+			utils.ErrorTypeInternal,
+			"查询Token失败: "+err.Error(),
+			nil)
+		return
+	}
+
+	// 检查是否查询到结果
+	if len(tokenInfoList) == 0 {
+		utils.RespondError(c, http.StatusNotFound,
+			utils.ErrorTypeNotFound,
+			"未找到匹配的Token",
+			nil)
+		return
+	}
+
+	// 🔥 返回完整的Token列表（与普通查询接口保持一致）
+	utils.Info("Token查询成功（验证码验证）",
+		zap.String("email", req.Email),
+		zap.String("ws_id", req.WsID),
+		zap.Int("token_count", len(tokenInfoList)),
+	)
+
+	// 返回格式与 /flow/query-token 接口一致
+	utils.RespondSuccess(c, map[string]interface{}{
+		"count":  len(tokenInfoList),
+		"tokens": tokenInfoList,
+	}, "Token查询成功")
 }

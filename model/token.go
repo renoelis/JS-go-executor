@@ -73,11 +73,11 @@ type TokenInfo struct {
 	RateLimitBurst         *int          `db:"rate_limit_burst" json:"rate_limit_burst"`
 	RateLimitWindowSeconds *int          `db:"rate_limit_window_seconds" json:"rate_limit_window_seconds"`
 	// 🔥 配额相关字段
-	QuotaType              string        `db:"quota_type" json:"quota_type"`                   // time/count/hybrid
-	TotalQuota             *int          `db:"total_quota" json:"total_quota"`                 // 总配额
-	RemainingQuota         *int          `db:"remaining_quota" json:"remaining_quota"`         // 剩余配额
-	QuotaSyncedAt          *ShanghaiTime `db:"quota_synced_at" json:"quota_synced_at"`         // 配额同步时间
-	UpdatedAt              ShanghaiTime  `db:"updated_at" json:"updated_at"`
+	QuotaType      string        `db:"quota_type" json:"quota_type"`           // time/count/hybrid
+	TotalQuota     *int          `db:"total_quota" json:"total_quota"`         // 总配额
+	RemainingQuota *int          `db:"remaining_quota" json:"remaining_quota"` // 剩余配额
+	QuotaSyncedAt  *ShanghaiTime `db:"quota_synced_at" json:"quota_synced_at"` // 配额同步时间
+	UpdatedAt      ShanghaiTime  `db:"updated_at" json:"updated_at"`
 }
 
 // IsExpired 检查Token是否过期
@@ -167,8 +167,8 @@ type CreateTokenRequest struct {
 	RateLimitBurst         *int   `json:"rate_limit_burst"`
 	RateLimitWindowSeconds *int   `json:"rate_limit_window_seconds"`
 	// 🔥 配额相关字段
-	QuotaType              string `json:"quota_type" binding:"omitempty,oneof=time count hybrid"` // 配额类型
-	TotalQuota             *int   `json:"total_quota"`                                             // 总配额次数
+	QuotaType  string `json:"quota_type" binding:"omitempty,oneof=time count hybrid"` // 配额类型
+	TotalQuota *int   `json:"total_quota"`                                            // 总配额次数
 }
 
 // UpdateTokenRequest 更新Token请求
@@ -179,10 +179,10 @@ type UpdateTokenRequest struct {
 	RateLimitBurst         *int   `json:"rate_limit_burst"`
 	RateLimitWindowSeconds *int   `json:"rate_limit_window_seconds"`
 	// 🔥 配额操作字段
-	QuotaOperation         string `json:"quota_operation" binding:"omitempty,oneof=add set reset"` // add=增加, set=设置, reset=重置
-	QuotaAmount            *int   `json:"quota_amount"`                                             // 配额数量
+	QuotaOperation string `json:"quota_operation" binding:"omitempty,oneof=add set reset"` // add=增加, set=设置, reset=重置
+	QuotaAmount    *int   `json:"quota_amount"`                                            // 配额数量
 	// 🔥 新增：支持修改配额类型
-	QuotaType              string `json:"quota_type" binding:"omitempty,oneof=time count hybrid"` // time=仅时间, count=仅次数, hybrid=双重限制
+	QuotaType string `json:"quota_type" binding:"omitempty,oneof=time count hybrid"` // time=仅时间, count=仅次数, hybrid=双重限制
 }
 
 // TokenQueryRequest Token查询请求
@@ -194,19 +194,19 @@ type TokenQueryRequest struct {
 
 // QuotaLog 配额日志
 type QuotaLog struct {
-	ID                   int64         `db:"id" json:"id"`
-	Token                string        `db:"token" json:"token"`
-	WsID                 string        `db:"ws_id" json:"ws_id"`
-	Email                string        `db:"email" json:"email"`
-	QuotaBefore          int           `db:"quota_before" json:"quota_before"`
-	QuotaAfter           int           `db:"quota_after" json:"quota_after"`
-	QuotaChange          int           `db:"quota_change" json:"quota_change"`
-	Action               string        `db:"action" json:"action"`
-	RequestID            *string       `db:"request_id" json:"request_id"`
-	ExecutionSuccess     *bool         `db:"execution_success" json:"execution_success"`
-	ExecutionErrorType   *string       `db:"execution_error_type" json:"execution_error_type"`
+	ID                    int64        `db:"id" json:"id"`
+	Token                 string       `db:"token" json:"token"`
+	WsID                  string       `db:"ws_id" json:"ws_id"`
+	Email                 string       `db:"email" json:"email"`
+	QuotaBefore           int          `db:"quota_before" json:"quota_before"`
+	QuotaAfter            int          `db:"quota_after" json:"quota_after"`
+	QuotaChange           int          `db:"quota_change" json:"quota_change"`
+	Action                string       `db:"action" json:"action"`
+	RequestID             *string      `db:"request_id" json:"request_id"`
+	ExecutionSuccess      *bool        `db:"execution_success" json:"execution_success"`
+	ExecutionErrorType    *string      `db:"execution_error_type" json:"execution_error_type"`
 	ExecutionErrorMessage *string      `db:"execution_error_message" json:"execution_error_message"`
-	CreatedAt            ShanghaiTime  `db:"created_at" json:"created_at"`
+	CreatedAt             ShanghaiTime `db:"created_at" json:"created_at"`
 }
 
 // QuotaLogsQueryRequest 配额日志查询请求
@@ -216,4 +216,43 @@ type QuotaLogsQueryRequest struct {
 	EndDate   string `form:"end_date"`   // yyyy-MM-dd
 	Page      int    `form:"page"`
 	PageSize  int    `form:"page_size"`
+}
+
+// ========== Token查询验证码相关模型 ==========
+
+// RequestVerifyCodeRequest 请求验证码请求
+type RequestVerifyCodeRequest struct {
+	WsID  string `json:"ws_id" binding:"required"`
+	Email string `json:"email" binding:"required,email"`
+}
+
+// VerifyCodeAndQueryTokenRequest 验证验证码并查询Token请求
+type VerifyCodeAndQueryTokenRequest struct {
+	WsID  string `json:"ws_id" binding:"required"`
+	Email string `json:"email" binding:"required,email"`
+	Code  string `json:"code" binding:"required"`
+}
+
+// MaskedTokenInfo 脱敏的Token信息（用于验证码验证通过后返回）
+type MaskedTokenInfo struct {
+	ID                     int           `json:"id"`
+	WsID                   string        `json:"ws_id"`
+	Email                  string        `json:"email"`
+	AccessToken            string        `json:"access_token"` // 完整Token
+	CreatedAt              ShanghaiTime  `json:"created_at"`
+	ExpiresAt              *ShanghaiTime `json:"expires_at,omitempty"`
+	IsExpired              bool          `json:"is_expired"`
+	QuotaPerDay            *int          `json:"quota_per_day,omitempty"`
+	QuotaPerSecond         *float64      `json:"quota_per_second,omitempty"`
+	QuotaUsedToday         int           `json:"quota_used_today"`
+	QuotaRemainingToday    int           `json:"quota_remaining_today"`
+	QuotaResetTime         *ShanghaiTime `json:"quota_reset_time,omitempty"`
+	LastUsedAt             *ShanghaiTime `json:"last_used_at,omitempty"`
+	LastUsedIP             *string       `json:"last_used_ip,omitempty"`
+	AllowFetch             bool          `json:"allow_fetch"`
+	AllowBase64            bool          `json:"allow_base64"`
+	MaxBlobFileSize        *int64        `json:"max_blob_file_size,omitempty"`
+	MaxConcurrentRequests  *int          `json:"max_concurrent_requests,omitempty"`
+	MaxExecutionTimeoutSec *int          `json:"max_execution_timeout_sec,omitempty"`
+	Status                 string        `json:"status"`
 }

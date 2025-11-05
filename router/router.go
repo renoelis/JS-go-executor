@@ -125,6 +125,16 @@ func SetupRouter(
 			tokenController.QueryTokenPublic,
 		)
 
+		// 🔐 Token查询验证码相关接口（供测试工具使用，带全局IP限流）
+		flowGroup.POST("/token/request-verify-code",
+			globalIPRateLimiter(),
+			tokenController.RequestVerifyCode,
+		)
+		flowGroup.POST("/token/verify-and-query",
+			globalIPRateLimiter(),
+			tokenController.VerifyCodeAndQueryToken,
+		)
+
 		// 静态资源路由
 		flowGroup.GET("/assets/ace.js", func(c *gin.Context) {
 			c.Header("Content-Type", "application/javascript; charset=utf-8")
@@ -164,6 +174,12 @@ func SetupRouter(
 			}
 			// 使用默认Logo
 			c.File("assets/elements/LOGO.png")
+		})
+
+		// 🔐 验证码功能JS模块
+		flowGroup.GET("/assets/verify-code.js", func(c *gin.Context) {
+			c.Header("Content-Type", "application/javascript; charset=utf-8")
+			c.File("templates/verify-code.js")
 		})
 
 		// 代码执行接口（智能 IP 限流 + Token 认证 + Token 限流）

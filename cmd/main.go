@@ -134,13 +134,39 @@ func main() {
 	// 🆕 统计服务
 	statsService := service.NewStatsService(db)
 
+	// 🔐 Token查询验证码相关服务
+	sessionService := service.NewPageSessionService(
+		redisClient,
+		cfg.TokenVerify.SessionEnabled,
+		cfg.TokenVerify.SessionTTL,
+		cfg.TokenVerify.SessionSecret,
+	)
+
+	emailWebhookService := service.NewEmailWebhookService(
+		cfg.TokenVerify.Enabled,
+		cfg.TokenVerify.EmailWebhookURL,
+		cfg.TokenVerify.EmailWebhookTimeout,
+	)
+
+	verifyService := service.NewTokenVerifyService(
+		redisClient,
+		emailWebhookService,
+		cfg.TokenVerify.Enabled,
+		cfg.TokenVerify.CodeLength,
+		cfg.TokenVerify.CodeExpiry,
+		cfg.TokenVerify.MaxAttempts,
+		cfg.TokenVerify.CooldownTime,
+		cfg.TokenVerify.RateLimitEmail,
+		cfg.TokenVerify.RateLimitIP,
+	)
+
 	// ==================== 管理员Token ====================
 	// 🔒 从配置中获取已验证的管理员Token（验证逻辑在 config.LoadConfig 中）
 	adminToken := cfg.Auth.AdminToken
 
 	// ==================== 初始化Controller ====================
-	executorController := controller.NewExecutorController(executor, cfg, tokenService, statsService, quotaService)
-	tokenController := controller.NewTokenController(tokenService, rateLimiterService, cacheWritePool, adminToken, quotaService, quotaCleanupService)
+	executorController := controller.NewExecutorController(executor, cfg, tokenService, statsService, quotaService, sessionService)
+	tokenController := controller.NewTokenController(tokenService, rateLimiterService, cacheWritePool, adminToken, quotaService, quotaCleanupService, sessionService, verifyService)
 	statsController := controller.NewStatsController(statsService)
 
 	// ==================== 设置路由 ====================
@@ -181,7 +207,7 @@ func main() {
 		defer cancel()
 
 		// 🔥 优化资源清理顺序（修复问题3.3）
-		
+
 		// 1. 停止接受新请求
 		utils.Info("步骤1: 停止接受新请求")
 		if err := server.Shutdown(ctx); err != nil {
