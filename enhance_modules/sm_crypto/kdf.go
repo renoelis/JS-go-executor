@@ -2,7 +2,6 @@ package sm_crypto
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/dop251/goja"
 	"github.com/emmansun/gmsm/sm3"
@@ -58,64 +57,49 @@ func kdfCore(z []byte, keylen int, iv []byte) []byte {
 }
 
 // KDF 密钥派生函数（Goja 包装）
-// 对应 JS: kdf(z, keylen, options?)
-// 兼容：第三参为旧版 iv（string/Uint8Array）或新版 options 对象 { iv?, output? }
+// 对应 JS: kdf(z, keylen, iv?)
+// 参数:
+//   - z: string | Uint8Array - 共享信息
+//   - keylen: number - 期望派生密钥的字节长度
+//   - iv: string | Uint8Array - 可选的初始化向量（附加信息）
+//
+// 返回: Uint8Array - 派生的密钥字节（与 sm-crypto-v2 v1.15.0 行为一致）
 func KDF(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
-	if len(call.Arguments) < 2 {
-		panic(runtime.NewTypeError("kdf requires at least 2 arguments"))
-	}
-
 	// 参数 0: z (string | Uint8Array)
-	z, err := ParseStringOrBytes(call.Argument(0), runtime)
+	var z []byte
+	var err error
+	if len(call.Arguments) < 1 {
+		panic(runtime.NewTypeError("kdf requires at least 1 argument"))
+	}
+	z, err = ParseStringOrBytes(call.Argument(0), runtime)
 	if err != nil {
 		panic(runtime.NewGoError(fmt.Errorf("invalid z parameter: %w", err)))
 	}
 
 	// 参数 1: keylen (number)
-	keylen := int(call.Argument(1).ToInteger())
-	if keylen <= 0 {
-		panic(runtime.NewTypeError("keylen must be positive"))
+	var keylen int
+	if len(call.Arguments) >= 2 {
+		keylen = int(call.Argument(1).ToInteger())
 	}
 
-	// 参数 2: options 或 iv（兼容旧版）
+	// sm-crypto-v2 在 keylen < 0 时抛出错误，keylen == 0 返回空数组
+	if keylen < 0 {
+		panic(runtime.NewTypeError("keylen cannot be negative"))
+	}
+	if keylen == 0 {
+		return CreateUint8Array(runtime, []byte{})
+	}
+
+	// 参数 2: iv (可选，string | Uint8Array)
 	var iv []byte
-	outputMode := "array" // 默认输出 Uint8Array（匹配官方 Node.js 行为）
 	if len(call.Arguments) > 2 && !goja.IsUndefined(call.Argument(2)) && !goja.IsNull(call.Argument(2)) {
-		arg2 := call.Argument(2)
-		// 判断是否是对象以及对象类型
-		if obj := arg2.ToObject(runtime); obj != nil {
-			className := obj.ClassName()
-			if className == "Object" {
-				// 作为 options 解析
-				if v := GetStringOption(obj, "output", ""); v != "" {
-					outputMode = v
-				}
-				if ivBytes, _ := GetBytesOption(obj, "iv", runtime); len(ivBytes) > 0 {
-					iv = ivBytes
-				}
-			} else {
-				// 不是普通对象（如 Uint8Array/Array/Buffer），按旧版 iv 解析
-				iv, err = ParseStringOrBytes(arg2, runtime)
-				if err != nil {
-					panic(runtime.NewGoError(fmt.Errorf("invalid iv parameter: %w", err)))
-				}
-			}
-		} else {
-			// 非对象，按旧版 iv 解析
-			iv, err = ParseStringOrBytes(arg2, runtime)
-			if err != nil {
-				panic(runtime.NewGoError(fmt.Errorf("invalid iv parameter: %w", err)))
-			}
+		iv, err = ParseStringOrBytes(call.Argument(2), runtime)
+		if err != nil {
+			panic(runtime.NewGoError(fmt.Errorf("invalid iv parameter: %w", err)))
 		}
 	}
 
-	// 执行 KDF
+	// 执行 KDF 并返回 Uint8Array（sm-crypto-v2 始终返回 Uint8Array）
 	result := kdfCore(z, keylen, iv)
-
-	// 输出模式：默认返回 Uint8Array（匹配官方行为）；'string'/'hex' 返回 hex 字符串
-	if strings.EqualFold(outputMode, "string") || strings.EqualFold(outputMode, "hex") {
-		return runtime.ToValue(BytesToHex(result))
-	}
-	// 默认返回 Uint8Array
 	return CreateUint8Array(runtime, result)
 }

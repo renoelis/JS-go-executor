@@ -30,18 +30,26 @@ func CreateQsObject(runtime *goja.Runtime) *goja.Object {
 	// RFC1738 formatter
 	formattersObj.Set("RFC1738", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			return goja.Undefined()
+			panic(runtime.NewTypeError("String.prototype.replace called on null or undefined"))
 		}
-		value := call.Argument(0).String()
+		arg := call.Argument(0)
+		// null 或 undefined 应该抛出错误
+		if goja.IsNull(arg) || goja.IsUndefined(arg) {
+			panic(runtime.NewTypeError("String.prototype.replace called on null or undefined"))
+		}
+		value := arg.String()
 		return runtime.ToValue(FormatterRFC1738(value))
 	})
 
 	// RFC3986 formatter
 	formattersObj.Set("RFC3986", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			return goja.Undefined()
+			// 没有参数时，返回字符串 "undefined"
+			return runtime.ToValue("undefined")
 		}
-		value := call.Argument(0).String()
+		arg := call.Argument(0)
+		// 无论是什么值，都转换为字符串（包括 null/undefined）
+		value := arg.String()
 		return runtime.ToValue(FormatterRFC3986(value))
 	})
 

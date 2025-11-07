@@ -2,6 +2,7 @@ package qs
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
 	"sort"
@@ -168,6 +169,13 @@ func Decode(str string, charset string) string {
 		// 解码失败，返回原字符串
 		return strWithoutPlus
 	}
+
+	// 检查解码后的字符串是否包含无效的 UTF-8 字符
+	if !utf8.ValidString(decoded) {
+		// 如果解码后包含无效 UTF-8，返回原字符串（保持 %XX 格式）
+		return strWithoutPlus
+	}
+
 	return decoded
 }
 
@@ -204,6 +212,17 @@ func Merge(target, source interface{}, options *ParseOptions) interface{} {
 
 		targetMap, targetIsMap := target.(map[string]interface{})
 		if targetIsMap {
+			// 特殊处理：如果 source 是数组且 targetMap 可以转换为数组，则合并数组
+			if sourceArr, ok := source.([]interface{}); ok {
+				// 检查 targetMap 是否可以转换为数组（所有键都是数字）
+				if canConvertToArray(targetMap) {
+					// 转换 targetMap 为数组
+					targetArr := mapToArray(targetMap)
+					// 合并数组
+					return mergeArrays(targetArr, sourceArr)
+				}
+			}
+
 			// 检查是否允许原型属性
 			if options != nil && (options.PlainObjects || options.AllowPrototypes) {
 				// 允许添加任意键
@@ -212,7 +231,7 @@ func Merge(target, source interface{}, options *ParseOptions) interface{} {
 				// 不允许污染原型
 				sourceStr := fmt.Sprint(source)
 				if !isPrototypeKey(sourceStr) {
-					targetMap[sourceStr] = true
+					targetMap[fmt.Sprint(source)] = true
 				}
 			}
 			return targetMap
@@ -227,7 +246,7 @@ func Merge(target, source interface{}, options *ParseOptions) interface{} {
 	if !targetIsMap {
 		// 如果 target 是数组，转换为对象
 		if targetArr, ok := target.([]interface{}); ok {
-			targetMap = arrayToObject(targetArr, options)
+			targetMap = arrayToObject(targetArr)
 		} else {
 			return append([]interface{}{target}, source)
 		}
@@ -330,9 +349,10 @@ func compactValue(value interface{}, arrayLimit int, parseArrays bool) interface
 		result := make(map[string]interface{})
 		for key, val := range v {
 			compacted := compactValue(val, arrayLimit, parseArrays)
-			if compacted != nil {
-				result[key] = compacted
-			}
+			// 保留 nil 值（对应 JavaScript 的 null）
+			// 只有当递归 compactValue 明确返回需要移除的空对象/数组时才不添加
+			// 但 nil 值本身应该保留（strictNullHandling 需要）
+			result[key] = compacted
 		}
 		// 尝试转换为数组（考虑 arrayLimit 和 parseArrays）
 		if parseArrays {
@@ -341,15 +361,18 @@ func compactValue(value interface{}, arrayLimit int, parseArrays bool) interface
 		return result
 
 	case []interface{}:
-		// 移除数组中的 nil 值
+		// 移除数组中的 undefined 值，但保留 nil (对应 JavaScript 的 null)
+		// Node.js qs 的 compact 只移除 undefined，不移除 null (见 lib/utils.js 第26行)
+		// 在 Go 中，我们使用 interface{} 的特殊标记来区分：
+		// - nil 值直接保留（对应 JavaScript 的 null，用于 strictNullHandling）
+		// - 注意：Go 的 nil 既可以表示 null 也可以表示 undefined，但在我们的实现中，
+		//   decoder 返回 "undefined" 字符串或空接口代表需要过滤的值
 		result := make([]interface{}, 0, len(v))
 		for _, item := range v {
-			if item != nil {
-				compacted := compactValue(item, arrayLimit, parseArrays)
-				if compacted != nil {
-					result = append(result, compacted)
-				}
-			}
+			// 保留所有值，包括 nil (JavaScript 的 null)
+			// 只在递归压缩后检查是否需要保留
+			compacted := compactValue(item, arrayLimit, parseArrays)
+			result = append(result, compacted)
 		}
 		return result
 
@@ -378,7 +401,9 @@ func convertToArray(value interface{}, arrayLimit int) interface{} {
 
 	for key, val := range objMap {
 		index, err := strconv.Atoi(key)
-		if err != nil {
+		// 检查前导零：如果键有前导零（如 "001"），不应被当作数组索引
+		// strconv.Itoi 会成功解析，但 strconv.Itoa(index) != key
+		if err != nil || (len(key) > 1 && key[0] == '0') || strconv.Itoa(index) != key {
 			allNumeric = false
 			break
 		}
@@ -427,7 +452,8 @@ func convertToSparseArray(value interface{}, arrayLimit int) interface{} {
 
 	for key, val := range objMap {
 		index, err := strconv.Atoi(key)
-		if err != nil {
+		// 检查前导零：如果键有前导零（如 "001"），不应被当作数组索引
+		if err != nil || (len(key) > 1 && key[0] == '0') || strconv.Itoa(index) != key {
 			allNumeric = false
 			break
 		}
@@ -464,7 +490,7 @@ func convertToSparseArray(value interface{}, arrayLimit int) interface{} {
 }
 
 // arrayToObject 将数组转换为对象（对应 utils.arrayToObject）
-func arrayToObject(source []interface{}, options *ParseOptions) map[string]interface{} {
+func arrayToObject(source []interface{}) map[string]interface{} {
 	obj := make(map[string]interface{})
 	for i, item := range source {
 		if item != nil {
@@ -491,19 +517,63 @@ func isObject(v interface{}) bool {
 	}
 }
 
-// contains 检查切片是否包含元素
-func contains(slice []interface{}, item interface{}) bool {
-	for _, elem := range slice {
-		if elem == item {
-			return true
-		}
-	}
-	return false
+// isPrototypeKey 检查是否为原型污染键
+// 注意: 只有 __proto__ 和 constructor 会造成真正的原型污染
+// prototype 作为普通键名是允许的(与 qs v6.14.0 行为一致)
+func isPrototypeKey(key string) bool {
+	return key == "__proto__" || key == "constructor"
 }
 
-// isPrototypeKey 检查是否为原型污染键
-func isPrototypeKey(key string) bool {
-	return key == "__proto__" || key == "constructor" || key == "prototype"
+// canConvertToArray 检查 map 是否可以转换为数组（所有键都是数字）
+func canConvertToArray(m map[string]interface{}) bool {
+	if len(m) == 0 {
+		return false
+	}
+	for key := range m {
+		index, err := strconv.Atoi(key)
+		// 检查前导零：如果键有前导零（如 "001"），不应被当作数组索引
+		if err != nil || (len(key) > 1 && key[0] == '0') || strconv.Itoa(index) != key {
+			return false
+		}
+	}
+	return true
+}
+
+// mapToArray 将 map 转换为数组（键必须都是数字）
+func mapToArray(m map[string]interface{}) []interface{} {
+	if len(m) == 0 {
+		return []interface{}{}
+	}
+
+	// 找出最大索引
+	maxIndex := -1
+	for key := range m {
+		if index, err := strconv.Atoi(key); err == nil {
+			if index > maxIndex {
+				maxIndex = index
+			}
+		}
+	}
+
+	// 创建数组
+	arr := make([]interface{}, maxIndex+1)
+	for key, val := range m {
+		if index, err := strconv.Atoi(key); err == nil {
+			arr[index] = val
+		}
+	}
+
+	return arr
+}
+
+// mergeArrays 合并两个数组
+func mergeArrays(target, source []interface{}) []interface{} {
+	result := make([]interface{}, len(target))
+	copy(result, target)
+
+	result = append(result, source...)
+
+	return result
 }
 
 // MaybeMap 如果值是数组，则映射；否则直接应用函数（对应 utils.maybeMap）
@@ -639,6 +709,16 @@ func ToString(v interface{}) string {
 	case int64:
 		return strconv.FormatInt(val, 10)
 	case float64:
+		// 处理特殊浮点值以匹配 JavaScript 行为
+		if math.IsNaN(val) {
+			return "NaN"
+		}
+		if math.IsInf(val, 1) {
+			return "Infinity"
+		}
+		if math.IsInf(val, -1) {
+			return "-Infinity"
+		}
 		return strconv.FormatFloat(val, 'f', -1, 64)
 	case bool:
 		return strconv.FormatBool(val)

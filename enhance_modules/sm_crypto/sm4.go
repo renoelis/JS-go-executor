@@ -43,7 +43,29 @@ func SM4Core(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	cryptFlag := int(call.Argument(2).ToInteger())
 
 	inVal := call.Argument(0)
-	if inVal.ExportType().Kind().String() == "string" { // 字符串类型
+
+	// 检查 null 或 undefined
+	if goja.IsNull(inVal) {
+		panic(runtime.NewTypeError("object null is not iterable (cannot read property Symbol(Symbol.iterator))"))
+	}
+	if goja.IsUndefined(inVal) {
+		panic(runtime.NewTypeError("object undefined is not iterable (cannot read property Symbol(Symbol.iterator))"))
+	}
+
+	// 检查输入类型
+	exportType := inVal.ExportType()
+	if exportType == nil {
+		// 无法导出类型，尝试转换为字符串
+		inputStr := inVal.String()
+		if cryptFlag == SM4_DECRYPT {
+			inArray, err = HexToBytes(inputStr)
+			if err != nil {
+				panic(runtime.NewGoError(fmt.Errorf("invalid hex input for decryption: %w", err)))
+			}
+		} else {
+			inArray = Utf8ToBytes(inputStr)
+		}
+	} else if exportType.Kind().String() == "string" { // 字符串类型
 		inputStr := inVal.String()
 		if cryptFlag == SM4_DECRYPT {
 			// 解密时，字符串被视为十六进制
@@ -200,16 +222,10 @@ func sm4ECB(runtime *goja.Runtime, inArray []byte, key []byte, cryptFlag int, pa
 
 	var outArray []byte
 
-	// 🔥 兼容 sm-crypto-v2 行为：array 模式下的特殊 padding 逻辑
-	// - 如果输入长度是块的倍数：不添加/不移除 padding
-	// - 如果输入长度不是块的倍数：添加/移除 padding（与 string 模式相同）
-	isArrayMode := (output == "array")
-	isBlockAligned := (len(inArray)%SM4_BLOCK_SIZE == 0)
-
 	if cryptFlag == SM4_ENCRYPT {
-		// array 模式且输入已对齐块：不添加 padding
-		// 其他情况：添加 padding
-		if !(isArrayMode && isBlockAligned) {
+		// 🔥 PKCS#7 标准：即使数据已经是块大小的倍数，也必须添加一个完整的填充块
+		// 匹配 Node.js sm-crypto-v2 的标准行为
+		if padding != "none" {
 			inArray = applyPadding(inArray, padding, SM4_BLOCK_SIZE)
 		}
 
@@ -233,15 +249,15 @@ func sm4ECB(runtime *goja.Runtime, inArray []byte, key []byte, cryptFlag int, pa
 			block.Decrypt(outArray[i:i+SM4_BLOCK_SIZE], inArray[i:i+SM4_BLOCK_SIZE])
 		}
 
-		// 🔥 兼容 sm-crypto-v2：解密时尝试移除 padding
-		// 如果移除失败（说明没有有效的 padding，可能加密时就没添加），则保持原样
-		// 这与标准 PKCS#7 不同，但匹配 Node.js 库的行为
-		trimmed, err := removePadding(outArray, padding, SM4_BLOCK_SIZE)
-		if err == nil {
+		// 🔥 匹配 Node.js sm-crypto-v2：严格的 PKCS#7 padding 处理
+		if padding != "none" {
+			trimmed, err := removePadding(outArray, padding, SM4_BLOCK_SIZE)
+			if err != nil {
+				// PKCS#7 padding 无效，这是一个错误
+				panic(runtime.NewGoError(fmt.Errorf("padding is invalid")))
+			}
 			outArray = trimmed
 		}
-		// 如果出错，保持 outArray 不变（不移除 padding）
-		// 这处理了加密时input长度是块倍数且output='array'时不添加padding的情况
 	}
 
 	// 返回结果
@@ -547,5 +563,8 @@ func formatOutput(runtime *goja.Runtime, data []byte, cryptFlag int, output stri
 	}
 
 	// 解密输出 UTF-8 字符串
-	return runtime.ToValue(BytesToUtf8(data))
+	// 注意：goja 中 runtime.ToValue(string) 返回的字符串类型与 repeat() 等 JS 方法
+	// 返回的字符串类型可能不同（importedString vs unicodeString），即使字节内容相同，
+	// === 比较也可能返回 false。这是 goja 的已知限制，测试中使用逐字符比较来验证。
+	return runtime.ToValue(string(data))
 }

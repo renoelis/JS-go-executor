@@ -121,17 +121,27 @@ func ExportUint8Array(val goja.Value, runtime *goja.Runtime) ([]byte, error) {
 
 	// 获取数组长度
 	lengthVal := obj.Get("length")
-	if goja.IsUndefined(lengthVal) {
+	if lengthVal == nil || goja.IsUndefined(lengthVal) || goja.IsNull(lengthVal) {
 		return nil, errors.New("value does not have a length property")
 	}
 
-	length := int(lengthVal.ToInteger())
+	// 安全地获取长度值
+	var length int64
+	if lengthVal.ExportType() != nil {
+		length = lengthVal.ToInteger()
+	} else {
+		return nil, errors.New("invalid length value")
+	}
+
+	if length < 0 {
+		return nil, errors.New("invalid length")
+	}
 	result := make([]byte, length)
 
 	// 逐个读取元素
-	for i := 0; i < length; i++ {
+	for i := int64(0); i < length; i++ {
 		elemVal := obj.Get(fmt.Sprintf("%d", i))
-		if goja.IsUndefined(elemVal) {
+		if elemVal == nil || goja.IsUndefined(elemVal) {
 			result[i] = 0
 		} else {
 			result[i] = byte(elemVal.ToInteger())
@@ -199,19 +209,57 @@ func ParseStringOrBytes(val goja.Value, runtime *goja.Runtime) ([]byte, error) {
 		return Utf8ToBytes(val.String()), nil
 	}
 
-	// 尝试作为 Uint8Array
-	return ExportUint8Array(val, runtime)
+	// 检查是否为数字类型（抛出错误，匹配 sm-crypto-v2 行为）
+	exportType := val.ExportType().Kind().String()
+	if exportType == "int" || exportType == "int64" || exportType == "float64" || exportType == "number" {
+		return nil, errors.New("expected Uint8Array, got number")
+	}
+
+	// 所有其他类型都作为对象处理
+	obj := val.ToObject(runtime)
+	if obj == nil {
+		return nil, errors.New("expected Uint8Array, got invalid value")
+	}
+
+	// 检查是否是真正的 TypedArray（通过检查 byteLength）
+	// 普通数组没有 byteLength 属性，Uint8Array/Buffer 有
+	byteLengthVal := obj.Get("byteLength")
+	if byteLengthVal != nil && !goja.IsUndefined(byteLengthVal) {
+		// 有 byteLength 属性，是 TypedArray 或 Buffer
+		bytes, err := ExportUint8Array(val, runtime)
+		if err == nil {
+			return bytes, nil
+		}
+	}
+
+	// 检查是否有 length 属性但没有 byteLength（可能是普通数组）
+	lengthVal := obj.Get("length")
+	if lengthVal != nil && !goja.IsUndefined(lengthVal) {
+		// 有 length 但没有 byteLength，是普通数组
+		return nil, errors.New("expected Uint8Array, got object")
+	}
+
+	// 不是 Uint8Array，抛出错误
+	return nil, errors.New("expected Uint8Array, got object")
 }
 
 // ParseHexOrBytes 解析十六进制字符串或字节数组参数
+// 如果字符串不是有效的 hex，则将其作为 UTF-8 字符串处理（匹配 sm-crypto-v2 行为）
 func ParseHexOrBytes(val goja.Value, runtime *goja.Runtime) ([]byte, error) {
 	if val == nil || goja.IsUndefined(val) || goja.IsNull(val) {
 		return nil, errors.New("argument is undefined or null")
 	}
 
-	// 尝试作为字符串（十六进制）
+	// 尝试作为字符串
 	if val.ExportType().Kind().String() == "string" {
-		return HexToBytes(val.String())
+		str := val.String()
+		// 先尝试作为 hex 解析
+		hexBytes, err := HexToBytes(str)
+		if err == nil {
+			return hexBytes, nil
+		}
+		// 如果不是有效的 hex，作为 UTF-8 字符串处理（匹配 sm-crypto-v2）
+		return Utf8ToBytes(str), nil
 	}
 
 	// 检查是否为数字类型（不允许）
@@ -317,8 +365,13 @@ func GetBytesOption(opts *goja.Object, key string, runtime *goja.Runtime) ([]byt
 	}()
 
 	val := opts.Get(key)
-	if val == nil || goja.IsUndefined(val) || goja.IsNull(val) {
+	if val == nil || goja.IsUndefined(val) {
 		return nil, nil
+	}
+
+	// 🔥 重要：明确为 null 时抛出错误（匹配 Node.js sm-crypto-v2 行为）
+	if goja.IsNull(val) {
+		return nil, fmt.Errorf("Cannot read properties of null (reading 'length')")
 	}
 
 	return ParseHexOrBytes(val, runtime)

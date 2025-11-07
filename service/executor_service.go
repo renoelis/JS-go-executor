@@ -300,8 +300,11 @@ func (e *JSExecutor) registerModules(cfg *config.Config) {
 	// 注册 Buffer 模块
 	e.moduleRegistry.Register(enhance_modules.NewBufferEnhancer())
 
-	// 注册 Crypto 模块
-	e.moduleRegistry.Register(enhance_modules.NewCryptoEnhancerWithEmbedded(assets.CryptoJS))
+	// 注册 Crypto 模块（Go 原生实现）
+	e.moduleRegistry.Register(enhance_modules.NewCryptoNativeEnhancer())
+
+	// 注册 CryptoJS 外部库（类似 dayjs）
+	e.moduleRegistry.Register(enhance_modules.NewCryptoJSEnhancerWithEmbedded(assets.CryptoJS))
 
 	// 注册 Fetch 模块
 	fetchEnhancer := enhance_modules.NewFetchEnhancerWithConfig(
@@ -353,8 +356,8 @@ func (e *JSExecutor) registerModules(cfg *config.Config) {
 	e.moduleRegistry.Register(enhance_modules.NewFastXMLParserEnhancer(assets.FastXMLParser))
 	e.moduleRegistry.Register(enhance_modules.NewXLSXEnhancer(cfg))
 
-	// 🔥 国密算法模块（sm-crypto-v2: 支持 SM2/SM3/SM4）
-	e.moduleRegistry.Register(enhance_modules.NewSMCryptoEnhancer(assets.SMCrypto))
+	// 🔥 国密算法模块（sm-crypto-v2: Go 原生实现，支持 SM2/SM3/SM4/KDF）
+	e.moduleRegistry.Register(enhance_modules.NewSMCryptoNativeEnhancer())
 
 	// 🔥 一次性注册所有模块到 require 系统
 	if err := e.moduleRegistry.RegisterAll(e.registry); err != nil {
@@ -489,10 +492,10 @@ func (e *JSExecutor) warmupModules() error {
 		{
 			name: "crypto-js",
 			getModule: func() (interface{}, bool) {
-				return e.moduleRegistry.GetModule("crypto")
+				return e.moduleRegistry.GetModule("crypto-js")
 			},
 			precompile: func(m interface{}) error {
-				if enhancer, ok := m.(*enhance_modules.CryptoEnhancer); ok {
+				if enhancer, ok := m.(*enhance_modules.CryptoJSEnhancer); ok {
 					return enhancer.PrecompileCryptoJS()
 				}
 				return fmt.Errorf("invalid module type")

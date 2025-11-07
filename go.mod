@@ -5,7 +5,9 @@ go 1.25.0
 toolchain go1.25.3
 
 require (
-	github.com/dop251/goja v0.0.0-20250630131328-58d95d85e994
+	github.com/btcsuite/btcd/btcec/v2 v2.3.6
+	github.com/cloudflare/circl v1.6.1
+	github.com/dop251/goja v0.0.0-20251103141225-af2ceb9156d7
 	github.com/dop251/goja_nodejs v0.0.0-20250409162600-f7acab6894b0
 	github.com/emmansun/gmsm v0.34.1
 	github.com/gin-contrib/pprof v1.5.3
@@ -19,6 +21,12 @@ require (
 	go.uber.org/zap v1.27.0
 	golang.org/x/sync v0.17.0
 	golang.org/x/time v0.13.0
+)
+
+require (
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
+	github.com/rogpeppe/go-internal v1.14.1 // indirect
+	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 // indirect
 )
 
 require (
@@ -43,7 +51,7 @@ require (
 	github.com/go-playground/validator/v10 v10.26.0 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
-	github.com/google/pprof v0.0.0-20251002213607-436353cc1ee6 // indirect
+	github.com/google/pprof v0.0.0-20251007162407-5df77e3f7d1d // indirect
 	github.com/json-iterator/go v1.1.12
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
@@ -61,10 +69,10 @@ require (
 	github.com/xuri/nfp v0.0.1 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/arch v0.16.0 // indirect
-	golang.org/x/crypto v0.42.0 // indirect
+	golang.org/x/crypto v0.42.0
 	golang.org/x/net v0.43.0 // indirect
 	golang.org/x/sys v0.36.0 // indirect
-	golang.org/x/text v0.29.0
+	golang.org/x/text v0.30.0
 	google.golang.org/protobuf v1.36.6 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

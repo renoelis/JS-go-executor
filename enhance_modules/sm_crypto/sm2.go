@@ -488,6 +488,19 @@ func CompressPublicKeyHex(call goja.FunctionCall, runtime *goja.Runtime) goja.Va
 	}
 
 	publicKeyHex := call.Argument(0).String()
+
+	// 移除可能的 0x 前缀
+	cleanHex := publicKeyHex
+	if len(cleanHex) >= 2 && (cleanHex[:2] == "0x" || cleanHex[:2] == "0X") {
+		cleanHex = cleanHex[2:]
+	}
+
+	// ⚠️ 与 sm-crypto-v2 对齐：已压缩的公钥不能再次压缩
+	// sm-crypto-v2 会抛出错误 "Invalid public key to compress"
+	if len(cleanHex) == 66 && (cleanHex[:2] == "02" || cleanHex[:2] == "03") {
+		panic(runtime.NewGoError(fmt.Errorf("Invalid public key to compress")))
+	}
+
 	publicKey, err := HexToPublicKey(publicKeyHex)
 	if err != nil {
 		panic(runtime.NewGoError(fmt.Errorf("invalid public key: %w", err)))
@@ -524,6 +537,8 @@ func ComparePublicKeyHex(call goja.FunctionCall, runtime *goja.Runtime) goja.Val
 
 // VerifyPublicKey 验证公钥是否有效
 // 对应 JS: sm2.verifyPublicKey(publicKey)
+//
+// ⚠️ 与 sm-crypto-v2 对齐：验证失败时抛出错误而不是返回 false
 func VerifyPublicKey(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	if len(call.Arguments) == 0 {
 		panic(runtime.NewTypeError("verifyPublicKey requires 1 argument"))
@@ -547,9 +562,15 @@ func VerifyPublicKey(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		panic(runtime.NewTypeError("verifyPublicKey expects a string argument"))
 	}
 
+	// ⚠️ 与 sm-crypto-v2 对齐：验证失败时抛出错误
+	// sm-crypto-v2 使用 @noble/curves，验证失败时会抛出异常
 	_, err := HexToPublicKey(publicKeyHex)
+	if err != nil {
+		// 将错误信息转换为与 sm-crypto-v2 类似的格式
+		panic(runtime.NewGoError(err))
+	}
 
-	return runtime.ToValue(err == nil)
+	return runtime.ToValue(true)
 }
 
 // ============================================================================

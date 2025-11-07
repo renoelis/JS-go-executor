@@ -84,9 +84,31 @@ func parseQueryString(queryString string, opts *ParseOptions, runtime *goja.Runt
 		return nil, err
 	}
 
-	// 3. 预处理：为混合索引数组中的空括号分配索引
+	// 3. 预处理:为混合索引数组中的空括号分配索引
 	keyOrder := tempObj.Keys() // 保存键的顺序
-	keyOrder = assignEmptyBracketIndices(keyOrder, tempObj)
+
+	// 🔧 重要:如果启用 allowDots,需要先转换点号为方括号,统一键格式
+	// 这样后续处理时所有键都是方括号格式,避免混合格式导致的问题
+	if opts.AllowDots {
+		convertedKeyOrder := make([]string, len(keyOrder))
+		for i, key := range keyOrder {
+			// 使用与 parseKeys 相同的转换逻辑
+			convertedKeyOrder[i] = dotNotationRegex.ReplaceAllString(key, "[$1]")
+		}
+		keyOrder = convertedKeyOrder
+
+		// 同时更新 tempObj 中的键
+		newTempObj := NewOrderedMap()
+		for _, oldKey := range tempObj.Keys() {
+			newKey := dotNotationRegex.ReplaceAllString(oldKey, "[$1]")
+			if val, exists := tempObj.Get(oldKey); exists {
+				newTempObj.Set(newKey, val)
+			}
+		}
+		tempObj = newTempObj
+	}
+
+	keyOrder = assignEmptyBracketIndices(keyOrder)
 
 	// 解析键并构建嵌套对象
 	obj := make(map[string]interface{})
@@ -180,6 +202,7 @@ func parseQueryString(queryString string, opts *ParseOptions, runtime *goja.Runt
 					// parseKeys 返回的键可能是字面量（如 "a[b][c]"），
 					// 不再是顶层键，需要直接合并整个 map
 					// 或者：当 topKey 是空字符串时（如 [c]），也需要直接合并
+					// 或者：当 allowDots=true 且键中有点号时，可能产生不完整的方括号键（如 "a[b"）
 					if opts.Depth == 0 || opts.Depth == -1 || topKey == "" {
 						for k, v := range resultMap {
 							if existing, exists := obj[k]; exists {
@@ -189,8 +212,21 @@ func parseQueryString(queryString string, opts *ParseOptions, runtime *goja.Runt
 							}
 						}
 					} else {
-						// 只处理当前顶层键
-						if v, exists := resultMap[topKey]; exists {
+						// 检查 resultMap 中是否有 topKey
+						// 如果没有，可能是因为 allowDots 导致的不完整方括号键
+						// 此时直接合并整个 resultMap
+						if _, exists := resultMap[topKey]; !exists {
+							// resultMap 中没有 topKey，直接合并所有键
+							for k, v := range resultMap {
+								if existing, existsInObj := obj[k]; existsInObj {
+									obj[k] = Merge(existing, v, opts)
+								} else {
+									obj[k] = v
+								}
+							}
+						} else {
+							// 只处理当前顶层键
+							v := resultMap[topKey]
 							if existing, existsInObj := obj[topKey]; existsInObj {
 								// Merge 后重新排序嵌套对象
 								merged := Merge(existing, v, opts)
@@ -420,176 +456,13 @@ func convertNilToUndefinedForObject(value interface{}, runtime *goja.Runtime) in
 }
 
 // assignEmptyBracketIndices 为混合索引数组中的空括号分配索引
-// 例如：["a[0]", "a[]", "a[2]", "a[]"] => ["a[0]", "a[1]", "a[2]", "a[3]"]
-func assignEmptyBracketIndices(keys []string, tempObj *OrderedMap) []string {
-	// 按前缀分组，追踪每个前缀的索引使用情况
-	prefixIndices := make(map[string]map[int]bool) // prefix -> set of used indices
-	prefixMaxIndex := make(map[string]int)         // prefix -> max used index
-
-	// 用于检测是否为混合情况
-	prefixHasEmptyBracket := make(map[string]bool)  // prefix -> has empty bracket
-	prefixHasNumberedIndex := make(map[string]bool) // prefix -> has numbered index
-
-	// 第一遍：收集已有的索引，并检测混合情况
-	for _, key := range keys {
-		if !strings.Contains(key, "[") {
-			continue
-		}
-
-		// 提取前缀和索引部分
-		parts := strings.SplitN(key, "[", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		prefix := parts[0]
-		indexPart := "[" + parts[1]
-
-		// 检查是否是空括号
-		if strings.HasPrefix(indexPart, "[]") {
-			prefixHasEmptyBracket[prefix] = true
-			continue
-		}
-
-		// 检查是否是数字索引
-		if strings.HasPrefix(indexPart, "[") && strings.Contains(indexPart, "]") {
-			endIdx := strings.Index(indexPart, "]")
-			indexStr := indexPart[1:endIdx]
-
-			// 尝试解析为整数
-			if index, err := strconv.Atoi(indexStr); err == nil {
-				prefixHasNumberedIndex[prefix] = true
-				if prefixIndices[prefix] == nil {
-					prefixIndices[prefix] = make(map[int]bool)
-				}
-				prefixIndices[prefix][index] = true
-
-				if index > prefixMaxIndex[prefix] {
-					prefixMaxIndex[prefix] = index
-				}
-			}
-		}
-	}
-
-	// 第二遍：仅对混合情况（既有数字索引又有空括号）分配索引
-	result := make([]string, 0, len(keys))
-	nextIndex := make(map[string]int) // prefix -> next available index
-
-	for _, key := range keys {
-		if !strings.HasSuffix(key, "[]") || !strings.Contains(key, "[") {
-			result = append(result, key)
-			continue
-		}
-
-		// 这是一个 prefix[] 形式的键
-		prefix := key[:len(key)-2] // 移除 []
-
-		// 🔍 关键判断：只处理混合情况
-		// 如果该前缀既有空括号又有数字索引，才需要分配索引
-		// 否则保持原样（让 parseKeys 和 Combine 处理纯空括号数组）
-		if !prefixHasNumberedIndex[prefix] {
-			// 纯空括号数组（如 arr[]=1&arr[]=2），不处理
-			result = append(result, key)
-			continue
-		}
-
-		// 这是混合情况（如 a[0]=x&a[]=y），需要分配索引
-		// 检查值是否已经是数组（被 Combine 合并过）
-		if val, exists := tempObj.Get(key); exists {
-			if arr, isArray := val.([]interface{}); isArray {
-				// 值已经是数组，说明有多个相同的 prefix[]
-				// 需要展开这个数组，为每个元素分配索引
-				for _, item := range arr {
-					// 找到下一个可用的索引
-					if _, exists := nextIndex[prefix]; !exists {
-						nextIndex[prefix] = 0
-					}
-
-					// 跳过已使用的索引
-					for {
-						if prefixIndices[prefix] == nil || !prefixIndices[prefix][nextIndex[prefix]] {
-							break
-						}
-						nextIndex[prefix]++
-					}
-
-					// 创建新的键
-					newKey := prefix + "[" + strconv.Itoa(nextIndex[prefix]) + "]"
-					result = append(result, newKey)
-
-					// 更新 tempObj
-					tempObj.Set(newKey, item)
-
-					// 标记该索引已使用
-					if prefixIndices[prefix] == nil {
-						prefixIndices[prefix] = make(map[int]bool)
-					}
-					prefixIndices[prefix][nextIndex[prefix]] = true
-					nextIndex[prefix]++
-				}
-
-				// 删除原始的 prefix[] 键
-				tempObj.Delete(key)
-				continue
-			}
-		}
-
-		// 单个 prefix[]，分配索引
-		// 找到下一个可用的索引
-		if _, exists := nextIndex[prefix]; !exists {
-			nextIndex[prefix] = 0
-		}
-
-		// 跳过已使用的索引
-		for {
-			if prefixIndices[prefix] == nil || !prefixIndices[prefix][nextIndex[prefix]] {
-				break
-			}
-			nextIndex[prefix]++
-		}
-
-		// 创建新的键
-		newKey := prefix + "[" + strconv.Itoa(nextIndex[prefix]) + "]"
-		result = append(result, newKey)
-
-		// 更新 tempObj，将旧键的值移到新键
-		if val, exists := tempObj.Get(key); exists {
-			tempObj.Set(newKey, val)
-			tempObj.Delete(key)
-		}
-
-		// 标记该索引已使用
-		if prefixIndices[prefix] == nil {
-			prefixIndices[prefix] = make(map[int]bool)
-		}
-		prefixIndices[prefix][nextIndex[prefix]] = true
-		nextIndex[prefix]++
-	}
-
-	return result
-}
-
-// extractTopLevelKeys 从查询字符串的键中提取顶层键
-// 例如：["a[0]", "a[1]", "b"] => ["a", "b"]
-func extractTopLevelKeys(keys []string) []string {
-	seen := make(map[string]bool)
-	result := make([]string, 0)
-
-	for _, key := range keys {
-		// 提取顶层键（方括号之前的部分）
-		topKey := key
-		if idx := strings.Index(key, "["); idx != -1 {
-			topKey = key[:idx]
-		}
-
-		// 去重并保持顺序
-		if !seen[topKey] {
-			seen[topKey] = true
-			result = append(result, topKey)
-		}
-	}
-
-	return result
+// 注意：根据 Node.js qs 的实现，实际上不需要对混合索引做特殊处理
+// 空括号 [] 会被 parseKeys 处理为数组，然后自然地与数字索引合并
+// 所以这个函数实际上只是直接返回原始 keys
+func assignEmptyBracketIndices(keys []string) []string {
+	// 与 Node.js qs 行为一致：不对空括号做特殊转换
+	// parseKeys 会将 a[] 解析为数组，merge 会自然地合并
+	return keys
 }
 
 // extractTopLevelKeysWithOpts 从查询字符串的键中提取顶层键（支持 allowDots）
@@ -618,35 +491,6 @@ func extractTopLevelKeysWithOpts(keys []string, opts *ParseOptions) []string {
 	return result
 }
 
-// createPlainObject 创建无原型对象（Object.create(null)）- 纯 Go 实现
-func createPlainObject(obj map[string]interface{}, keyOrder []string, runtime *goja.Runtime) goja.Value {
-	// 使用 goja 原生 API 创建对象
-	result := runtime.NewObject()
-
-	// 记录已添加的键
-	added := make(map[string]bool)
-
-	// 按照 keyOrder 的顺序添加键
-	for _, key := range keyOrder {
-		if value, exists := obj[key]; exists {
-			result.Set(key, runtime.ToValue(value))
-			added[key] = true
-		}
-	}
-
-	// 添加 keyOrder 中没有的键（如果有）
-	for key, value := range obj {
-		if !added[key] {
-			result.Set(key, runtime.ToValue(value))
-		}
-	}
-
-	// 移除原型链以创建无原型对象
-	result.SetPrototype(nil)
-
-	return result
-}
-
 // createPlainObjectWithNested 创建无原型对象（包括嵌套对象）- 纯 Go 实现
 func createPlainObjectWithNested(obj map[string]interface{}, keyOrder []string, nestedKeyOrder map[string][]string, runtime *goja.Runtime) goja.Value {
 	// 辅助函数：对嵌套对象排序
@@ -663,7 +507,11 @@ func createPlainObjectWithNested(obj map[string]interface{}, keyOrder []string, 
 		if len(keys) > 0 {
 			for _, key := range keys {
 				if value, exists := obj[key]; exists {
-					ordered.Set(key, runtime.ToValue(value))
+					if value == nil {
+						ordered.Set(key, goja.Null())
+					} else {
+						ordered.Set(key, runtime.ToValue(value))
+					}
 					added[key] = true
 				}
 			}
@@ -672,7 +520,11 @@ func createPlainObjectWithNested(obj map[string]interface{}, keyOrder []string, 
 		// 添加剩余的键
 		for key, value := range obj {
 			if !added[key] {
-				ordered.Set(key, runtime.ToValue(value))
+				if value == nil {
+					ordered.Set(key, goja.Null())
+				} else {
+					ordered.Set(key, runtime.ToValue(value))
+				}
 			}
 		}
 
@@ -695,6 +547,8 @@ func createPlainObjectWithNested(obj map[string]interface{}, keyOrder []string, 
 				} else {
 					result.Set(key, runtime.ToValue(value))
 				}
+			} else if value == nil {
+				result.Set(key, goja.Null())
 			} else {
 				result.Set(key, runtime.ToValue(value))
 			}
@@ -711,6 +565,8 @@ func createPlainObjectWithNested(obj map[string]interface{}, keyOrder []string, 
 				} else {
 					result.Set(key, runtime.ToValue(value))
 				}
+			} else if value == nil {
+				result.Set(key, goja.Null())
 			} else {
 				result.Set(key, runtime.ToValue(value))
 			}
@@ -719,30 +575,6 @@ func createPlainObjectWithNested(obj map[string]interface{}, keyOrder []string, 
 
 	// 移除原型链以创建无原型对象
 	result.SetPrototype(nil)
-
-	return result
-}
-
-// createOrderedObject 创建有序的 JavaScript 对象 - 纯 Go 实现
-func createOrderedObject(obj map[string]interface{}, keyOrder []string, runtime *goja.Runtime) goja.Value {
-	// 使用 goja 原生 API 创建对象
-	result := runtime.NewObject()
-	added := make(map[string]bool)
-
-	// 按照 keyOrder 的顺序添加键
-	for _, key := range keyOrder {
-		if value, exists := obj[key]; exists {
-			result.Set(key, runtime.ToValue(value))
-			added[key] = true
-		}
-	}
-
-	// 添加 keyOrder 中没有的键（如果有）
-	for key, value := range obj {
-		if !added[key] {
-			result.Set(key, runtime.ToValue(value))
-		}
-	}
 
 	return result
 }
@@ -763,7 +595,11 @@ func createOrderedObjectWithNested(obj map[string]interface{}, keyOrder []string
 		if len(keys) > 0 {
 			for _, key := range keys {
 				if value, exists := obj[key]; exists {
-					ordered.Set(key, runtime.ToValue(value))
+					if value == nil {
+						ordered.Set(key, goja.Null())
+					} else {
+						ordered.Set(key, runtime.ToValue(value))
+					}
 					added[key] = true
 				}
 			}
@@ -772,7 +608,11 @@ func createOrderedObjectWithNested(obj map[string]interface{}, keyOrder []string
 		// 添加剩余的键
 		for key, value := range obj {
 			if !added[key] {
-				ordered.Set(key, runtime.ToValue(value))
+				if value == nil {
+					ordered.Set(key, goja.Null())
+				} else {
+					ordered.Set(key, runtime.ToValue(value))
+				}
 			}
 		}
 
@@ -793,6 +633,8 @@ func createOrderedObjectWithNested(obj map[string]interface{}, keyOrder []string
 				} else {
 					result.Set(key, runtime.ToValue(value))
 				}
+			} else if value == nil {
+				result.Set(key, goja.Null())
 			} else {
 				result.Set(key, runtime.ToValue(value))
 			}
@@ -809,6 +651,8 @@ func createOrderedObjectWithNested(obj map[string]interface{}, keyOrder []string
 				} else {
 					result.Set(key, runtime.ToValue(value))
 				}
+			} else if value == nil {
+				result.Set(key, goja.Null())
 			} else {
 				result.Set(key, runtime.ToValue(value))
 			}
@@ -865,14 +709,23 @@ func parseValues(str string, opts *ParseOptions) (*OrderedMap, error) {
 		// 使用字符串分割
 		delimiter := opts.Delimiter
 		if delimiter == "" {
-			delimiter = "&"
+			// 空分隔符：按每个字符分割（与 Node.js qs 行为一致）
+			parts = strings.Split(str, "")
+		} else {
+			parts = strings.Split(str, delimiter)
 		}
-		parts = strings.Split(str, delimiter)
 	}
 
 	limit := opts.ParameterLimit
+	// 注意：parameterLimit: 0 表示不解析任何参数，而不是使用默认值
+	// 这与 Node.js qs 行为一致
+	if limit < 0 {
+		limit = 1000 // 负数使用默认值
+	}
+
+	// parameterLimit: 0 的特殊处理（不解析任何参数）
 	if limit == 0 {
-		limit = 1000
+		return obj, nil
 	}
 
 	// 检查参数数量限制
@@ -911,18 +764,21 @@ func parseValues(str string, opts *ParseOptions) (*OrderedMap, error) {
 			pos = bracketEqualsPos + 1
 		}
 
-		var key, val string
+		var key string
+		var val interface{}
 		if pos == -1 {
 			// 没有等号，整个是键
-			key = decodeComponent(part, charset, opts)
+			keyDecoded := decodeComponent(part, charset, opts, "key")
+			key = fmt.Sprint(keyDecoded) // 确保 key 是字符串
 			if opts.StrictNullHandling {
-				val = "" // 会被处理为 null
+				val = nil // strictNullHandling: 无值的键设为 null
 			} else {
 				val = ""
 			}
 		} else {
 			// 有等号，分离键和值
-			key = decodeComponent(part[:pos], charset, opts)
+			keyDecoded := decodeComponent(part[:pos], charset, opts, "key")
+			key = fmt.Sprint(keyDecoded) // 确保 key 是字符串
 			valPart := part[pos+1:]
 
 			// 处理逗号分隔的值
@@ -931,19 +787,20 @@ func parseValues(str string, opts *ParseOptions) (*OrderedMap, error) {
 				valParts := strings.Split(valPart, ",")
 				decodedVals := make([]interface{}, len(valParts))
 				for j, v := range valParts {
-					decodedVals[j] = decodeComponent(v, charset, opts)
+					decodedVals[j] = decodeComponent(v, charset, opts, "value")
 				}
-				val = "" // 会被后续处理为数组
-				obj.Set(key, decodedVals)
-				continue
+				val = decodedVals
+			} else {
+				// 正常解码单个值
+				val = decodeComponent(valPart, charset, opts, "value")
 			}
-
-			val = decodeComponent(valPart, charset, opts)
 		}
 
-		// 处理数字实体
+		// 处理数字实体（仅对字符串值）
 		if opts.InterpretNumericEntities && charset == "iso-8859-1" {
-			val = InterpretNumericEntities(val)
+			if valStr, ok := val.(string); ok {
+				val = InterpretNumericEntities(valStr)
+			}
 		}
 
 		// 检查是否是数组符号 []=
@@ -982,12 +839,9 @@ func parseKeys(givenKey string, val interface{}, opts *ParseOptions, valuesParse
 		return nil
 	}
 
-	// 转换点号表示法为方括号表示法
+	// 注意: 如果 allowDots=true, 键已经在 parseQueryString 中转换过了
+	// 这里直接使用转换后的键
 	key := givenKey
-	if opts.AllowDots {
-		// a.b.c => a[b][c]（使用包级正则表达式，避免重复编译）
-		key = dotNotationRegex.ReplaceAllString(key, "[$1]")
-	}
 
 	// 检查 depth 设置
 	// - depth=-1: depth=false，与 depth=0 行为相同
@@ -1043,6 +897,12 @@ func parseKeys(givenKey string, val interface{}, opts *ParseOptions, valuesParse
 		}
 
 		// 检查原型污染
+		// 安全检查：确保 match 至少有 2 个字符（[和]）
+		if len(match) < 2 {
+			// 无效的 match，跳过
+			continue
+		}
+
 		innerKey := match[1 : len(match)-1]
 		if !opts.PlainObjects && isPrototypeKey(innerKey) {
 			if !opts.AllowPrototypes {
@@ -1104,14 +964,32 @@ func parseObject(chain []string, val interface{}, opts *ParseOptions, valuesPars
 				cleanRoot = root[1 : len(root)-1]
 			}
 
-			// 处理 decodeDotInKeys
+			// decodeDotInKeys: 在这个阶段替换 %2E 为 .
+			// 这是 Node.js qs 的行为（见 lib/parse.js 第162行）
+			// 这样做的好处是：双重编码的点号（%252E → %2E）会被替换为字面点号，
+			// 而不会被 allowDots 用于嵌套（因为 allowDots 的转换在 parseKeys 开始时就完成了）
+			decodedRoot := cleanRoot
 			if opts.DecodeDotInKeys {
-				cleanRoot = strings.ReplaceAll(cleanRoot, "%2E", ".")
+				decodedRoot = strings.ReplaceAll(cleanRoot, "%2E", ".")
+				decodedRoot = strings.ReplaceAll(decodedRoot, "%2e", ".")
 			}
 
-			// 尝试解析为数组索引
-			index, err := strconv.Atoi(cleanRoot)
-			if err == nil && root != cleanRoot && strconv.Itoa(index) == cleanRoot && index >= 0 {
+			// 尝试解析为数组索引（使用 decodedRoot）
+			index, err := strconv.Atoi(decodedRoot)
+			// 判断是否为有效数组索引：
+			// 1. 能够解析为整数
+			// 2. 在方括号内（root != cleanRoot）
+			// 3. 转换回字符串后完全一致（排除前导零如 "001"）
+			// 4. 非负数
+			isValidArrayIndex := err == nil && root != cleanRoot && strconv.Itoa(index) == decodedRoot && index >= 0
+
+			// 额外检查：如果有前导零，不应该被当作数组索引
+			// 例如：a[001]=value 应该变成 { a: { "001": "value" } } 而不是数组
+			if isValidArrayIndex && len(decodedRoot) > 1 && decodedRoot[0] == '0' {
+				isValidArrayIndex = false
+			}
+
+			if isValidArrayIndex {
 				// 是数组索引
 				arrayLimit := opts.ArrayLimit
 				if arrayLimit == 0 {
@@ -1123,15 +1001,15 @@ func parseObject(chain []string, val interface{}, opts *ParseOptions, valuesPars
 					newObj[strconv.Itoa(index)] = leaf
 					obj = newObj
 				} else {
-					newObj[cleanRoot] = leaf
+					newObj[decodedRoot] = leaf
 					obj = newObj
 				}
-			} else if cleanRoot != "__proto__" {
+			} else if decodedRoot != "__proto__" {
 				// 普通键
-				if cleanRoot == "" && !opts.ParseArrays {
+				if decodedRoot == "" && !opts.ParseArrays {
 					newObj["0"] = leaf
 				} else {
-					newObj[cleanRoot] = leaf
+					newObj[decodedRoot] = leaf
 				}
 				obj = newObj
 			} else {
@@ -1147,19 +1025,32 @@ func parseObject(chain []string, val interface{}, opts *ParseOptions, valuesPars
 }
 
 // decodeComponent 解码组件（键或值）
-func decodeComponent(str string, charset string, opts *ParseOptions) string {
+// typ: "key" 或 "value"，用于区分解码的是键还是值
+func decodeComponent(str string, charset string, opts *ParseOptions, typ string) interface{} {
 	// 使用自定义解码器（如果有）
 	if opts.Decoder != nil {
 		defaultDecoder := func(s string) string {
 			return Decode(s, charset)
 		}
-		decoded, err := opts.Decoder(str, defaultDecoder, charset, "value")
-		if err == nil {
-			return decoded
+		decoded, err := opts.Decoder(str, defaultDecoder, charset, typ)
+		if err != nil {
+			// decoder 抛错，传播错误（通过 panic，因为这是 JS 异常）
+			panic(err)
 		}
+		// 根据类型处理 undefined 和 null
+		if decoded == "undefined" || decoded == "null" {
+			if typ == "value" {
+				// 值：返回实际的 nil（对应 JavaScript 的 null/undefined）
+				return nil
+			}
+			// 键：返回字符串 "undefined" 或 "null"
+		}
+		return decoded
 	}
 
 	// 默认解码
+	// 注意：decodeDotInKeys 的处理在 parseObject 中的 cleanRoot 阶段，不在这里！
+	// 这样可以确保双重编码的点号不会被用于嵌套
 	return Decode(str, charset)
 }
 
@@ -1210,8 +1101,20 @@ func extractParseOptionsFromJS(optionsArg goja.Value, runtime *goja.Runtime) *Pa
 		opts.ArrayLimit = int(v.ToInteger())
 	}
 
+	// 先提取 decodeDotInKeys，因为它会影响 allowDots 的默认值
+	decodeDotInKeysSet := false
+	if v := getValue(optionsObj, "decodeDotInKeys"); !goja.IsUndefined(v) {
+		opts.DecodeDotInKeys = v.ToBoolean()
+		decodeDotInKeysSet = true
+	}
+
+	// 提取 allowDots（注意：受 decodeDotInKeys 影响）
+	// 如果没有明确设置 allowDots，且 decodeDotInKeys=true，则 allowDots=true
 	if v := getValue(optionsObj, "allowDots"); !goja.IsUndefined(v) {
 		opts.AllowDots = v.ToBoolean()
+	} else if decodeDotInKeysSet && opts.DecodeDotInKeys {
+		// 与 Node.js qs 行为一致：decodeDotInKeys=true 时，自动启用 allowDots
+		opts.AllowDots = true
 	}
 
 	if v := getValue(optionsObj, "allowPrototypes"); !goja.IsUndefined(v) {
@@ -1236,10 +1139,6 @@ func extractParseOptionsFromJS(optionsArg goja.Value, runtime *goja.Runtime) *Pa
 
 	if v := getValue(optionsObj, "comma"); !goja.IsUndefined(v) {
 		opts.Comma = v.ToBoolean()
-	}
-
-	if v := getValue(optionsObj, "decodeDotInKeys"); !goja.IsUndefined(v) {
-		opts.DecodeDotInKeys = v.ToBoolean()
 	}
 
 	if v := getStringValue(optionsObj, "duplicates", ""); v != "" {
@@ -1301,11 +1200,16 @@ func extractParseOptionsFromJS(optionsArg goja.Value, runtime *goja.Runtime) *Pa
 				)
 
 				if err != nil {
-					return str, err
+					// decoder 抛错，向上传播错误
+					return "", err
 				}
 
-				if goja.IsUndefined(result) || goja.IsNull(result) {
-					return str, nil
+				// 处理 undefined 和 null：转换为字符串 "undefined" 和 "null"
+				if goja.IsUndefined(result) {
+					return "undefined", nil
+				}
+				if goja.IsNull(result) {
+					return "null", nil
 				}
 
 				return result.String(), nil

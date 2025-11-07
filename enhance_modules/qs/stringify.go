@@ -2,6 +2,7 @@ package qs
 
 import (
 	"fmt"
+	"math/big"
 	"reflect"
 	"sort"
 	"strconv"
@@ -42,16 +43,16 @@ func Stringify(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		opts = extractStringifyOptionsFromJS(call.Argument(1), runtime)
 	}
 
-	// 3. 导出为 Go 值，同时提取键的顺序
+	// 3. 获取 JavaScript 对象并提取键的顺序
 	objValue := arg.ToObject(runtime)
 	if objValue == nil {
 		return runtime.ToValue("")
 	}
 
 	// 提取键的顺序
-	keyOrder := extractObjectKeys(objValue, runtime)
+	keyOrder := extractObjectKeys(objValue)
 
-	// 导出为 Go 值
+	// 导出为 Go 值（用于类型检查和 filter）
 	obj := arg.Export()
 
 	// 类型检查
@@ -60,6 +61,7 @@ func Stringify(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	}
 
 	// 4. 应用 filter（如果是函数）
+	// 注意：filter 可能修改对象结构，但我们仍然优先使用 gojaObj 获取值
 	if opts.Filter != nil {
 		if filterFunc, ok := opts.Filter.(func(string, interface{}) interface{}); ok {
 			obj = filterFunc("", obj)
@@ -69,19 +71,14 @@ func Stringify(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		}
 	}
 
-	// 5. 执行序列化（传递键顺序和原始 Goja 对象）
+	// 5. 执行序列化（传递原始 Goja 对象和 Export 的备用值）
 	result, err := stringifyObjectWithOrder(obj, keyOrder, opts, runtime, objValue)
 	if err != nil {
 		panic(makeError(runtime, "qs.stringify() failed: %v", err))
 	}
 
-	// 6. 添加查询前缀
-	if opts.AddQueryPrefix && result != "" {
-		result = "?" + result
-	}
-
-	// 7. 添加字符集标识
-	if opts.CharsetSentinel {
+	// 6. 添加字符集标识（只在结果非空时添加）
+	if opts.CharsetSentinel && result != "" {
 		prefix := ""
 		if opts.Charset == "iso-8859-1" {
 			prefix = "utf8=%26%2310003%3B&"
@@ -91,11 +88,16 @@ func Stringify(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		result = prefix + result
 	}
 
+	// 7. 添加查询前缀（在 charsetSentinel 之后，因为 ? 应该在最前面）
+	if opts.AddQueryPrefix && result != "" {
+		result = "?" + result
+	}
+
 	return runtime.ToValue(result)
 }
 
 // extractObjectKeys 从 JavaScript 对象提取键的顺序 - 纯 Go 实现
-func extractObjectKeys(obj *goja.Object, runtime *goja.Runtime) []string {
+func extractObjectKeys(obj *goja.Object) []string {
 	if obj == nil {
 		return nil
 	}
@@ -113,21 +115,24 @@ func stringifyObjectWithOrder(obj interface{}, keyOrder []string, opts *Stringif
 		objMap := make(map[string]interface{})
 		arrKeys := []string{}
 
-		// 如果 allowSparse 且有 gojaObj，检查哪些索引真正存在
-		if opts.AllowSparse && gojaObj != nil {
+		// 检查哪些索引真正存在（跳过 undefined）
+		if gojaObj != nil {
 			// 使用 goja 原生 API 检查索引是否真正存在
 			// 直接遍历对象的数字键，而不是遍历 arr
-			// 优化：缓存 Keys() 结果，避免多次调用
 			keys := gojaObj.Keys()
 			for _, k := range keys {
 				// 检查是否是数字键
 				if idx, err := strconv.Atoi(k); err == nil && idx >= 0 && idx < len(arr) {
-					objMap[k] = arr[idx]
-					arrKeys = append(arrKeys, k)
+					// 检查该索引的值是否为 undefined
+					elemVal := gojaObj.Get(k)
+					if !goja.IsUndefined(elemVal) {
+						objMap[k] = arr[idx]
+						arrKeys = append(arrKeys, k)
+					}
 				}
 			}
 		} else {
-			// 普通模式或没有 gojaObj，序列化所有元素
+			// 没有 gojaObj，序列化所有元素
 			arrKeys = make([]string, len(arr))
 			for i, item := range arr {
 				key := strconv.Itoa(i)
@@ -176,16 +181,23 @@ func stringifyObjectWithOrder(obj interface{}, keyOrder []string, opts *Stringif
 	sideChannel := newSideChannel()
 
 	for _, key := range objKeys {
-		value, exists := objMap[key]
-		if !exists {
-			continue
-		}
-
-		// 从 Goja 对象检测 undefined（如果可用）
+		// 优先从 gojaObj 获取值（处理 BigInt、Buffer 等特殊类型）
 		var propGojaVal goja.Value
+		var value interface{}
+		var exists bool
+
 		if gojaObj != nil {
 			propGojaVal = gojaObj.Get(key)
 			if goja.IsUndefined(propGojaVal) {
+				continue
+			}
+			// Export值用于常规处理，但传递 gojaValue 用于特殊类型检测
+			value = propGojaVal.Export()
+			exists = true
+		} else {
+			// 没有 gojaObj，从 objMap 获取
+			value, exists = objMap[key]
+			if !exists {
 				continue
 			}
 		}
@@ -209,9 +221,9 @@ func stringifyObjectWithOrder(obj interface{}, keyOrder []string, opts *Stringif
 			}
 		}
 
-		// 序列化值（传递 Goja 对象用于嵌套的 undefined 检测）
+		// 序列化值（传递 Goja 对象用于特殊类型检测）
 		var serialized []string
-		if !goja.IsUndefined(propGojaVal) && !goja.IsNull(propGojaVal) {
+		if gojaObj != nil && !goja.IsUndefined(propGojaVal) && !goja.IsNull(propGojaVal) {
 			serialized = stringifyValue(
 				value,
 				key,
@@ -235,13 +247,8 @@ func stringifyObjectWithOrder(obj interface{}, keyOrder []string, opts *Stringif
 		keys = append(keys, serialized...)
 	}
 
-	// 使用分隔符连接
-	delimiter := opts.Delimiter
-	if delimiter == "" {
-		delimiter = "&"
-	}
-
-	return strings.Join(keys, delimiter), nil
+	// 使用分隔符连接（允许空字符串，与 qs 原生一致）
+	return strings.Join(keys, opts.Delimiter), nil
 }
 
 // stringifyValue 序列化单个值
@@ -262,27 +269,105 @@ func stringifyValue(
 		return []string{}
 	}
 
+	// 如果 obj 是 nil 但有 gojaValue，使用 gojaValue 导出
+	if obj == nil && len(gojaValue) > 0 && !goja.IsNull(gojaValue[0]) {
+		obj = gojaValue[0].Export()
+	}
+
 	// 应用 filter 函数
+	filterApplied := false
 	if filterFunc, ok := opts.Filter.(func(string, interface{}) interface{}); ok {
 		obj = filterFunc(prefix, obj)
+		filterApplied = true
 		// 如果 filter 返回 skipMarker，跳过此键
 		if _, isSkip := obj.(*skipValue); isSkip {
 			return []string{}
 		}
 	}
 
-	// 处理 Date 对象
-	// 优先检查 JavaScript Date 对象（如果有 gojaValue）
+	// 处理特殊 JavaScript 对象（Date、BigInt、Buffer、Symbol 等）
+	// 注意：如果 filter 已经修改了值，就不再进行特殊类型检测（使用修改后的值）
+	// 优先检查 JavaScript 对象（如果有 gojaValue）- 完全基于 gojaValue 处理，不依赖 Export
 	isDateProcessed := false
-	if len(gojaValue) > 0 && !goja.IsNull(gojaValue[0]) {
-		// 确保不是 null 或 undefined 才调用 ToObject
-		if gojaObj := gojaValue[0].ToObject(runtime); gojaObj != nil {
-			if className := gojaObj.ClassName(); className == "Date" {
-				// 这是一个 Date 对象
+	if !filterApplied && len(gojaValue) > 0 && !goja.IsNull(gojaValue[0]) {
+		val := gojaValue[0]
+
+		// 获取 JS 类型字符串 - 这是最可靠的方式
+		valStr := val.String()
+
+		// 处理 Symbol 类型 - goja 中 Symbol 的 String() 返回 "Symbol(desc)"
+		if strings.HasPrefix(valStr, "Symbol(") && strings.HasSuffix(valStr, ")") {
+			// Symbol 在 Node.js 中输出完整的 "Symbol(desc)"
+			if opts.Encode {
+				keyValue := prefix
+				if !opts.EncodeValuesOnly {
+					keyValue = encodeKey(prefix, opts)
+				}
+				return []string{formatted(keyValue) + "=" + formatted(encodeValue(valStr, opts))}
+			}
+			return []string{formatted(prefix) + "=" + formatted(valStr)}
+		}
+
+		// 先检查 ExportType 和 String()（不依赖 ToObject）
+		exportType := val.ExportType()
+
+		// 处理 BigInt 类型 - 优先策略（不需要 ToObject）
+		// BigInt 的特征：ExportType 是 int64 且 String() 返回纯数字字符串
+		if exportType != nil && exportType.Kind() == reflect.Int64 {
+			// 验证 valStr 是否为纯数字格式
+			if len(valStr) > 0 && !strings.HasPrefix(valStr, "[") {
+				firstChar := valStr[0]
+				isNumeric := (firstChar >= '0' && firstChar <= '9') ||
+					(firstChar == '-' && len(valStr) > 1)
+
+				if isNumeric {
+					// 这是 BigInt！直接序列化
+					if opts.Encode {
+						keyValue := prefix
+						if !opts.EncodeValuesOnly {
+							keyValue = encodeKey(prefix, opts)
+						}
+						return []string{formatted(keyValue) + "=" + formatted(encodeValue(valStr, opts))}
+					}
+					return []string{formatted(prefix) + "=" + formatted(valStr)}
+				}
+			}
+		}
+
+		// 尝试转换为对象以处理 Buffer 和 Date
+		gojaObj := val.ToObject(runtime)
+		if gojaObj != nil {
+			className := gojaObj.ClassName()
+
+			// 处理 Buffer - 通过 className 判断
+			if className == "Buffer" || className == "Uint8Array" || className == "ArrayBuffer" {
+				// Buffer.toString() 返回字符串内容
+				if toStringFunc := gojaObj.Get("toString"); isFunction(toStringFunc) {
+					if toStringFn, ok := goja.AssertFunction(toStringFunc); ok {
+						if result, err := toStringFn(gojaObj); err == nil {
+							bufferStr := result.String()
+							// 排除默认的 "[object Object]" 等
+							if bufferStr != "" && !strings.HasPrefix(bufferStr, "[object ") {
+								// 作为基本类型字符串处理（与 Node.js 对齐）
+								if opts.Encode {
+									keyValue := prefix
+									if !opts.EncodeValuesOnly {
+										keyValue = encodeKey(prefix, opts)
+									}
+									return []string{formatted(keyValue) + "=" + formatted(encodeValue(bufferStr, opts))}
+								}
+								return []string{formatted(prefix) + "=" + formatted(bufferStr)}
+							}
+						}
+					}
+				}
+			}
+
+			// 处理 Date 对象
+			if className == "Date" {
 				isDateProcessed = true
 				if opts.SerializeDate != nil {
-					// 调用自定义的 serializeDate，传递原始的 JavaScript Date 对象
-					serialized := opts.SerializeDate(gojaValue[0])
+					serialized := opts.SerializeDate(val)
 					obj = serialized
 				} else {
 					// 默认格式化（调用 toISOString）
@@ -322,6 +407,32 @@ func stringifyValue(
 		obj = ""
 	}
 
+	// 处理 *big.Int（BigInt Export 后的类型）
+	if bigInt, ok := obj.(*big.Int); ok && bigInt != nil {
+		bigIntStr := bigInt.String()
+		if opts.Encode {
+			keyValue := prefix
+			if !opts.EncodeValuesOnly {
+				keyValue = encodeKey(prefix, opts)
+			}
+			return []string{formatted(keyValue) + "=" + formatted(encodeValue(bigIntStr, opts))}
+		}
+		return []string{formatted(prefix) + "=" + formatted(bigIntStr)}
+	}
+
+	// 处理 []byte（Buffer Export 后的类型）
+	if byteArray, ok := obj.([]byte); ok && byteArray != nil {
+		bufferStr := string(byteArray)
+		if opts.Encode {
+			keyValue := prefix
+			if !opts.EncodeValuesOnly {
+				keyValue = encodeKey(prefix, opts)
+			}
+			return []string{formatted(keyValue) + "=" + formatted(encodeValue(bufferStr, opts))}
+		}
+		return []string{formatted(prefix) + "=" + formatted(bufferStr)}
+	}
+
 	// 处理基本类型
 	if isPrimitive(obj) {
 		if opts.Encode {
@@ -357,6 +468,11 @@ func stringifyValue(
 	// 处理数组（comma 格式）
 	if generateArrayPrefix == nil && opts.ArrayFormat == "comma" {
 		if arr, ok := obj.([]interface{}); ok {
+			// 空数组返回空字符串
+			if len(arr) == 0 {
+				return []string{}
+			}
+
 			// 编码数组元素（跳过稀疏数组的空洞）
 			strs := []string{}
 
@@ -399,28 +515,40 @@ func stringifyValue(
 				}
 			}
 
-			// 连接为逗号分隔的字符串
-			joined := strings.Join(strs, ",")
+			// 连接为逗号分隔的字符串（逗号需要编码）
+			var joined string
+			if opts.Encode {
+				// 编码逗号为 %2C
+				joined = strings.Join(strs, "%2C")
+			} else {
+				joined = strings.Join(strs, ",")
+			}
+
+			// 处理 commaRoundTrip：单元素数组应该添加 [] 后缀
+			adjustedPrefix := prefix
+			if opts.CommaRoundTrip && len(strs) == 1 {
+				adjustedPrefix = prefix + "[]"
+			}
 
 			// 直接返回结果，不再递归处理
 			if opts.Encode && !opts.EncodeValuesOnly {
-				encodedPrefix := encodeKey(prefix, opts)
+				encodedPrefix := encodeKey(adjustedPrefix, opts)
 				return []string{formatted(encodedPrefix) + "=" + formatted(joined)}
 			}
-			return []string{formatted(prefix) + "=" + formatted(joined)}
+			return []string{formatted(adjustedPrefix) + "=" + formatted(joined)}
 		}
 	}
 
 	// 处理 filter 数组
 	if filterArray, ok := opts.Filter.([]string); ok {
 		objKeys = filterArray
-	} else if objKeys == nil {
+	} else {
 		// 获取对象键
 		if objMap, ok := obj.(map[string]interface{}); ok {
 			// 如果有 Goja 对象，从它提取键顺序（保持 JavaScript 对象的键顺序）
 			if len(gojaValue) > 0 && !goja.IsUndefined(gojaValue[0]) && !goja.IsNull(gojaValue[0]) {
 				if gojaObj := gojaValue[0].ToObject(runtime); gojaObj != nil {
-					objKeys = extractObjectKeys(gojaObj, runtime)
+					objKeys = extractObjectKeys(gojaObj)
 				}
 			}
 			// 如果没有 Goja 对象或提取失败，使用 Go map 的键（可能是随机顺序）
@@ -428,17 +556,20 @@ func stringifyValue(
 				objKeys = GetKeys(objMap)
 			}
 		} else if arr, ok := obj.([]interface{}); ok {
-			// 如果 allowSparse 且有 gojaValue，只包含存在的索引
-			if opts.AllowSparse && len(gojaValue) > 0 && !goja.IsUndefined(gojaValue[0]) && !goja.IsNull(gojaValue[0]) {
+			// 检查哪些索引真正存在（跳过 undefined）
+			if len(gojaValue) > 0 && !goja.IsUndefined(gojaValue[0]) && !goja.IsNull(gojaValue[0]) {
 				if gojaArr := gojaValue[0].ToObject(runtime); gojaArr != nil {
 					// 使用 goja 原生 API 检查索引是否真正存在
 					// 直接使用对象的数字键
-					// 优化：缓存 Keys() 结果
 					keys := gojaArr.Keys()
 					objKeys = make([]string, 0, len(keys))
 					for _, k := range keys {
 						if idx, err := strconv.Atoi(k); err == nil && idx >= 0 && idx < len(arr) {
-							objKeys = append(objKeys, k)
+							// 检查该索引的值是否为 undefined
+							elemVal := gojaArr.Get(k)
+							if !goja.IsUndefined(elemVal) {
+								objKeys = append(objKeys, k)
+							}
 						}
 					}
 				} else {
@@ -449,7 +580,7 @@ func stringifyValue(
 					}
 				}
 			} else {
-				// 普通模式：包含所有索引
+				// 没有 gojaValue：包含所有索引
 				objKeys = make([]string, len(arr))
 				for i := range arr {
 					objKeys[i] = fmt.Sprintf("%d", i)
@@ -496,6 +627,10 @@ func stringifyValue(
 			if len(gojaValue) > 0 && !goja.IsUndefined(gojaValue[0]) && !goja.IsNull(gojaValue[0]) {
 				if gojaObj := gojaValue[0].ToObject(runtime); gojaObj != nil {
 					elemGojaValue = gojaObj.Get(key)
+					// 跳过 undefined 值
+					if goja.IsUndefined(elemGojaValue) {
+						continue
+					}
 				}
 			}
 		} else if arr, ok := obj.([]interface{}); ok {
@@ -838,8 +973,9 @@ func extractStringifyOptionsFromJS(optionsArg goja.Value, runtime *goja.Runtime)
 		opts.CommaRoundTrip = v.ToBoolean()
 	}
 
-	if v := getStringValue(optionsObj, "delimiter", ""); v != "" {
-		opts.Delimiter = v
+	// delimiter 允许空字符串，需要显式检查是否存在
+	if delimiterVal := getValue(optionsObj, "delimiter"); !goja.IsUndefined(delimiterVal) {
+		opts.Delimiter = delimiterVal.String()
 	}
 
 	if v := getValue(optionsObj, "encode"); !goja.IsUndefined(v) {
@@ -855,6 +991,10 @@ func extractStringifyOptionsFromJS(optionsArg goja.Value, runtime *goja.Runtime)
 	}
 
 	if v := getStringValue(optionsObj, "format", ""); v != "" {
+		// 验证 format 值
+		if v != "RFC1738" && v != "RFC3986" {
+			panic(makeError(runtime, "Unknown format option provided."))
+		}
 		opts.Format = v
 	}
 
@@ -878,8 +1018,12 @@ func extractStringifyOptionsFromJS(optionsArg goja.Value, runtime *goja.Runtime)
 		opts.StrictNullHandling = v.ToBoolean()
 	}
 
-	// 自定义编码器
-	if encoderVal := getValue(optionsObj, "encoder"); isFunction(encoderVal) {
+	// 自定义编码器 - 严格类型检查
+	if encoderVal := getValue(optionsObj, "encoder"); !goja.IsUndefined(encoderVal) {
+		if !isFunction(encoderVal) {
+			// qs v6.14.0: 当 encoder 不是函数时抛出错误
+			panic(runtime.NewTypeError("Encoder has to be a function."))
+		}
 		encoderFunc, ok := goja.AssertFunction(encoderVal)
 		if ok {
 			opts.Encoder = func(str string, defaultEncoder func(string) string, charset string, typ string, format string) string {
