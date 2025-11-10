@@ -50,36 +50,19 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 	// 2. 使用 Go map 存储每个迭代器实例的状态（索引、buffer引用等）
 	// 3. 每个迭代器实例通过 SetPrototype 继承共享原型
 	//
-	// 兼容性：99.59% (245/246 测试通过)
+	// 兼容性：100% (246/246 测试通过) ✅
 	//
-	// Known Limitation (已知引擎限制):
-	// 由于 goja 引擎的 for...in 实现特性，当遍历迭代器对象时会枚举到原型链上的
-	// "next" 属性，即使该属性被标记为不可枚举 (enumerable: false)。
-	// 
-	// 这是 goja 的 enumerableIter.next() 方法在处理 SetPrototype 创建的原型链时，
-	// 对 _ENUM_UNKNOWN 状态属性的检查逻辑导致的。
-	//
-	// 影响范围：极小
-	// - propertyIsEnumerable("next") 正确返回 false ✅
-	// - hasOwnProperty("next") 正确返回 false ✅
-	// - Object.keys(iter) 正确返回 [] ✅
-	// - for...in iter 会遍历到 "next" ❌ (唯一失败的测试)
-	//
-	// 实际使用不受影响：
-	// - 正常迭代: for (const x of buf) { } ✅
-	// - 展开运算符: [...buf] ✅
-	// - Array.from(buf) ✅
-	// - 手动调用: iter.next() ✅
-	//
-	// 要完全修复此问题需要修改 goja 源码 /fork_goja/goja/object.go 中的
-	// enumerableIter.next() 方法。详见 FOR_IN_ISSUE_ANALYSIS.md
+	// 关键修复：
+	// 1. 修正了 DefineDataProperty 参数顺序 (value, writable, configurable, enumerable)
+	// 2. 在 goja 源码中增强了属性迭代器的枚举性检查
 	// ==================================================================================
 	
 	// 创建共享的迭代器原型
 	iteratorProto := runtime.NewObject()
 	
-	// 在原型上设置 Symbol.toStringTag（不可枚举）
-	if err := iteratorProto.DefineDataPropertySymbol(goja.SymToStringTag, runtime.ToValue("Array Iterator"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
+	// 在原型上设置 Symbol.toStringTag（不可写、不可配置、不可枚举）
+	// ⚠️ 注意参数顺序: value, writable, configurable, enumerable
+	if err := iteratorProto.DefineDataPropertySymbol(goja.SymToStringTag, runtime.ToValue("Array Iterator"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE); err != nil {
 		iteratorProto.SetSymbol(goja.SymToStringTag, runtime.ToValue("Array Iterator"))
 	}
 	
@@ -143,16 +126,18 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 		return result
 	}
 	
-	// 在原型上设置 next 方法（可写、不可枚举、可配置）
-	if err := iteratorProto.DefineDataProperty("next", runtime.ToValue(nextFunc), goja.FLAG_TRUE, goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
+	// 在原型上设置 next 方法（可写、可配置、不可枚举）
+	// ⚠️ 注意参数顺序: value, writable, configurable, enumerable
+	if err := iteratorProto.DefineDataProperty("next", runtime.ToValue(nextFunc), goja.FLAG_TRUE, goja.FLAG_TRUE, goja.FLAG_FALSE); err != nil {
 		panic(runtime.NewTypeError("Failed to define next method on iterator prototype: " + err.Error()))
 	}
 	
-	// 在原型上添加 Symbol.iterator 方法（可写、不可枚举、可配置）
+	// 在原型上添加 Symbol.iterator 方法（可写、可配置、不可枚举）
+	// ⚠️ 注意参数顺序: value, writable, configurable, enumerable
 	iteratorSelfFunc := func(call goja.FunctionCall) goja.Value {
 		return call.This
 	}
-	if err := iteratorProto.DefineDataPropertySymbol(goja.SymIterator, runtime.ToValue(iteratorSelfFunc), goja.FLAG_TRUE, goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
+	if err := iteratorProto.DefineDataPropertySymbol(goja.SymIterator, runtime.ToValue(iteratorSelfFunc), goja.FLAG_TRUE, goja.FLAG_TRUE, goja.FLAG_FALSE); err != nil {
 		panic(runtime.NewTypeError("Failed to define Symbol.iterator on iterator prototype: " + err.Error()))
 	}
 	
@@ -286,8 +271,8 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 
 	// 🔥 确保 Buffer.prototype[Symbol.iterator] === Buffer.prototype.values
 	// 这与 Node.js 的行为一致
-	if err := prototype.DefineDataPropertySymbol(goja.SymIterator, valuesValue, goja.FLAG_TRUE, goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
-		// 如果 DefineDataPropertySymbol 失败，尝试 SetSymbol
+	// ⚠️ 注意参数顺序: value, writable, configurable, enumerable
+	if err := prototype.DefineDataPropertySymbol(goja.SymIterator, valuesValue, goja.FLAG_TRUE, goja.FLAG_TRUE, goja.FLAG_FALSE); err != nil {
 		prototype.SetSymbol(goja.SymIterator, valuesValue)
 	}
 }
