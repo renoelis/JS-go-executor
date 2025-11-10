@@ -1,7 +1,6 @@
 package buffer
 
 import (
-	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -24,13 +23,17 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		return
 	}
 
+	// 注意：不再包装 Buffer 构造函数，因为会影响 Buffer.alloc 的 fill 参数处理
+	// typedArrayCreate 中已经添加了对 Buffer.alloc 的支持，足以处理 Uint8Array.prototype.slice 等场景
+	// be.wrapBufferConstructor(runtime, buffer)
+
 	// 保存原始的 Buffer.from 方法
 	originalFrom := buffer.Get("from")
 
 	// 覆盖 Buffer.from 静态方法，支持编码参数
 	buffer.Set("from", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("Buffer.from 需要至少 1 个参数"))
+			panic(runtime.NewTypeError("The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object. Received undefined"))
 		}
 
 		arg0 := call.Arguments[0]
@@ -58,7 +61,8 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 
 			switch encoding {
 			case "hex":
-				decoded, err := hex.DecodeString(str)
+				// 🔥 修复：使用宽松的 hex 解码，处理奇数长度字符串
+				decoded, err := decodeHexLenient(str)
 				if err != nil {
 					panic(runtime.NewTypeError("无效的十六进制字符串"))
 				}
@@ -166,8 +170,19 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 						// 如果有第三个参数（length），也需要检查
 						if len(call.Arguments) >= 3 && !goja.IsUndefined(call.Arguments[2]) {
 							length := call.Arguments[2].ToInteger()
-							if offset+length > bufferLen {
-								panic(runtime.NewTypeError(fmt.Sprintf("Invalid length %d", length)))
+							// 负数 length 被视为 0，直接返回空 Buffer
+							if length < 0 {
+								// 创建空 Buffer
+								allocFunc, ok := goja.AssertFunction(buffer.Get("alloc"))
+								if ok {
+									result, err := allocFunc(buffer, runtime.ToValue(0))
+									if err == nil {
+										return result
+									}
+								}
+							}
+							if offset+int64(length) > bufferLen {
+								panic(runtime.NewTypeError("\"length\" is outside of buffer bounds"))
 							}
 						}
 					}
@@ -724,8 +739,8 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 	// 默认值：8192 (8KB)
 	buffer.Set("poolSize", runtime.ToValue(8192))
 
-	// 🔥 性能优化：使用优化的 Buffer.alloc 实现
-	SetupOptimizedBufferAlloc(runtime)
+	// 🔥 性能优化：使用优化的 Buffer.alloc 实现（带 Buffer 池）
+	SetupOptimizedBufferAlloc(runtime, be.pool)
 
 	// 为Buffer原型添加扩展方法
 	be.enhanceBufferPrototype(runtime)
@@ -779,15 +794,14 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 	be.addBigIntReadWriteMethods(runtime, prototype)
 }
 
-
 // 注：以下功能已移除，因为 goja 已原生支持或已在源码中修复：
 
 // polyfillTypedArrayFeatures 为 TypedArray 添加缺失的功能
 // 添加 Uint8Array.from() 和 Uint8Array.of() 静态方法（Node.js v25.0.0 标准）
 // 性能影响：仅在初始化时执行一次，运行时零开销
 func (be *BufferEnhancer) polyfillTypedArrayFeatures(runtime *goja.Runtime) {
-// 注入 JavaScript polyfill 代码
-polyfillCode := `
+	// 注入 JavaScript polyfill 代码
+	polyfillCode := `
 (function() {
 'use strict';
 
@@ -869,11 +883,145 @@ return result;
 })();
 `
 
-// 执行 polyfill 代码
-_, err := runtime.RunString(polyfillCode)
-if err != nil {
-// 如果 polyfill 失败，静默忽略（保持向后兼容）
-// 在生产环境中，应该使用日志系统记录
-_ = err
+	// 执行 polyfill 代码
+	_, err := runtime.RunString(polyfillCode)
+	if err != nil {
+		// 如果 polyfill 失败，静默忽略（保持向后兼容）
+		// 在生产环境中，应该使用日志系统记录
+		_ = err
+	}
+	
+	// 🔥 修复：添加 util.inspect 支持
+	be.setupUtilInspect(runtime)
 }
+
+// wrapBufferConstructor 包装 Buffer 构造函数，支持数字参数
+func (be *BufferEnhancer) wrapBufferConstructor(runtime *goja.Runtime, originalBuffer *goja.Object) {
+	// 创建新的构造函数
+	newConstructor := func(call goja.ConstructorCall) *goja.Object {
+		// 如果只有一个参数且是数字，调用 Buffer.alloc
+		if len(call.Arguments) == 1 {
+			arg := call.Arguments[0]
+			if !goja.IsUndefined(arg) && !goja.IsNull(arg) {
+				// 检查是否是数字类型
+				exported := arg.Export()
+				var size int64
+				switch v := exported.(type) {
+				case int64:
+					size = v
+				case float64:
+					size = int64(v)
+				case int:
+					size = int64(v)
+				case int32:
+					size = int64(v)
+				case uint32:
+					size = int64(v)
+				default:
+					// 不是数字，抛出错误
+					panic(runtime.NewTypeError("Buffer constructor is deprecated. Use Buffer.alloc(), Buffer.allocUnsafe() or Buffer.from() instead"))
+				}
+				
+				// 调用 Buffer.alloc
+				allocFunc, ok := goja.AssertFunction(originalBuffer.Get("alloc"))
+				if ok {
+					result, err := allocFunc(goja.Undefined(), runtime.ToValue(size))
+					if err != nil {
+						panic(err)
+					}
+					return result.ToObject(runtime)
+				}
+			}
+		}
+		
+		// 对于其他情况，抛出友好错误
+		panic(runtime.NewTypeError("Buffer constructor is deprecated. Use Buffer.alloc(), Buffer.allocUnsafe() or Buffer.from() instead"))
+	}
+	
+	// 将新构造函数转换为对象
+	newBufferValue := runtime.ToValue(newConstructor)
+	newBufferObj := newBufferValue.ToObject(runtime)
+	
+	// 复制所有静态方法和属性
+	for _, key := range originalBuffer.Keys() {
+		val := originalBuffer.Get(key)
+		newBufferObj.Set(key, val)
+	}
+	
+	// 设置 prototype
+	newBufferObj.Set("prototype", originalBuffer.Get("prototype"))
+	
+	// 保留 name 属性
+	newBufferObj.Set("name", runtime.ToValue("Buffer"))
+	
+	// 替换全局 Buffer
+	runtime.Set("Buffer", newBufferObj)
+}
+
+// setupUtilInspect 添加 util.inspect 方法支持
+func (be *BufferEnhancer) setupUtilInspect(runtime *goja.Runtime) {
+	// 方法1: 修改全局 util
+	utilModule := runtime.Get("util")
+	var utilObj *goja.Object
+	
+	if utilModule == nil || goja.IsUndefined(utilModule) {
+		utilObj = runtime.NewObject()
+		runtime.Set("util", utilObj)
+	} else {
+		utilObj = utilModule.ToObject(runtime)
+	}
+	
+	// 创建 inspect 函数
+	inspectFunc := func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			return runtime.ToValue("undefined")
+		}
+		
+		obj := call.Arguments[0]
+		
+		// 检查对象是否有自定义的 inspect 方法
+		if objVal := obj.ToObject(runtime); objVal != nil {
+			if inspectMethod := objVal.Get("inspect"); !goja.IsUndefined(inspectMethod) {
+				if fn, ok := goja.AssertFunction(inspectMethod); ok {
+					result, err := fn(obj)
+					if err == nil {
+						return result
+					}
+				}
+			}
+		}
+		
+		// 默认实现：转换为字符串
+		exported := obj.Export()
+		if exported == nil {
+			return runtime.ToValue("null")
+		}
+		
+		return runtime.ToValue(fmt.Sprintf("%v", exported))
+	}
+	
+	// 设置到全局 util（如果存在）
+	if utilObj != nil {
+		utilObj.Set("inspect", inspectFunc)
+	}
+	
+	// 方法2: 通过 JavaScript 注入到 require('util')
+	// 这确保 require('util').inspect 可用
+	polyfillCode := `
+(function() {
+	try {
+		var utilModule = require('util');
+		if (utilModule && typeof utilModule.inspect === 'undefined') {
+			// 从全局 util 复制 inspect 方法
+			var globalUtil = (typeof util !== 'undefined') ? util : {};
+			if (typeof globalUtil.inspect === 'function') {
+				utilModule.inspect = globalUtil.inspect;
+			}
+		}
+	} catch (e) {
+		// 如果 require('util') 失败，静默忽略
+	}
+})();
+`
+	_, _ = runtime.RunString(polyfillCode)
 }
