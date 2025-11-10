@@ -1,0 +1,115 @@
+package buffer
+
+import (
+	"encoding/base64"
+	"strings"
+)
+
+// decodeBase64Lenient 宽松的 base64 解码（Node.js 行为）
+// 允许：空格、换行、有/无 padding，忽略所有非 base64 字符
+func decodeBase64Lenient(str string) ([]byte, error) {
+	// 🔥 修复：移除所有非 base64 字符（Node.js 行为）
+	// 只保留 A-Z, a-z, 0-9, +, /, =
+	str = strings.Map(func(r rune) rune {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '+' || r == '/' || r == '=' {
+			return r
+		}
+		return -1 // 删除无效字符
+	}, str)
+
+	// 🔥 修复：Node.js 行为 - 遇到第一个 '=' 就停止解码
+	// 例如：'SGVsbG8=SGVsbG8=' 只解码到第一个 '='，结果是 'Hello'
+	if idx := strings.Index(str, "="); idx >= 0 {
+		str = str[:idx]
+		// 补齐到 4 的倍数（base64 要求）
+		remainder := len(str) % 4
+		if remainder > 0 {
+			str += strings.Repeat("=", 4-remainder)
+		}
+	}
+
+	// 🔥 修复：先检查是否有 padding
+	hasPadding := strings.Contains(str, "=")
+
+	if hasPadding {
+		// 有 padding：使用 StdEncoding
+		decoded, err := base64.StdEncoding.DecodeString(str)
+		if err == nil {
+			return decoded, nil
+		}
+		// 如果失败，移除 padding 再试
+		str = strings.TrimRight(str, "=")
+	}
+
+	// 无 padding 或移除 padding 后：使用 RawStdEncoding
+	return base64.RawStdEncoding.DecodeString(str)
+}
+
+// decodeBase64URLLenient 宽松的 base64url 解码（Node.js 行为）
+// 允许：空格、换行、有/无 padding
+func decodeBase64URLLenient(str string) ([]byte, error) {
+	// 移除空格、换行、制表符等空白字符
+	str = strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
+			return -1 // 删除字符
+		}
+		return r
+	}, str)
+
+	// 检查是否有 padding
+	hasPadding := strings.Contains(str, "=")
+
+	if hasPadding {
+		// 有 padding：使用 URLEncoding
+		decoded, err := base64.URLEncoding.DecodeString(str)
+		if err == nil {
+			return decoded, nil
+		}
+		// 如果失败，移除 padding 再试
+		str = strings.TrimRight(str, "=")
+	}
+
+	// 无 padding 或移除 padding 后：使用 RawURLEncoding
+	return base64.RawURLEncoding.DecodeString(str)
+}
+
+// utf16CodeUnitCount 计算字符串的 UTF-16 码元数量（Node.js 行为）
+// 在 Node.js 中，每个 UTF-16 码元占 2 字节
+// 例如：'𠮷' (U+20BB7) 在 UTF-16 中是 surrogate pair，占 2 个码元 = 4 字节
+// 但在 JavaScript 中被视为 2 个"字符"（码元），所以 byteLength('𠮷', 'ucs2') === 4
+func utf16CodeUnitCount(str string) int {
+	count := 0
+	for _, r := range str {
+		if r <= 0xFFFF {
+			// BMP 字符：1 个 UTF-16 码元
+			count++
+		} else {
+			// 超出 BMP：需要 surrogate pair，占 2 个 UTF-16 码元
+			count += 2
+		}
+	}
+	return count
+}
+
+// stringToUTF16CodeUnits 将字符串转换为 UTF-16 码元序列（Node.js 行为）
+// 🔥 修复：ascii/latin1 需要按 UTF-16 码元处理，而不是按 Unicode 码点
+// 例如：'𠮷' (U+20BB7) → [0xD842, 0xDFB7] (2 个码元)
+func stringToUTF16CodeUnits(str string) []uint16 {
+	runes := []rune(str)
+	codeUnits := make([]uint16, 0, len(runes))
+
+	for _, r := range runes {
+		if r <= 0xFFFF {
+			// BMP 字符：直接转换
+			codeUnits = append(codeUnits, uint16(r))
+		} else {
+			// 超出 BMP：编码为 surrogate pair
+			r -= 0x10000
+			high := uint16(0xD800 + (r >> 10))
+			low := uint16(0xDC00 + (r & 0x3FF))
+			codeUnits = append(codeUnits, high, low)
+		}
+	}
+
+	return codeUnits
+}
