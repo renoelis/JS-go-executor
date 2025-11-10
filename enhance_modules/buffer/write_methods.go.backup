@@ -21,6 +21,9 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			panic(runtime.NewTypeError("字符串参数是必需的"))
 		}
 
+		// 🔥 修复：检查 Symbol 类型（Symbol 不能转换为字符串）
+		assertNotSymbol(runtime, call.Arguments[0], "Cannot convert a Symbol value to a string")
+
 		str := call.Arguments[0].String()
 		offset := int64(0)
 		// 🔥 修复：默认 length 应该是 buf.length - offset，不是字符串长度
@@ -113,7 +116,8 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		case "utf8", "utf-8":
 			data = []byte(str)
 		case "hex":
-			decoded, err := hex.DecodeString(str)
+			// 🔥 修复：使用宽松的 hex 解码，处理奇数长度字符串
+			decoded, err := decodeHexLenient(str)
 			if err != nil {
 				panic(runtime.NewTypeError("无效的十六进制字符串"))
 			}
@@ -363,9 +367,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		var searchBytes []byte
 
 		// 🔥 修复：检查 Symbol 类型（必须在其他类型检查之前）
-		if _, ok := searchArg.(*goja.Symbol); ok {
-			panic(runtime.NewTypeError("Cannot convert a Symbol value to a string"))
-		}
+		assertNotSymbol(runtime, searchArg, "Cannot convert a Symbol value to a string")
 
 		// 🔥 修复：检查函数类型
 		searchType := searchArg.ExportType()
@@ -385,7 +387,10 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			if math.IsNaN(numVal) || math.IsInf(numVal, 0) {
 				searchBytes = []byte{0}
 			} else {
-				searchBytes = []byte{byte(searchArg.ToInteger() & 0xFF)}
+				// 🔥 修复：使用位运算而不是 ToInteger()，避免超大浮点数溢出
+				// Node.js 行为：number & 0xFF
+				intVal := int64(numVal)
+				searchBytes = []byte{byte(intVal & 0xFF)}
 			}
 		} else if searchType != nil && searchType.Kind().String() == "string" {
 			// 字符串类型
@@ -396,7 +401,8 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 				case "utf8", "utf-8":
 					searchBytes = []byte(searchStr)
 				case "hex":
-					decoded, err := hex.DecodeString(searchStr)
+					// 🔥 修复：使用宽松的 hex 解码，处理奇数长度字符串
+					decoded, err := decodeHexLenient(searchStr)
 					if err == nil {
 						searchBytes = decoded
 					}
@@ -504,6 +510,10 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		}
 
 		// 搜索
+		// 🔥 修复：检查是否是 UTF-16 编码
+		encodingLower := strings.ToLower(encoding)
+		isUTF16 := encodingLower == "utf16le" || encodingLower == "ucs2" || encodingLower == "ucs-2" || encodingLower == "utf-16le"
+
 		// 🔥 性能优化：对于大 Buffer，使用批量导出进行搜索
 		if shouldUseFastPath(bufferLength) {
 			// 尝试批量导出 Buffer 数据
@@ -514,26 +524,54 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 				if searchStart < 0 {
 					searchStart = 0
 				}
+
+				// 🔥 修复：对于 UTF-16 编码，确保搜索起始位置是 2 字节对齐的
+				if isUTF16 && searchStart%2 != 0 {
+					searchStart++
+				}
+
 				if searchStart >= len(bufferBytes) {
 					return runtime.ToValue(-1)
 				}
-				searchEnd := len(bufferBytes) - len(searchBytes) + 1
-				if searchEnd > len(bufferBytes) {
-					searchEnd = len(bufferBytes)
-				}
-				if searchStart < searchEnd {
-					idx := bytes.Index(bufferBytes[searchStart:searchEnd], searchBytes)
+
+				// 🔥 修复：对于 UTF-16 编码，需要按 2 字节步长搜索
+				if isUTF16 {
+					// UTF-16 编码需要 2 字节对齐搜索
+					for i := searchStart; i <= len(bufferBytes)-len(searchBytes); i += 2 {
+						if bytes.Equal(bufferBytes[i:i+len(searchBytes)], searchBytes) {
+							return runtime.ToValue(int64(i))
+						}
+					}
+					return runtime.ToValue(-1)
+				} else {
+					// 其他编码使用标准的 bytes.Index
+					idx := bytes.Index(bufferBytes[searchStart:], searchBytes)
 					if idx >= 0 {
 						return runtime.ToValue(int64(searchStart + idx))
 					}
+					return runtime.ToValue(-1)
 				}
-				return runtime.ToValue(-1)
 			}
 			// 如果批量导出失败，回退到逐字节搜索
 		}
 
 		// 🔥 性能优化：对于小 Buffer，使用优化的逐字节搜索
-		for i := offset; i <= bufferLength-int64(len(searchBytes)); i++ {
+		// 🔥 修复：对于 utf16le/ucs2 编码，需要确保搜索位置是 2 字节对齐的
+		// encodingLower 和 isUTF16 已在上面定义
+
+		// 如果是 UTF-16 编码且 offset 不是 2 字节对齐，调整到下一个对齐位置
+		searchStart := offset
+		if isUTF16 && searchStart%2 != 0 {
+			searchStart++
+		}
+
+		// 确定搜索步长：UTF-16 编码时步长为 2，其他编码步长为 1
+		step := int64(1)
+		if isUTF16 {
+			step = 2
+		}
+
+		for i := searchStart; i <= bufferLength-int64(len(searchBytes)); i += step {
 			found := true
 			for j, searchByte := range searchBytes {
 				if val := this.Get(getIndexString(i + int64(j))); !goja.IsUndefined(val) {
@@ -720,15 +758,19 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		// 对于普通对象，需要额外检查是否有 buffer 特征
 		// 检查是否有 length 属性（TypedArray/Buffer 的特征）
 		var lengthVal goja.Value
-		lengthVal = target.Get("length")
+		if target != nil {
+			lengthVal = target.Get("length")
+		}
 
-		// 检查 lengthVal 是否为 undefined
-		if goja.IsUndefined(lengthVal) {
+		// 检查 lengthVal 是否为 nil 或 undefined
+		if target == nil || lengthVal == nil || goja.IsUndefined(lengthVal) {
 			// 获取更详细的类型信息
-			if typeName := target.Get("constructor"); !goja.IsUndefined(typeName) {
-				if nameObj := typeName.ToObject(runtime); nameObj != nil {
-					if name := nameObj.Get("name"); !goja.IsUndefined(name) {
-						panic(runtime.NewTypeError(fmt.Sprintf("The first argument must be one of type Buffer or Uint8Array. Received an instance of %s", name.String())))
+			if target != nil {
+				if typeName := target.Get("constructor"); !goja.IsUndefined(typeName) {
+					if nameObj := typeName.ToObject(runtime); nameObj != nil {
+						if name := nameObj.Get("name"); !goja.IsUndefined(name) {
+							panic(runtime.NewTypeError(fmt.Sprintf("The first argument must be one of type Buffer or Uint8Array. Received an instance of %s", name.String())))
+						}
 					}
 				}
 			}
@@ -818,12 +860,14 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		targetLength := lengthVal.ToInteger()
 
 		// 检查是否有 byteLength 属性（TypedArray 特征）
-		if byteLengthVal := target.Get("byteLength"); !goja.IsUndefined(byteLengthVal) {
-			byteLength := byteLengthVal.ToInteger()
-			// 如果 byteLength 和 length 不同，说明这是一个非字节类型的 TypedArray（如 Float32Array）
-			// 此时应该使用 byteLength
-			if byteLength != targetLength {
-				targetLength = byteLength
+		if target != nil {
+			if byteLengthVal := target.Get("byteLength"); byteLengthVal != nil && !goja.IsUndefined(byteLengthVal) {
+				byteLength := byteLengthVal.ToInteger()
+				// 如果 byteLength 和 length 不同，说明这是一个非字节类型的 TypedArray（如 Float32Array）
+				// 此时应该使用 byteLength
+				if byteLength != targetLength {
+					targetLength = byteLength
+				}
 			}
 		}
 
@@ -878,12 +922,14 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 
 		// 判断是否共享同一 ArrayBuffer（即使对象不同）
 		sameAB := false
-		thisAB := this.Get("buffer")
-		targetAB := target.Get("buffer")
-		if !goja.IsUndefined(thisAB) && !goja.IsUndefined(targetAB) {
-			// 比较 ArrayBuffer 是否相同
-			if thisAB.Export() == targetAB.Export() {
-				sameAB = true
+		if target != nil {
+			thisAB := this.Get("buffer")
+			targetAB := target.Get("buffer")
+			if thisAB != nil && targetAB != nil && !goja.IsUndefined(thisAB) && !goja.IsUndefined(targetAB) {
+				// 比较 ArrayBuffer 是否相同
+				if thisAB.Export() == targetAB.Export() {
+					sameAB = true
+				}
 			}
 		}
 
@@ -893,8 +939,10 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		if v := this.Get("byteOffset"); !goja.IsUndefined(v) {
 			thisBase = v.ToInteger()
 		}
-		if v := target.Get("byteOffset"); !goja.IsUndefined(v) {
-			targetBase = v.ToInteger()
+		if target != nil {
+			if v := target.Get("byteOffset"); v != nil && !goja.IsUndefined(v) {
+				targetBase = v.ToInteger()
+			}
 		}
 
 		srcAbsStart := thisBase + sourceStart
@@ -906,7 +954,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		if sameAB && copyLength > 0 && dstAbsStart < srcAbsEnd && dstAbsEnd > srcAbsStart {
 			// 🔥 性能优化：直接使用底层字节数组的 memmove 语义
 			thisArrayBufferVal := this.Get("buffer")
-			if !goja.IsUndefined(thisArrayBufferVal) {
+			if !goja.IsUndefined(thisArrayBufferVal) && thisArrayBufferVal != nil {
 				if arrayBuffer, ok := thisArrayBufferVal.Export().(goja.ArrayBuffer); ok {
 					srcBytes := arrayBuffer.Bytes()
 					// Go 的 copy() 自动处理重叠情况（memmove 语义）
@@ -933,40 +981,46 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 
 			// 检查是否需要字节级写入
 			needsByteLevel := false
-			if constructor := target.Get("constructor"); !goja.IsUndefined(constructor) {
-				if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
-					if name := constructorObj.Get("name"); !goja.IsUndefined(name) {
-						nameStr := name.String()
-						if nameStr != "Buffer" && nameStr != "Uint8Array" &&
-							(strings.Contains(nameStr, "Array") || strings.Contains(nameStr, "Int") || strings.Contains(nameStr, "Float")) {
-							needsByteLevel = true
+			if target != nil {
+				if constructor := target.Get("constructor"); !goja.IsUndefined(constructor) {
+					if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
+						if name := constructorObj.Get("name"); !goja.IsUndefined(name) {
+							nameStr := name.String()
+							if nameStr != "Buffer" && nameStr != "Uint8Array" &&
+								(strings.Contains(nameStr, "Array") || strings.Contains(nameStr, "Int") || strings.Contains(nameStr, "Float")) {
+								needsByteLevel = true
+							}
 						}
 					}
 				}
 			}
 
 			// 然后写入目标
-			if needsByteLevel {
-				// 字节级写入
-				if bufferVal := target.Get("buffer"); !goja.IsUndefined(bufferVal) {
-					targetByteOffset := int64(0)
-					if offsetVal := target.Get("byteOffset"); !goja.IsUndefined(offsetVal) {
-						targetByteOffset = offsetVal.ToInteger()
-					}
-					uint8ArrayConstructor := runtime.Get("Uint8Array")
-					if uint8ArrayCtor, ok := goja.AssertFunction(uint8ArrayConstructor); ok {
-						byteView, err := uint8ArrayCtor(goja.Undefined(), bufferVal)
-						if err == nil {
-							byteViewObj := byteView.ToObject(runtime)
-							for i := int64(0); i < copyLength; i++ {
-								byteIndex := targetByteOffset + targetStart + i
-								byteViewObj.Set(getIndexString(byteIndex), tempData[i])
+			if target != nil {
+				if needsByteLevel {
+					// 字节级写入
+					if bufferVal := target.Get("buffer"); !goja.IsUndefined(bufferVal) && bufferVal != nil {
+						targetByteOffset := int64(0)
+						if offsetVal := target.Get("byteOffset"); !goja.IsUndefined(offsetVal) && offsetVal != nil {
+							targetByteOffset = offsetVal.ToInteger()
+						}
+						uint8ArrayConstructor := runtime.Get("Uint8Array")
+						if uint8ArrayCtor, ok := goja.AssertFunction(uint8ArrayConstructor); ok {
+							byteView, err := uint8ArrayCtor(goja.Undefined(), bufferVal)
+							if err == nil && byteView != nil {
+								byteViewObj := byteView.ToObject(runtime)
+								if byteViewObj != nil {
+									for i := int64(0); i < copyLength; i++ {
+										byteIndex := targetByteOffset + targetStart + i
+										byteViewObj.Set(getIndexString(byteIndex), tempData[i])
+									}
+									return runtime.ToValue(copyLength)
+								}
 							}
-							return runtime.ToValue(copyLength)
 						}
 					}
 				}
-			} else {
+
 				// 普通写入
 				for i := int64(0); i < copyLength; i++ {
 					target.Set(getIndexString(targetStart+i), tempData[i])
@@ -978,10 +1032,10 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		// 非重叠情况：直接复制
 		// 🔥 性能优化：尝试使用底层 ArrayBuffer 的字节切片进行快速复制
 		// 如果源和目标都有 ArrayBuffer，我们可以直接操作字节数组
-		thisAB = this.Get("buffer")
-		targetAB = target.Get("buffer")
+		thisAB := this.Get("buffer")
+		targetAB := target.Get("buffer")
 
-		if !goja.IsUndefined(thisAB) && !goja.IsUndefined(targetAB) {
+		if !goja.IsUndefined(thisAB) && !goja.IsUndefined(targetAB) && thisAB != nil && targetAB != nil {
 			// 尝试获取底层字节数组
 			if thisArrayBuffer, ok1 := thisAB.Export().(goja.ArrayBuffer); ok1 {
 				if targetArrayBuffer, ok2 := targetAB.Export().(goja.ArrayBuffer); ok2 {
@@ -1018,27 +1072,36 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 
 		// 🔥 回退：检查是否需要使用字节级别的复制
 		needsByteLevel := false
-		if constructor := target.Get("constructor"); !goja.IsUndefined(constructor) {
-			if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
-				if name := constructorObj.Get("name"); !goja.IsUndefined(name) {
-					nameStr := name.String()
-					if nameStr != "Buffer" && nameStr != "Uint8Array" &&
-						(strings.Contains(nameStr, "Array") || strings.Contains(nameStr, "Int") || strings.Contains(nameStr, "Float")) {
-						needsByteLevel = true
+		if target != nil {
+			// 检查 target 的 constructor.name
+			if constructor := target.Get("constructor"); !goja.IsUndefined(constructor) {
+				if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
+					if name := constructorObj.Get("name"); !goja.IsUndefined(name) {
+						nameStr := name.String()
+						// 对于非 Uint8Array 的 TypedArray，需要字节级复制
+						if nameStr != "Buffer" && nameStr != "Uint8Array" &&
+							(strings.Contains(nameStr, "Array") || strings.Contains(nameStr, "Int") || strings.Contains(nameStr, "Float")) {
+							needsByteLevel = true
+						}
 					}
 				}
 			}
 		}
 
 		written := int64(0)
-		if needsByteLevel {
-			// 🔥 字节级复制：获取 target.buffer 并创建 Uint8Array 视图
-			if bufferVal := target.Get("buffer"); !goja.IsUndefined(bufferVal) {
-				bufferObj := bufferVal.ToObject(runtime)
-				// 获取 byteOffset
-				targetByteOffset := int64(0)
-				if offsetVal := target.Get("byteOffset"); !goja.IsUndefined(offsetVal) {
-					targetByteOffset = offsetVal.ToInteger()
+		if target != nil {
+			if needsByteLevel {
+				// 🔥 字节级复制：获取 target.buffer 并创建 Uint8Array 视图
+				if bufferVal := target.Get("buffer"); !goja.IsUndefined(bufferVal) && bufferVal != nil {
+					if bufferObj := bufferVal.ToObject(runtime); bufferObj != nil {
+						// 获取 byteOffset
+						targetByteOffset := int64(0)
+						if offsetVal := target.Get("byteOffset"); !goja.IsUndefined(offsetVal) && offsetVal != nil {
+							targetByteOffset = offsetVal.ToInteger()
+						}
+
+						// 通过 runtime 创建 Uint8Array 视图
+						uint8ArrayConstructor := runtime.Get("Uint8Array")
 						if uint8ArrayCtor, ok := goja.AssertFunction(uint8ArrayConstructor); ok {
 							// 创建 Uint8Array 视图：new Uint8Array(buffer)
 							byteView, err := uint8ArrayCtor(goja.Undefined(), bufferVal)
@@ -1860,10 +1923,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 
 		// 🔥 修复：先判断类型，优先处理特殊值
 		// 🔥 首先检查 Symbol - 必须在其他类型检查之前
-		if _, ok := value.(*goja.Symbol); ok {
-			errObj := runtime.NewTypeError("Cannot convert a Symbol value to a number")
-			panic(errObj)
-		}
+		assertNotSymbol(runtime, value, "Cannot convert a Symbol value to a number")
 
 		// 处理 undefined, null, boolean 等特殊值
 		if goja.IsUndefined(value) {
@@ -2005,21 +2065,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			// 🔥 修复：检查特殊类型（Symbol、BigInt）
 			// 先检查是否是 Symbol 或 BigInt，这些类型应该抛出异常
 			// 检查 Symbol：尝试调用 Symbol.for 来判断
-			if _, ok := value.(*goja.Symbol); ok {
-				errObj := runtime.NewTypeError("Cannot convert a Symbol value to a number")
-				panic(errObj)
-			}
-
-			// 检查类型字符串
-			exportType := value.ExportType()
-			if exportType != nil {
-				typeName := exportType.String()
-				// 检查 Symbol 的其他可能表示
-				if strings.Contains(typeName, "Symbol") || strings.Contains(typeName, "symbol") {
-					errObj := runtime.NewTypeError("Cannot convert a Symbol value to a number")
-					panic(errObj)
-				}
-			}
+			assertNotSymbol(runtime, value, "Cannot convert a Symbol value to a number")
 
 			// 🔥 修复：检查函数类型
 			// 函数应该转换为 0，而不是抛出错误
@@ -2293,7 +2339,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 	prototype.Set("lastIndexOf", func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 		if len(call.Arguments) == 0 {
-			return runtime.ToValue(-1)
+			panic(runtime.NewTypeError("The \"value\" argument must be one of type number or string or an instance of Buffer or Uint8Array. Received undefined"))
 		}
 
 		// 获取buffer长度
@@ -2303,26 +2349,88 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		}
 
 		searchArg := call.Arguments[0]
+
+		// 修复：严格类型检查（对齐 Node.js v25.0.0）
+		// 检查 undefined 和 null
+		if goja.IsUndefined(searchArg) {
+			panic(runtime.NewTypeError("The \"value\" argument must be one of type number or string or an instance of Buffer or Uint8Array. Received undefined"))
+		}
+		if goja.IsNull(searchArg) {
+			panic(runtime.NewTypeError("The \"value\" argument must be one of type number or string or an instance of Buffer or Uint8Array. Received null"))
+		}
+
+		// 检查 boolean 类型
+		searchType := searchArg.ExportType()
+		if searchType != nil && searchType.Kind().String() == "bool" {
+			boolVal := searchArg.ToBoolean()
+			panic(runtime.NewTypeError(fmt.Sprintf("The \"value\" argument must be one of type number or string or an instance of Buffer or Uint8Array. Received type boolean (%v)", boolVal)))
+		}
+
+		// 检查 Symbol 类型（使用类型断言）
+		assertNotSymbol(runtime, searchArg, "The \"value\" argument must be one of type number or string or an instance of Buffer or Uint8Array. Received type symbol")
+
+		// 检查 Function 类型
+		if _, ok := goja.AssertFunction(searchArg); ok {
+			panic(runtime.NewTypeError("The \"value\" argument must be one of type number or string or an instance of Buffer or Uint8Array. Received type function"))
+		}
+
 		byteOffset := bufferLength - 1
 		encoding := "utf8"
+		// 记录是否显式指定了 byteOffset（用于空搜索时的返回值）
+		explicitOffset := false
 
 		// 解析参数：lastIndexOf(value, byteOffset, encoding) 或 lastIndexOf(value, encoding)
-		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
+		// 🔥 修复：需要处理 undefined 作为第二个参数的情况
+		if len(call.Arguments) > 1 {
 			arg1 := call.Arguments[1]
-			arg1Str := arg1.String()
-			isEncoding := false
-			// 🔥 修复：大小写不敏感
-			switch strings.ToLower(arg1Str) {
-			case "utf8", "utf-8", "hex", "base64", "base64url", "ascii", "latin1", "binary", "utf16le", "ucs2", "ucs-2", "utf-16le":
-				isEncoding = true
+
+			// 如果第二个参数不是 undefined
+			if !goja.IsUndefined(arg1) {
+				// 🔥 修复：先检查类型，字符串类型必须是有效的 encoding
+				arg1Type := arg1.ExportType()
+				if arg1Type != nil && arg1Type.Kind().String() == "string" {
+					// 字符串类型：必须是有效的 encoding
+					arg1Str := arg1.String()
+					isValidEncoding := false
+					switch strings.ToLower(arg1Str) {
+					case "utf8", "utf-8", "hex", "base64", "base64url", "ascii", "latin1", "binary", "utf16le", "ucs2", "ucs-2", "utf-16le":
+						isValidEncoding = true
+					}
+
+					if isValidEncoding {
+						encoding = arg1Str
+					} else {
+						// 无效的 encoding，抛出错误
+						panic(runtime.NewTypeError(fmt.Sprintf("Unknown encoding: %s", arg1Str)))
+					}
+				} else {
+					// 非字符串类型：当作 byteOffset 处理
+					floatVal := arg1.ToFloat()
+					if math.IsNaN(floatVal) {
+						// NaN 应该使用默认值 bufferLength - 1
+						byteOffset = bufferLength - 1
+					} else {
+						byteOffset = arg1.ToInteger()
+						explicitOffset = true
+					}
+				}
 			}
 
-			if isEncoding {
-				encoding = arg1Str
-			} else {
-				byteOffset = arg1.ToInteger()
-				if len(call.Arguments) > 2 && !goja.IsUndefined(call.Arguments[2]) {
-					encoding = call.Arguments[2].String()
+			// 检查第三个参数（无论第二个参数是什么）
+			if len(call.Arguments) > 2 && !goja.IsUndefined(call.Arguments[2]) {
+				arg2 := call.Arguments[2]
+				arg2Str := arg2.String()
+				// 检查第三个参数是否是有效的编码
+				validEncoding := false
+				switch strings.ToLower(arg2Str) {
+				case "utf8", "utf-8", "hex", "base64", "base64url", "ascii", "latin1", "binary", "utf16le", "ucs2", "ucs-2", "utf-16le":
+					validEncoding = true
+				}
+				if validEncoding {
+					encoding = arg2Str
+				} else {
+					// 无效编码，抛出错误
+					panic(runtime.NewTypeError(fmt.Sprintf("Unknown encoding: %s", arg2Str)))
 				}
 			}
 		}
@@ -2330,48 +2438,84 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		// 🔥 修复：编码大小写不敏感
 		encoding = strings.ToLower(encoding)
 
+		// 记录原始 byteOffset（用于空搜索时的返回值）
+		originalByteOffset := byteOffset
+
 		// 处理负数 offset
 		if byteOffset < 0 {
 			byteOffset = bufferLength + byteOffset
 		}
-		if byteOffset >= bufferLength {
+
+		// 🔥 修复：对于超出范围的 byteOffset，需要特殊处理
+		// 如果 byteOffset >= bufferLength，调整为 bufferLength - 1
+		// 但要记录原始值，因为空字符串查找时需要返回不同的值
+		if originalByteOffset >= bufferLength && originalByteOffset >= 0 {
+			// 正数且超出范围：调整为 bufferLength - 1，但空字符串返回 bufferLength
+			byteOffset = bufferLength - 1
+		} else if byteOffset >= bufferLength {
+			// 负数转换后超出范围
 			byteOffset = bufferLength - 1
 		}
-		if byteOffset < 0 {
-			return runtime.ToValue(-1)
-		}
+
+		// 🔥 修复：不要在这里直接返回 -1，因为空字符串查找需要特殊处理
+		// 将这个检查移到后面，在确定 searchBytes 之后
 
 		// 处理不同类型的搜索值
 		var searchBytes []byte
 
+		// 检查 BigInt 类型（在处理数字之前）
+		// 使用 ExportType 检测 BigInt 类型
+		if searchType != nil {
+			typeName := searchType.String()
+			if typeName == "*big.Int" || typeName == "big.Int" {
+				panic(runtime.NewTypeError("The \"value\" argument must be one of type number or string or an instance of Buffer or Uint8Array. Received type bigint"))
+			}
+		}
+
 		// 先尝试作为字符串或数字
-		searchType := searchArg.ExportType()
 		if searchType != nil && (searchType.Kind().String() == "float64" || searchType.Kind().String() == "int64") {
 			// 数字类型
-			searchBytes = []byte{byte(searchArg.ToInteger() & 0xFF)}
+			// 🔥 修复：处理特殊数字值（NaN, Infinity, -Infinity）
+			// Node.js 行为：这些值都会被转换为 0
+			numVal := searchArg.ToFloat()
+			if math.IsNaN(numVal) || math.IsInf(numVal, 0) {
+				searchBytes = []byte{0}
+			} else {
+				// 🔥 修复：使用位运算而不是 ToInteger()，避免超大浮点数溢出
+				// Node.js 行为：number & 0xFF
+				intVal := int64(numVal)
+				searchBytes = []byte{byte(intVal & 0xFF)}
+			}
 		} else if searchType != nil && searchType.Kind().String() == "string" {
 			// 字符串类型
 			searchStr := searchArg.String()
-			if searchStr != "" {
+			// 🔥 修复：空字符串也需要处理
+			if searchStr == "" {
+				searchBytes = []byte{}
+			} else {
 				// 🔥 修复：完整的编码处理（对齐 Node.js）
 				// encoding 已经在上面转为小写
 				switch encoding {
 				case "utf8", "utf-8":
 					searchBytes = []byte(searchStr)
 				case "hex":
-					decoded, err := hex.DecodeString(searchStr)
-					if err == nil {
+					// 🔥 修复：使用宽松的 hex 解码，处理奇数长度字符串
+					decoded, err := decodeHexLenient(searchStr)
+					if err == nil && decoded != nil {
 						searchBytes = decoded
 					}
 				case "base64":
 					// 使用宽松的 base64 解码
 					decoded, err := decodeBase64Lenient(searchStr)
-					if err == nil {
+					if err == nil && decoded != nil {
 						searchBytes = decoded
+					} else if err != nil {
+						// 解码失败，searchBytes 设为空数组（会返回 bufferLength）
+						searchBytes = []byte{}
 					}
 				case "base64url":
 					decoded, err := decodeBase64URLLenient(searchStr)
-					if err == nil {
+					if err == nil && decoded != nil {
 						searchBytes = decoded
 					}
 				case "latin1", "binary":
@@ -2425,6 +2569,33 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 					panic(runtime.NewTypeError("The \"value\" argument must be one of type number or string or an instance of Buffer or Uint8Array. Received an instance of Array"))
 				}
 
+				// 🔥 修复：严格检查 TypedArray 类型（只接受 Uint8Array 和 Buffer）
+				// 检查 constructor.name
+				typeName := "Object"
+				if constructor := searchObj.Get("constructor"); !goja.IsUndefined(constructor) {
+					if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
+						if name := constructorObj.Get("name"); !goja.IsUndefined(name) {
+							typeName = name.String()
+						}
+					}
+				}
+
+				// 只接受 Buffer 和 Uint8Array
+				isValidType := false
+				if typeName == "Buffer" || typeName == "Uint8Array" || strings.Contains(typeName, "Buffer") {
+					isValidType = true
+				}
+
+				if !isValidType {
+					// 其他 TypedArray 类型（Int8Array, Uint16Array 等）都不接受
+					if typeName == "Int8Array" || typeName == "Uint16Array" || typeName == "Int16Array" ||
+						typeName == "Uint32Array" || typeName == "Int32Array" || typeName == "Float32Array" ||
+						typeName == "Float64Array" || typeName == "BigInt64Array" || typeName == "BigUint64Array" ||
+						typeName == "Uint8ClampedArray" {
+						panic(runtime.NewTypeError(fmt.Sprintf("The \"value\" argument must be one of type number or string or an instance of Buffer or Uint8Array. Received an instance of %s", typeName)))
+					}
+				}
+
 				searchLen := searchObj.Get("length")
 				if searchLen != nil && !goja.IsUndefined(searchLen) && !goja.IsNull(searchLen) {
 					searchLength := searchLen.ToInteger()
@@ -2457,15 +2628,60 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		}
 
 		if len(searchBytes) == 0 {
-			if byteOffset < bufferLength {
-				return runtime.ToValue(byteOffset)
+			// 🔥 修复：空字符串/空 Buffer 应该返回 byteOffset
+			// 特殊情况：空 Buffer（bufferLength == 0）查找空字符串应该返回 0
+			if bufferLength == 0 {
+				return runtime.ToValue(0)
 			}
-			return runtime.ToValue(bufferLength)
+
+			// 如果用户没有显式指定 offset，返回 bufferLength
+			if !explicitOffset {
+				return runtime.ToValue(bufferLength)
+			}
+
+			// 用户显式指定了 offset，返回调整后的 byteOffset
+			// 但如果原始 offset >= bufferLength，返回 bufferLength
+			if originalByteOffset >= bufferLength && originalByteOffset >= 0 {
+				return runtime.ToValue(bufferLength)
+			}
+
+			// 其他情况返回调整后的 byteOffset
+			if byteOffset < 0 {
+				return runtime.ToValue(0)
+			}
+			return runtime.ToValue(byteOffset)
+		}
+
+		// 🔥 修复：在确定 searchBytes 之后，检查 byteOffset 是否有效
+		if byteOffset < 0 {
+			return runtime.ToValue(-1)
 		}
 
 		// 从 byteOffset 向前搜索（startPos 不能超过 byteOffset）
+		// 🔥 修复：对于 utf16le/ucs2 编码，需要确保搜索位置是 2 字节对齐的
+		encodingLower := strings.ToLower(encoding)
+		isUTF16 := encodingLower == "utf16le" || encodingLower == "ucs2" || encodingLower == "ucs-2" || encodingLower == "utf-16le"
+
+		// 🔥 修复：对于 UTF-16 编码，搜索值长度必须是 2 的倍数
+		if isUTF16 && len(searchBytes)%2 != 0 {
+			return runtime.ToValue(-1)
+		}
+
 		searchLen := int64(len(searchBytes))
-		for startPos := byteOffset; startPos >= 0; startPos-- {
+
+		// 如果是 UTF-16 编码且 byteOffset 不是 2 字节对齐，调整到前一个对齐位置
+		searchStart := byteOffset
+		if isUTF16 && searchStart%2 != 0 {
+			searchStart--
+		}
+
+		// 确定搜索步长：UTF-16 编码时步长为 2，其他编码步长为 1
+		step := int64(1)
+		if isUTF16 {
+			step = 2
+		}
+
+		for startPos := searchStart; startPos >= 0; startPos -= step {
 			// 检查边界：startPos + searchLen 不能超过 bufferLength
 			if startPos+searchLen > bufferLength {
 				continue
@@ -2818,51 +3034,90 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 
 		offset := int64(0)
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			offset = call.Arguments[1].ToInteger()
+			// 检查 Infinity
+			offsetVal := call.Arguments[1]
+			if offsetVal.ExportType() != nil && offsetVal.ExportType().Kind().String() == "float64" {
+				f := offsetVal.ToFloat()
+				if math.IsInf(f, 0) {
+					panic(newRangeError(runtime, "The value of \"offset\" is out of range. It must be an integer. Received Infinity"))
+				}
+				// 🔥 修复：检查极大值（如 Number.MAX_VALUE）
+				// Number.MAX_SAFE_INTEGER = 2^53 - 1 = 9007199254740991
+				// 任何超过此值的浮点数都无法安全表示为整数，直接抛出错误
+				if f > 9007199254740991 || f < -9007199254740991 {
+					panic(newRangeError(runtime, "offset is out of bounds"))
+				}
+				offset = offsetVal.ToInteger()
+			} else {
+				offset = offsetVal.ToInteger()
+			}
+		}
+
+		// 检测 BigInt TypedArray（不支持）
+		if constructorVal := sourceArray.Get("constructor"); constructorVal != nil && !goja.IsUndefined(constructorVal) {
+			if constructorObj := constructorVal.ToObject(runtime); constructorObj != nil {
+				if nameVal := constructorObj.Get("name"); nameVal != nil && !goja.IsUndefined(nameVal) {
+					constructorName := nameVal.String()
+					if constructorName == "BigInt64Array" || constructorName == "BigUint64Array" {
+						panic(runtime.NewTypeError("Cannot mix BigInt and other types, use explicit conversions"))
+					}
+				}
+			}
 		}
 
 		// 获取源数组长度
 		sourceLength := int64(0)
-		if lengthVal := sourceArray.Get("length"); !goja.IsUndefined(lengthVal) {
+		if lengthVal := sourceArray.Get("length"); lengthVal != nil && !goja.IsUndefined(lengthVal) {
+			// 检查 Infinity
+			if lengthVal.ExportType() != nil && lengthVal.ExportType().Kind().String() == "float64" {
+				f := lengthVal.ToFloat()
+				if math.IsInf(f, 0) {
+					panic(newRangeError(runtime, "The value of \"length\" is out of range"))
+				}
+			}
 			sourceLength = lengthVal.ToInteger()
 		}
 
 		// 获取buffer长度
 		bufferLength := int64(0)
-		if lengthVal := this.Get("length"); !goja.IsUndefined(lengthVal) {
+		if lengthVal := this.Get("length"); lengthVal != nil && !goja.IsUndefined(lengthVal) {
 			bufferLength = lengthVal.ToInteger()
 		}
 
-		// 边界检查
+		// 边界检查（使用 RangeError）
 		if offset < 0 || offset+sourceLength > bufferLength {
-			panic(runtime.NewTypeError("偏移量超出 buffer 边界"))
+			panic(newRangeError(runtime, "offset is out of bounds"))
 		}
 
 		// 🔥 修复：检查是否共享同一 ArrayBuffer（避免重叠时数据污染）
 		sameAB := false
 		thisAB := this.Get("buffer")
 		srcAB := sourceArray.Get("buffer")
-		if !goja.IsUndefined(thisAB) && !goja.IsUndefined(srcAB) && thisAB.Export() == srcAB.Export() {
+		if thisAB != nil && srcAB != nil && !goja.IsUndefined(thisAB) && !goja.IsUndefined(srcAB) && thisAB.Export() == srcAB.Export() {
 			sameAB = true
 		}
 
 		if sameAB && sourceLength > 0 {
 			// 先把源区数据拷到临时切片，避免重叠破坏（memmove 语义）
-			tmp := make([]goja.Value, sourceLength)
+			tmp := make([]byte, sourceLength)
 			for i := int64(0); i < sourceLength; i++ {
-				tmp[i] = sourceArray.Get(getIndexString(i))
+				val := sourceArray.Get(getIndexString(i))
+				// 🔥 修复：将每个元素显式转换为字节值（0-255）
+				// 这样可以避免循环引用等复杂对象导致的问题
+				tmp[i] = convertToUint8(runtime, val)
 			}
 			for i := int64(0); i < sourceLength; i++ {
-				this.Set(getIndexString(offset+i), tmp[i])
+				this.Set(getIndexString(offset+i), runtime.ToValue(tmp[i]))
 			}
 			return goja.Undefined()
 		}
 
 		// 非同 AB 或不重叠：直接顺序复制
 		for i := int64(0); i < sourceLength; i++ {
-			if val := sourceArray.Get(getIndexString(i)); !goja.IsUndefined(val) {
-				this.Set(getIndexString(offset+i), val)
-			}
+			val := sourceArray.Get(getIndexString(i))
+			// 🔥 修复：将每个元素显式转换为字节值（0-255）
+			byteVal := convertToUint8(runtime, val)
+			this.Set(getIndexString(offset+i), runtime.ToValue(byteVal))
 		}
 
 		return goja.Undefined()

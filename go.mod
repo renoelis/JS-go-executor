@@ -76,3 +76,11 @@ require (
 	google.golang.org/protobuf v1.36.6 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+// 使用修复了 TypedArray 极值转换问题的 goja fork 版本（远程仓库），替换replace github.com/dop251/goja => ./fork_goja/goja（本地路径）
+// Fork 仓库：https://github.com/renoelis/goja
+// 标签版本：v0.0.1-typedarray-fix
+// 如果 Go 代理未索引，可以临时使用：replace github.com/dop251/goja => github.com/renoelis/goja v0.0.1-typedarray-fix
+replace github.com/dop251/goja => ./fork_goja/goja
+
+replace github.com/dop251/goja_nodejs => ./fork_goja_nodejs/goja_nodejs

@@ -1,0 +1,159 @@
+---
+alwaysApply: false
+---
+Respond to users in Chinese; 
+除非我主动要求生成文档，否则禁止主动生成 Markdown 文档格式，请专注代码实现！
+
+# Node.js Buffer API 全量测试与100%对齐流程
+
+> 目标：在 **Go + goja** 的 JS 执行服务中，对 **Node.js v25.0.0** 的 `buffer.{{某个API}}` 做**无死角**验证，并将不一致处修正至完全一致。
+> 代码路径统一：`test/buffer-native/buffer.{{某API}}/`；最终结果必须使用 `✅/❌` 并 `return`，错误除了返回 error.message 还需要返回 error.stack。
+
+注意：测试脚本代码禁用Object.getPrototypeOf、constructor、eval、Reflect、Proxy关键词！
+
+## 步骤 1：确认目标 API（可 Web 搜索）
+
+1. 锁定：`buffer.{{某个API}}` 的 **官方用法（Node v25.0.0）**。
+2. 收集要点（必须包含）：
+   * 功能与用途、参数/返回值/`options`
+   * 支持的输入类型（Buffer、TypedArray、ArrayBuffer、string 等）
+   * 同步/异步差异（若存在）
+   * 错误类型与抛出条件（类型不符、长度不符、状态错误等）
+   * 边界与极端输入（空、超长、不同编码、NaN/undefined/null）
+   * 安全特性（内存安全、越界访问保护、copy 行为一致性等）
+
+## 步骤 2：生成完整覆盖测试脚本（放到 `test/buffer-native/buffer.{{某API}}/`）目录下，分 part 编写
+
+覆盖范围：
+  * ✅ 基本功能
+  * ✅ 所有参数组合
+  * ✅ 正常/异常/边界输入
+  * ✅ 结果与期望比对（输出 `✅/❌`）
+  * ✅ 安全/性能相关（若适用，如越界检测、零拷贝等）
+
+输出格式统一（必须 return）：
+
+示例（同步）：
+```js
+const { Buffer } = require('buffer');
+try {
+  const buf = Buffer.from('hello world', 'utf8');
+  const slice = buf.slice(0, 5);
+  const testResults = {
+    success: true,
+    data: slice.toString()
+  };
+  console.log(JSON.stringify(testResults, null, 2));
+  return testResults;
+} catch (error) {
+  const testResults = {
+    success: false,
+    error: error.message,
+    stack: error.stack
+  };
+  console.log(JSON.stringify(testResults, null, 2));
+  return testResults;
+}
+````
+
+示例（异步）：
+
+```js
+async function main() {
+  try {
+    const { Buffer } = require('buffer');
+    const data = await Promise.resolve(Buffer.from('async test'));
+    const result = { success: true, data: data.toString('utf8') };
+    console.log(JSON.stringify(result, null, 2));
+    return result;
+  } catch (error) {
+    const result = { success: false, error: error.message, stack: error.stack };
+    console.log(JSON.stringify(result, null, 2));
+    return result;
+  }
+}
+return main();
+```
+
+## 步骤 3：在本地 Node v25.0.0 验证
+
+* 本地执行脚本，确保全部 `✅`；
+* 若不通过，修正脚本再继续。
+
+## 步骤 4：在 Go + goja 服务中执行测试
+
+部署/启动（先判断是否服务已启动，启动则无需部署，修改项目则需要重新部署！）：
+注意：部署网络问题失败，就多执行几次
+  ```bash
+   docker-compose down && docker-compose build &&  docker-compose up -d && sleep 5
+  ```
+禁止操作命令：docker-compose down -v
+执行示例：
+
+```bash
+CODE=$(base64 < /Users/Code/Go-product/Flow-codeblock_goja/test/buffer-native/test_{{API}}_part1.js)
+curl --location 'http://localhost:3002/flow/codeblock' \
+  --header 'Content-Type: application/json' \
+  --header 'accessToken: flow_c52895974d8a41fbafaa74e4d6f6c9434cd674b8199dc259dc2cbf4efc173b15' \
+  --data "{\"codebase64\": \"$CODE\", \"input\": {}}" 2>/dev/null | jq '.
+```
+
+比较 Node 输出与Go服务输出，确保一致，不一致需要修复Go项目代码。
+修复Go代码时，需要保证最佳实践和保证性能最优！！
+注意：若需要看服务环境console.log的内容，需要使用docker logs flow-codeblock-go-dev --tail 200
+
+## 步骤 5：Go测试结果不一致则修 Go 实现并回归
+注：非必要不允许修复测试用例！
+1. 定位差异 → 修改 Go 侧 buffer 实现（100% 对齐 Node v25.0.0）。
+2. 编译自检：
+
+   ```bash
+   cd /Users/Code/Go-product/Flow-codeblock_goja && go build -o flow-codeblock-go cmd/main.go
+   ```
+3. 回到步骤  4 重复验证，直至一致。
+
+## 步骤 6：查缺补漏（覆盖扫描与补测）
+
+检查清单：
+
+* [ ] 输入类型：Buffer/Uint8Array/ArrayBuffer/string(utf8, hex, base64)
+* [ ] 长度变化：0、1、N、N±1、极大长度
+* [ ] options 参数的默认值/非法值
+* [ ] 错误路径：类型错误、越界、释放后调用
+* [ ] 安全特性：内存安全、边界检查、零拷贝语义
+* [ ] 兼容性：Node 官方示例、历史行为
+
+补齐后重复验证直至全部 `✅`。
+
+---
+
+## 命令式触发格式
+
+```
+RUN_BUFFER_TEST {{某个API}}
+```
+
+可选参数：
+
+```
+RUN_BUFFER_TEST {{某个API}} --notes "补充说明" --path test/buffer-native/test_{{api}}_nodejs.js
+```
+
+示例：
+
+```
+RUN_BUFFER_TEST alloc
+```
+
+或
+
+```
+RUN_BUFFER_TEST from --notes "重点关注编码与溢出边界"
+```
+
+执行后输出：API 综述 → 生成脚本 → Node 跑测结果 → 服务跑测结果 → 差异分析与修复建议 → 查缺补漏 → 最终结论。
+
+```
+
+备注：goja_nodejs 的 Buffer constructor.name 返回的是完整的 Go 函数签名，而不是 "Buffer"，类型名称是 github.com/dop251/goja_nodejs/buffer.(*Buffer).ctor-fm
+

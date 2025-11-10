@@ -10,10 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"flow-codeblock-go/utils"
-
 	"github.com/dop251/goja"
-	"go.uber.org/zap"
 )
 
 // BodyTypeHandler 处理各种 Body 类型
@@ -28,6 +25,58 @@ func NewBodyTypeHandler(maxBlobFileSize int64) *BodyTypeHandler {
 	}
 	return &BodyTypeHandler{
 		maxBlobFileSize: maxBlobFileSize,
+	}
+}
+
+// addSymbolIteratorToIterator 为迭代器添加 Symbol.iterator 支持（使用原生 API）
+// 使迭代器本身可迭代（返回自身），符合 ES6 迭代器协议
+func addSymbolIteratorToIterator(runtime *goja.Runtime, iterator *goja.Object) {
+	symbolObj := runtime.Get("Symbol")
+	if goja.IsUndefined(symbolObj) {
+		return
+	}
+
+	symbol := symbolObj.ToObject(runtime)
+	if symbol == nil {
+		return
+	}
+
+	iteratorSym := symbol.Get("iterator")
+	if goja.IsUndefined(iteratorSym) {
+		return
+	}
+
+	// 使用原生 SetSymbol API（性能最优）
+	if sym, ok := iteratorSym.(*goja.Symbol); ok {
+		iterator.SetSymbol(sym, runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+			return iterator
+		}))
+	}
+}
+
+// setSymbolIteratorMethod 为对象设置 Symbol.iterator 方法（使用原生 API）
+// methodFunc 是返回迭代器的函数
+func setSymbolIteratorMethod(runtime *goja.Runtime, obj *goja.Object, methodFunc func() goja.Value) {
+	symbolObj := runtime.Get("Symbol")
+	if goja.IsUndefined(symbolObj) {
+		return
+	}
+
+	symbol := symbolObj.ToObject(runtime)
+	if symbol == nil {
+		return
+	}
+
+	iteratorSym := symbol.Get("iterator")
+	if goja.IsUndefined(iteratorSym) {
+		return
+	}
+
+	// 使用原生 SetSymbol API（性能最优）
+	if sym, ok := iteratorSym.(*goja.Symbol); ok {
+		obj.SetSymbol(sym, runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+			return methodFunc()
+		}))
 	}
 }
 
@@ -591,12 +640,7 @@ func RegisterURLSearchParams(runtime *goja.Runtime) error {
 			})
 
 			// 🔥 添加 Symbol.iterator，使迭代器本身可迭代（返回自身）
-			script := `(function(iter) { iter[Symbol.iterator] = function() { return this; }; })`
-			if fn, err := runtime.RunString(script); err == nil {
-				if callable, ok := goja.AssertFunction(fn); ok {
-					callable(goja.Undefined(), iterator)
-				}
-			}
+			addSymbolIteratorToIterator(runtime, iterator)
 
 			return iterator
 		})
@@ -629,12 +673,7 @@ func RegisterURLSearchParams(runtime *goja.Runtime) error {
 			})
 
 			// 🔥 添加 Symbol.iterator，使迭代器本身可迭代（返回自身）
-			script := `(function(iter) { iter[Symbol.iterator] = function() { return this; }; })`
-			if fn, err := runtime.RunString(script); err == nil {
-				if callable, ok := goja.AssertFunction(fn); ok {
-					callable(goja.Undefined(), iterator)
-				}
-			}
+			addSymbolIteratorToIterator(runtime, iterator)
 
 			return iterator
 		})
@@ -665,12 +704,7 @@ func RegisterURLSearchParams(runtime *goja.Runtime) error {
 			})
 
 			// 🔥 添加 Symbol.iterator，使迭代器本身可迭代（返回自身）
-			script := `(function(iter) { iter[Symbol.iterator] = function() { return this; }; })`
-			if fn, err := runtime.RunString(script); err == nil {
-				if callable, ok := goja.AssertFunction(fn); ok {
-					callable(goja.Undefined(), iterator)
-				}
-			}
+			addSymbolIteratorToIterator(runtime, iterator)
 
 			return iterator
 		})
@@ -703,24 +737,18 @@ func RegisterURLSearchParams(runtime *goja.Runtime) error {
 		// 🔥 添加 Symbol.iterator 支持，使 URLSearchParams 本身可迭代
 		// 这样就可以直接用 for...of 遍历 URLSearchParams 对象
 		// 例如：for (const [key, value] of params) { ... }
-
-		// 通过 JS 代码设置 Symbol.iterator
 		// 将 entries 方法作为默认迭代器（符合 Web API 标准）
-		script := `(function(urlSearchParamsObj) {
-			urlSearchParamsObj[Symbol.iterator] = function() {
-				// ✅ 直接返回 entries() 迭代器
-				return this.entries();
-			};
-		})`
-
-		if fn, err := runtime.RunString(script); err == nil {
-			if callable, ok := goja.AssertFunction(fn); ok {
-				callable(goja.Undefined(), obj)
+		setSymbolIteratorMethod(runtime, obj, func() goja.Value {
+			// ✅ 直接返回 entries() 迭代器
+			// 调用 obj.entries() 方法
+			if entriesFunc, ok := goja.AssertFunction(obj.Get("entries")); ok {
+				result, err := entriesFunc(obj)
+				if err == nil {
+					return result
+				}
 			}
-		} else {
-			// 记录错误日志，但不影响 URLSearchParams 的其他功能
-			utils.Warn("设置 URLSearchParams 的 Symbol.iterator 失败", zap.Error(err))
-		}
+			return goja.Undefined()
+		})
 
 		return obj
 	}

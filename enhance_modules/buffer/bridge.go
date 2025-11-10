@@ -146,7 +146,56 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 			panic(runtime.NewTypeError("Buffer.from 不可用"))
 		}
 
-		// 对于其他类型（数组、Buffer、ArrayBuffer等），调用原生实现
+		// 🔥 修复：处理数组类型，确保 Infinity、NaN 等特殊值正确转换为 uint8
+		if arg0Obj := arg0.ToObject(runtime); arg0Obj != nil {
+			// 检查是否是类数组对象（有 length 属性）
+			lengthVal := arg0Obj.Get("length")
+			if lengthVal != nil && !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
+				length := lengthVal.ToInteger()
+				// 检查是否是真正的数组（不是 ArrayBuffer 或 TypedArray）
+				_, isArrayBuffer := arg0Obj.Export().(goja.ArrayBuffer)
+				
+				// 更严格的 TypedArray 检查：必须有 BYTES_PER_ELEMENT 且是数字类型
+				isTypedArray := false
+				bytesPerElement := arg0Obj.Get("BYTES_PER_ELEMENT")
+				if bytesPerElement != nil && !goja.IsUndefined(bytesPerElement) && !goja.IsNull(bytesPerElement) {
+					// 确保 BYTES_PER_ELEMENT 是一个正整数（1, 2, 4, 8）
+					bpe := bytesPerElement.ToInteger()
+					isTypedArray = bpe > 0 && bpe <= 8
+				}
+				
+				// 额外检查：真正的数组不应该有 buffer 属性（TypedArray 特征）
+				bufferProp := arg0Obj.Get("buffer")
+				hasBufferProp := bufferProp != nil && !goja.IsUndefined(bufferProp) && !goja.IsNull(bufferProp)
+				if hasBufferProp {
+					isTypedArray = true
+				}
+				
+				if !isArrayBuffer && !isTypedArray && length >= 0 {
+					// 这是一个普通数组或类数组对象，需要预处理元素
+					data := make([]byte, length)
+					for i := int64(0); i < length; i++ {
+						itemVal := arg0Obj.Get(fmt.Sprintf("%d", i))
+						if itemVal != nil && !goja.IsUndefined(itemVal) && !goja.IsNull(itemVal) {
+							data[i] = valueToUint8(itemVal)
+						}
+					}
+					// 使用处理后的字节数组创建 ArrayBuffer
+					ab := runtime.NewArrayBuffer(data)
+					fromFunc, ok := goja.AssertFunction(originalFrom)
+					if !ok {
+						panic(runtime.NewTypeError("Buffer.from 不是一个函数"))
+					}
+					result, err := fromFunc(goja.Undefined(), runtime.ToValue(ab))
+					if err != nil {
+						panic(err)
+					}
+					return result
+				}
+			}
+		}
+		
+		// 对于其他类型（Buffer、ArrayBuffer等），调用原生实现
 		if !goja.IsUndefined(originalFrom) {
 			// 🔥 修复：检查 ArrayBuffer + offset 参数（对齐 Node.js 错误信息）
 			// 如果第一个参数是 ArrayBuffer 且有第二个参数（offset），需要先验证
@@ -890,31 +939,32 @@ return result;
 		// 在生产环境中，应该使用日志系统记录
 		_ = err
 	}
-	
+
 	// 🔥 修复：添加 util.inspect 支持
 	be.setupUtilInspect(runtime)
 }
+
 // setupUtilInspect 添加 util.inspect 方法支持
 func (be *BufferEnhancer) setupUtilInspect(runtime *goja.Runtime) {
 	// 方法1: 修改全局 util
 	utilModule := runtime.Get("util")
 	var utilObj *goja.Object
-	
+
 	if utilModule == nil || goja.IsUndefined(utilModule) {
 		utilObj = runtime.NewObject()
 		runtime.Set("util", utilObj)
 	} else {
 		utilObj = utilModule.ToObject(runtime)
 	}
-	
+
 	// 创建 inspect 函数
 	inspectFunc := func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
 			return runtime.ToValue("undefined")
 		}
-		
+
 		obj := call.Arguments[0]
-		
+
 		// 检查对象是否有自定义的 inspect 方法
 		if objVal := obj.ToObject(runtime); objVal != nil {
 			if inspectMethod := objVal.Get("inspect"); !goja.IsUndefined(inspectMethod) {
@@ -926,21 +976,21 @@ func (be *BufferEnhancer) setupUtilInspect(runtime *goja.Runtime) {
 				}
 			}
 		}
-		
+
 		// 默认实现：转换为字符串
 		exported := obj.Export()
 		if exported == nil {
 			return runtime.ToValue("null")
 		}
-		
+
 		return runtime.ToValue(fmt.Sprintf("%v", exported))
 	}
-	
+
 	// 设置到全局 util（如果存在）
 	if utilObj != nil {
 		utilObj.Set("inspect", inspectFunc)
 	}
-	
+
 	// 方法2: 通过 JavaScript 注入到 require('util')
 	// 这确保 require('util').inspect 可用
 	polyfillCode := `

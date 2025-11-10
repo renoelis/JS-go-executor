@@ -216,7 +216,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		return runtime.ToValue(written)
 	}
 	writeValue := runtime.ToValue(writeFunc)
-	setFunctionNameAndLength(runtime, writeValue, "write", 1)
+	setFunctionNameAndLength(runtime, writeValue, "write", 4)
 	prototype.Set("write", writeValue)
 
 	// 添加 slice 方法
@@ -651,7 +651,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		return runtime.ToValue(-1)
 	}
 	indexOfValue := runtime.ToValue(indexOfFunc)
-	setFunctionNameAndLength(runtime, indexOfValue, "indexOf", 1)
+	setFunctionNameAndLength(runtime, indexOfValue, "indexOf", 3)
 	prototype.Set("indexOf", indexOfValue)
 
 	// 重写 toString 方法以支持范围参数
@@ -774,7 +774,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		}
 	}
 	toStringValue := runtime.ToValue(toStringFunc)
-	setFunctionNameAndLength(runtime, toStringValue, "toString", 0)
+	setFunctionNameAndLength(runtime, toStringValue, "toString", 3)
 	prototype.Set("toString", toStringValue)
 
 	// 添加 copy 方法
@@ -1223,7 +1223,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		return runtime.ToValue(written)
 	}
 	copyValue := runtime.ToValue(copyFunc)
-	setFunctionNameAndLength(runtime, copyValue, "copy", 1)
+	setFunctionNameAndLength(runtime, copyValue, "copy", 4)
 	prototype.Set("copy", copyValue)
 
 	// 添加 compare 方法
@@ -1533,7 +1533,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		return runtime.ToValue(0)
 	}
 	compareValue := runtime.ToValue(compareFunc)
-	setFunctionNameAndLength(runtime, compareValue, "compare", 1)
+	setFunctionNameAndLength(runtime, compareValue, "compare", 5)
 	prototype.Set("compare", compareValue)
 
 	// 添加 equals 方法
@@ -2328,7 +2328,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		return this
 	}
 	fillValue := runtime.ToValue(fillFunc)
-	setFunctionNameAndLength(runtime, fillValue, "fill", 1)
+	setFunctionNameAndLength(runtime, fillValue, "fill", 4)
 	prototype.Set("fill", fillValue)
 
 	// 添加 toJSON 方法
@@ -2409,7 +2409,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		panic(runtime.NewTypeError("this.indexOf is not a function"))
 	}
 	includesValue := runtime.ToValue(includesFunc)
-	setFunctionNameAndLength(runtime, includesValue, "includes", 1)
+	setFunctionNameAndLength(runtime, includesValue, "includes", 3)
 	prototype.Set("includes", includesValue)
 
 	// 添加 lastIndexOf 方法
@@ -2785,7 +2785,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		return runtime.ToValue(-1)
 	}
 	lastIndexOfValue := runtime.ToValue(lastIndexOfFunc)
-	setFunctionNameAndLength(runtime, lastIndexOfValue, "lastIndexOf", 1)
+	setFunctionNameAndLength(runtime, lastIndexOfValue, "lastIndexOf", 3)
 	prototype.Set("lastIndexOf", lastIndexOfValue)
 
 	// === 字节交换方法 ===
@@ -2794,13 +2794,18 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 	swap16Func := func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 
-		// 获取buffer长度
+		// 获取buffer长度（对于TypedArray，这是元素个数；对于Buffer，这是字节数）
 		bufferLength := int64(0)
 		if lengthVal := this.Get("length"); !goja.IsUndefined(lengthVal) {
 			bufferLength = lengthVal.ToInteger()
 		}
 
+		// 🔥 修复：Node.js 的 swap 行为
+		// 1. 长度检查：使用 length 属性（无论是 Buffer 还是 TypedArray）
+		// 2. 操作范围：使用 byteLength 属性（如果存在）来确定实际要操作的字节数
+		
 		// 🔥 修复：错误类型和消息对齐 Node.js
+		// 使用 length 检查是否是2的倍数
 		if bufferLength%2 != 0 {
 			errObj := runtime.NewGoError(fmt.Errorf("Buffer size must be a multiple of 16-bits"))
 			errObj.Set("code", runtime.ToValue("ERR_INVALID_BUFFER_SIZE"))
@@ -2808,42 +2813,66 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			panic(errObj)
 		}
 
-		// 🔥 性能优化：对于大 Buffer，使用批量操作
-		if shouldUseFastPath(bufferLength) {
-			// 尝试直接操作 ArrayBuffer（最快路径）
-			if bufferVal := this.Get("buffer"); bufferVal != nil && !goja.IsUndefined(bufferVal) {
-				if arrayBuffer, ok := bufferVal.Export().(goja.ArrayBuffer); ok {
-					bufferBytes := arrayBuffer.Bytes()
-					byteOffset := int64(0)
-					if offsetVal := this.Get("byteOffset"); offsetVal != nil && !goja.IsUndefined(offsetVal) {
-						byteOffset = offsetVal.ToInteger()
+		// 获取实际要操作的字节长度
+		actualByteLength := bufferLength
+		if byteLengthVal := this.Get("byteLength"); byteLengthVal != nil && !goja.IsUndefined(byteLengthVal) && !goja.IsNull(byteLengthVal) {
+			// 如果有 byteLength 属性（TypedArray 特有），使用它作为实际字节数
+			actualByteLength = byteLengthVal.ToInteger()
+		}
+
+		// 🔥 性能优化：尝试直接操作 ArrayBuffer（适用于所有大小）
+		// 1. 尝试通过 buffer 属性获取 ArrayBuffer
+		if bufferVal := this.Get("buffer"); bufferVal != nil && !goja.IsUndefined(bufferVal) {
+			if arrayBuffer, ok := bufferVal.Export().(goja.ArrayBuffer); ok {
+				bufferBytes := arrayBuffer.Bytes()
+				byteOffset := int64(0)
+				if offsetVal := this.Get("byteOffset"); offsetVal != nil && !goja.IsUndefined(offsetVal) {
+					byteOffset = offsetVal.ToInteger()
+				}
+				// 边界检查：使用实际字节长度
+				if byteOffset >= 0 && byteOffset+actualByteLength <= int64(len(bufferBytes)) {
+					// 🔥 修复：区分TypedArray和Buffer的swap行为
+					// 如果actualByteLength != bufferLength，说明这是TypedArray（元素大小 > 1字节）
+					if actualByteLength != bufferLength {
+						// TypedArray: 按元素交换（如Uint16Array，交换16位元素）
+						elementSize := int(actualByteLength / bufferLength) // 每个元素的字节数
+						swapElementsInPlace(bufferBytes[byteOffset:byteOffset+actualByteLength], elementSize, int(bufferLength))
+					} else {
+						// Buffer/Uint8Array: 按字节对交换
+						swapBytesInPlace(bufferBytes[byteOffset:byteOffset+actualByteLength], 2)
 					}
-					// 边界检查
-					if byteOffset >= 0 && byteOffset+bufferLength <= int64(len(bufferBytes)) {
-						// 直接操作 ArrayBuffer 的字节数组（原地修改）
-						swapBytesInPlace(bufferBytes[byteOffset:byteOffset+bufferLength], 2)
-						// ArrayBuffer 的修改会自动反映到 Buffer，无需写回
-						return this
-					}
+					// ArrayBuffer 的修改会自动反映到 Buffer，无需写回
+					return this
 				}
 			}
-			// 回退：批量导出到 Go []byte
-			bufferBytes := be.exportBufferBytesFast(runtime, this, bufferLength)
-			if bufferBytes != nil && int64(len(bufferBytes)) >= bufferLength {
-				// 在 Go 层面进行字节交换（原地操作）
-				swapBytesInPlace(bufferBytes[:bufferLength], 2)
-				// 批量写回
-				for i := int64(0); i < bufferLength; i++ {
-					this.Set(getIndexString(i), runtime.ToValue(bufferBytes[i]))
+		}
+		// 2. 尝试直接导出为 ArrayBuffer（Buffer 对象）
+		if exported := this.Export(); exported != nil {
+			if arrayBuffer, ok := exported.(goja.ArrayBuffer); ok {
+				bufferBytes := arrayBuffer.Bytes()
+				byteOffset := int64(0)
+				if offsetVal := this.Get("byteOffset"); offsetVal != nil && !goja.IsUndefined(offsetVal) {
+					byteOffset = offsetVal.ToInteger()
 				}
-				return this
+				// 边界检查：使用实际字节长度
+				if byteOffset >= 0 && byteOffset+actualByteLength <= int64(len(bufferBytes)) {
+					// 🔥 修复：区分TypedArray和Buffer的swap行为
+					if actualByteLength != bufferLength {
+						// TypedArray: 按元素交换
+						elementSize := int(actualByteLength / bufferLength)
+						swapElementsInPlace(bufferBytes[byteOffset:byteOffset+actualByteLength], elementSize, int(bufferLength))
+					} else {
+						// Buffer/Uint8Array: 按字节对交换
+						swapBytesInPlace(bufferBytes[byteOffset:byteOffset+actualByteLength], 2)
+					}
+					return this
+				}
 			}
-			// 如果批量导出失败，回退到逐字节交换
 		}
 
 		// 🔥 性能优化：对于小 Buffer，使用优化的逐字节交换
-		// 交换每对字节
-		for i := int64(0); i < bufferLength; i += 2 {
+		// 交换每对字节（使用实际字节长度）
+		for i := int64(0); i < actualByteLength; i += 2 {
 			byte1 := this.Get(getIndexString(i))
 			byte2 := this.Get(getIndexString(i + 1))
 
@@ -2862,13 +2891,18 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 	swap32Func := func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 
-		// 获取buffer长度
+		// 获取buffer长度（对于TypedArray，这是元素个数；对于Buffer，这是字节数）
 		bufferLength := int64(0)
 		if lengthVal := this.Get("length"); !goja.IsUndefined(lengthVal) {
 			bufferLength = lengthVal.ToInteger()
 		}
 
+		// 🔥 修复：Node.js 的 swap 行为
+		// 1. 长度检查：使用 length 属性（无论是 Buffer 还是 TypedArray）
+		// 2. 操作范围：使用 byteLength 属性（如果存在）来确定实际要操作的字节数
+		
 		// 🔥 修复：错误类型和消息对齐 Node.js
+		// 使用 length 检查是否是4的倍数
 		if bufferLength%4 != 0 {
 			errObj := runtime.NewGoError(fmt.Errorf("Buffer size must be a multiple of 32-bits"))
 			errObj.Set("code", runtime.ToValue("ERR_INVALID_BUFFER_SIZE"))
@@ -2876,42 +2910,65 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			panic(errObj)
 		}
 
-		// 🔥 性能优化：对于大 Buffer，使用批量操作
-		if shouldUseFastPath(bufferLength) {
-			// 尝试直接操作 ArrayBuffer（最快路径）
-			if bufferVal := this.Get("buffer"); bufferVal != nil && !goja.IsUndefined(bufferVal) {
-				if arrayBuffer, ok := bufferVal.Export().(goja.ArrayBuffer); ok {
-					bufferBytes := arrayBuffer.Bytes()
-					byteOffset := int64(0)
-					if offsetVal := this.Get("byteOffset"); offsetVal != nil && !goja.IsUndefined(offsetVal) {
-						byteOffset = offsetVal.ToInteger()
+		// 获取实际要操作的字节长度
+		actualByteLength := bufferLength
+		if byteLengthVal := this.Get("byteLength"); byteLengthVal != nil && !goja.IsUndefined(byteLengthVal) && !goja.IsNull(byteLengthVal) {
+			// 如果有 byteLength 属性（TypedArray 特有），使用它作为实际字节数
+			actualByteLength = byteLengthVal.ToInteger()
+		}
+
+		// 🔥 性能优化：尝试直接操作 ArrayBuffer（适用于所有大小）
+		// 1. 尝试通过 buffer 属性获取 ArrayBuffer
+		if bufferVal := this.Get("buffer"); bufferVal != nil && !goja.IsUndefined(bufferVal) {
+			if arrayBuffer, ok := bufferVal.Export().(goja.ArrayBuffer); ok {
+				bufferBytes := arrayBuffer.Bytes()
+				byteOffset := int64(0)
+				if offsetVal := this.Get("byteOffset"); offsetVal != nil && !goja.IsUndefined(offsetVal) {
+					byteOffset = offsetVal.ToInteger()
+				}
+				// 边界检查：使用实际字节长度
+				if byteOffset >= 0 && byteOffset+actualByteLength <= int64(len(bufferBytes)) {
+					// 🔥 修复：区分TypedArray和Buffer的swap行为
+					if actualByteLength != bufferLength {
+						// TypedArray: 按元素交换
+						elementSize := int(actualByteLength / bufferLength)
+						swapElementsInPlace(bufferBytes[byteOffset:byteOffset+actualByteLength], elementSize, int(bufferLength))
+					} else {
+						// Buffer/Uint8Array: 按字节组交换
+						swapBytesInPlace(bufferBytes[byteOffset:byteOffset+actualByteLength], 4)
 					}
-					// 边界检查
-					if byteOffset >= 0 && byteOffset+bufferLength <= int64(len(bufferBytes)) {
-						// 直接操作 ArrayBuffer 的字节数组（原地修改）
-						swapBytesInPlace(bufferBytes[byteOffset:byteOffset+bufferLength], 4)
-						// ArrayBuffer 的修改会自动反映到 Buffer，无需写回
-						return this
-					}
+					// ArrayBuffer 的修改会自动反映到 Buffer，无需写回
+					return this
 				}
 			}
-			// 回退：批量导出到 Go []byte
-			bufferBytes := be.exportBufferBytesFast(runtime, this, bufferLength)
-			if bufferBytes != nil && int64(len(bufferBytes)) >= bufferLength {
-				// 在 Go 层面进行字节交换（原地操作）
-				swapBytesInPlace(bufferBytes[:bufferLength], 4)
-				// 批量写回
-				for i := int64(0); i < bufferLength; i++ {
-					this.Set(getIndexString(i), runtime.ToValue(bufferBytes[i]))
+		}
+		// 2. 尝试直接导出为 ArrayBuffer（Buffer 对象）
+		if exported := this.Export(); exported != nil {
+			if arrayBuffer, ok := exported.(goja.ArrayBuffer); ok {
+				bufferBytes := arrayBuffer.Bytes()
+				byteOffset := int64(0)
+				if offsetVal := this.Get("byteOffset"); offsetVal != nil && !goja.IsUndefined(offsetVal) {
+					byteOffset = offsetVal.ToInteger()
 				}
-				return this
+				// 边界检查：使用实际字节长度
+				if byteOffset >= 0 && byteOffset+actualByteLength <= int64(len(bufferBytes)) {
+					// 🔥 修复：区分TypedArray和Buffer的swap行为
+					if actualByteLength != bufferLength {
+						// TypedArray: 按元素交换
+						elementSize := int(actualByteLength / bufferLength)
+						swapElementsInPlace(bufferBytes[byteOffset:byteOffset+actualByteLength], elementSize, int(bufferLength))
+					} else {
+						// Buffer/Uint8Array: 按字节组交换
+						swapBytesInPlace(bufferBytes[byteOffset:byteOffset+actualByteLength], 4)
+					}
+					return this
+				}
 			}
-			// 如果批量导出失败，回退到逐字节交换
 		}
 
 		// 🔥 性能优化：对于小 Buffer，使用优化的逐字节交换
-		// 交换每4个字节
-		for i := int64(0); i < bufferLength; i += 4 {
+		// 交换每4个字节（使用实际字节长度）
+		for i := int64(0); i < actualByteLength; i += 4 {
 			byte1 := this.Get(getIndexString(i))
 			byte2 := this.Get(getIndexString(i + 1))
 			byte3 := this.Get(getIndexString(i + 2))
@@ -2934,13 +2991,18 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 	swap64Func := func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
 
-		// 获取buffer长度
+		// 获取buffer长度（对于TypedArray，这是元素个数；对于Buffer，这是字节数）
 		bufferLength := int64(0)
 		if lengthVal := this.Get("length"); !goja.IsUndefined(lengthVal) {
 			bufferLength = lengthVal.ToInteger()
 		}
 
+		// 🔥 修复：Node.js 的 swap 行为
+		// 1. 长度检查：使用 length 属性（无论是 Buffer 还是 TypedArray）
+		// 2. 操作范围：使用 byteLength 属性（如果存在）来确定实际要操作的字节数
+		
 		// 🔥 修复：错误类型和消息对齐 Node.js
+		// 使用 length 检查是否是8的倍数
 		if bufferLength%8 != 0 {
 			errObj := runtime.NewGoError(fmt.Errorf("Buffer size must be a multiple of 64-bits"))
 			errObj.Set("code", runtime.ToValue("ERR_INVALID_BUFFER_SIZE"))
@@ -2948,42 +3010,65 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			panic(errObj)
 		}
 
-		// 🔥 性能优化：对于大 Buffer，使用批量操作
-		if shouldUseFastPath(bufferLength) {
-			// 尝试直接操作 ArrayBuffer（最快路径）
-			if bufferVal := this.Get("buffer"); bufferVal != nil && !goja.IsUndefined(bufferVal) {
-				if arrayBuffer, ok := bufferVal.Export().(goja.ArrayBuffer); ok {
-					bufferBytes := arrayBuffer.Bytes()
-					byteOffset := int64(0)
-					if offsetVal := this.Get("byteOffset"); offsetVal != nil && !goja.IsUndefined(offsetVal) {
-						byteOffset = offsetVal.ToInteger()
+		// 获取实际要操作的字节长度
+		actualByteLength := bufferLength
+		if byteLengthVal := this.Get("byteLength"); byteLengthVal != nil && !goja.IsUndefined(byteLengthVal) && !goja.IsNull(byteLengthVal) {
+			// 如果有 byteLength 属性（TypedArray 特有），使用它作为实际字节数
+			actualByteLength = byteLengthVal.ToInteger()
+		}
+
+		// 🔥 性能优化：尝试直接操作 ArrayBuffer（适用于所有大小）
+		// 1. 尝试通过 buffer 属性获取 ArrayBuffer
+		if bufferVal := this.Get("buffer"); bufferVal != nil && !goja.IsUndefined(bufferVal) {
+			if arrayBuffer, ok := bufferVal.Export().(goja.ArrayBuffer); ok {
+				bufferBytes := arrayBuffer.Bytes()
+				byteOffset := int64(0)
+				if offsetVal := this.Get("byteOffset"); offsetVal != nil && !goja.IsUndefined(offsetVal) {
+					byteOffset = offsetVal.ToInteger()
+				}
+				// 边界检查：使用实际字节长度
+				if byteOffset >= 0 && byteOffset+actualByteLength <= int64(len(bufferBytes)) {
+					// 🔥 修复：区分TypedArray和Buffer的swap行为
+					if actualByteLength != bufferLength {
+						// TypedArray: 按元素交换
+						elementSize := int(actualByteLength / bufferLength)
+						swapElementsInPlace(bufferBytes[byteOffset:byteOffset+actualByteLength], elementSize, int(bufferLength))
+					} else {
+						// Buffer/Uint8Array: 按字节组交换
+						swapBytesInPlace(bufferBytes[byteOffset:byteOffset+actualByteLength], 8)
 					}
-					// 边界检查
-					if byteOffset >= 0 && byteOffset+bufferLength <= int64(len(bufferBytes)) {
-						// 直接操作 ArrayBuffer 的字节数组（原地修改）
-						swapBytesInPlace(bufferBytes[byteOffset:byteOffset+bufferLength], 8)
-						// ArrayBuffer 的修改会自动反映到 Buffer，无需写回
-						return this
-					}
+					// ArrayBuffer 的修改会自动反映到 Buffer，无需写回
+					return this
 				}
 			}
-			// 回退：批量导出到 Go []byte
-			bufferBytes := be.exportBufferBytesFast(runtime, this, bufferLength)
-			if bufferBytes != nil && int64(len(bufferBytes)) >= bufferLength {
-				// 在 Go 层面进行字节交换（原地操作）
-				swapBytesInPlace(bufferBytes[:bufferLength], 8)
-				// 批量写回
-				for i := int64(0); i < bufferLength; i++ {
-					this.Set(getIndexString(i), runtime.ToValue(bufferBytes[i]))
+		}
+		// 2. 尝试直接导出为 ArrayBuffer（Buffer 对象）
+		if exported := this.Export(); exported != nil {
+			if arrayBuffer, ok := exported.(goja.ArrayBuffer); ok {
+				bufferBytes := arrayBuffer.Bytes()
+				byteOffset := int64(0)
+				if offsetVal := this.Get("byteOffset"); offsetVal != nil && !goja.IsUndefined(offsetVal) {
+					byteOffset = offsetVal.ToInteger()
 				}
-				return this
+				// 边界检查：使用实际字节长度
+				if byteOffset >= 0 && byteOffset+actualByteLength <= int64(len(bufferBytes)) {
+					// 🔥 修复：区分TypedArray和Buffer的swap行为
+					if actualByteLength != bufferLength {
+						// TypedArray: 按元素交换
+						elementSize := int(actualByteLength / bufferLength)
+						swapElementsInPlace(bufferBytes[byteOffset:byteOffset+actualByteLength], elementSize, int(bufferLength))
+					} else {
+						// Buffer/Uint8Array: 按字节组交换
+						swapBytesInPlace(bufferBytes[byteOffset:byteOffset+actualByteLength], 8)
+					}
+					return this
+				}
 			}
-			// 如果批量导出失败，回退到逐字节交换
 		}
 
 		// 🔥 性能优化：对于小 Buffer，使用优化的逐字节交换
-		// 交换每8个字节
-		for i := int64(0); i < bufferLength; i += 8 {
+		// 交换每8个字节（使用实际字节长度）
+		for i := int64(0); i < actualByteLength; i += 8 {
 			bytes := make([]goja.Value, 8)
 			for j := int64(0); j < 8; j++ {
 				bytes[j] = this.Get(getIndexString(i + j))
@@ -3198,7 +3283,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		return newBuffer
 	}
 	subarrayValue := runtime.ToValue(subarrayFunc)
-	setFunctionNameAndLength(runtime, subarrayValue, "subarray", 0)
+	setFunctionNameAndLength(runtime, subarrayValue, "subarray", 2)
 	prototype.Set("subarray", subarrayValue)
 
 	// 添加 set 方法

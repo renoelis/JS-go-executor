@@ -30,6 +30,9 @@ func (e *AbortError) Error() string {
 	return e.message
 }
 
+// 注意：addSymbolIteratorToIterator 和 setSymbolIteratorMethod 函数
+// 已在 body_types.go 中定义，这里复用
+
 // bodyWithCancel 包装 io.ReadCloser，提供多层超时保护
 // 🔥 v2.4.3: 增加空闲超时机制，防止资源泄漏
 // 🔥 v2.5.0: 动态超时 - 根据响应大小智能调整超时时间
@@ -2018,10 +2021,7 @@ func (fe *FetchEnhancer) createFormDataConstructor(runtime *goja.Runtime) func(g
 			})
 
 			// 🔥 添加 Symbol.iterator 使迭代器本身可迭代
-			// 保存迭代器到全局临时变量,然后用 JS 代码设置 Symbol.iterator
-			runtime.Set("__tempFormDataIterator", iterator)
-			runtime.RunString("__tempFormDataIterator[Symbol.iterator] = function() { return this; };")
-			runtime.Set("__tempFormDataIterator", goja.Undefined())
+			addSymbolIteratorToIterator(runtime, iterator)
 
 			return iterator
 		})
@@ -2052,9 +2052,7 @@ func (fe *FetchEnhancer) createFormDataConstructor(runtime *goja.Runtime) func(g
 			})
 
 			// 🔥 添加 Symbol.iterator 使迭代器本身可迭代
-			runtime.Set("__tempFormDataIterator", iterator)
-			runtime.RunString("__tempFormDataIterator[Symbol.iterator] = function() { return this; };")
-			runtime.Set("__tempFormDataIterator", goja.Undefined())
+			addSymbolIteratorToIterator(runtime, iterator)
 
 			return iterator
 		})
@@ -2104,9 +2102,7 @@ func (fe *FetchEnhancer) createFormDataConstructor(runtime *goja.Runtime) func(g
 			})
 
 			// 🔥 添加 Symbol.iterator 使迭代器本身可迭代
-			runtime.Set("__tempFormDataIterator", iterator)
-			runtime.RunString("__tempFormDataIterator[Symbol.iterator] = function() { return this; };")
-			runtime.Set("__tempFormDataIterator", goja.Undefined())
+			addSymbolIteratorToIterator(runtime, iterator)
 
 			return iterator
 		})
@@ -2118,21 +2114,17 @@ func (fe *FetchEnhancer) createFormDataConstructor(runtime *goja.Runtime) func(g
 
 		// 🔥 添加 Symbol.iterator 支持，使 FormData 本身可迭代
 		// 例如：for (const [name, value] of formData) { ... }
-		// 现在 entries() 返回迭代器对象，直接返回即可
-		script := `(function(formDataObj) {
-			formDataObj[Symbol.iterator] = function() {
-				return this.entries();
-			};
-		})`
-
-		if fn, err := runtime.RunString(script); err == nil {
-			if callable, ok := goja.AssertFunction(fn); ok {
-				callable(goja.Undefined(), formDataObj)
+		// 将 entries 方法作为默认迭代器（符合 Web API 标准）
+		setSymbolIteratorMethod(runtime, formDataObj, func() goja.Value {
+			// ✅ 直接返回 entries() 迭代器
+			if entriesFunc, ok := goja.AssertFunction(formDataObj.Get("entries")); ok {
+				result, err := entriesFunc(formDataObj)
+				if err == nil {
+					return result
+				}
 			}
-		} else {
-			// 记录错误日志，但不影响 FormData 的其他功能
-			utils.Warn("设置 FormData 的 Symbol.iterator 失败", zap.Error(err))
-		}
+			return goja.Undefined()
+		})
 
 		return formDataObj
 	}

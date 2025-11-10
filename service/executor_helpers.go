@@ -661,6 +661,9 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 			url.Enable(vm)
 			process.Enable(vm)
 
+			// 🔥 步骤1.5: 拦截 Object.freeze 以支持 Node.js v25 Buffer 行为
+			e.interceptObjectFreezeForBuffer(vm)
+
 			// 🔥 使用模块注册器统一设置所有模块
 			if err := e.moduleRegistry.SetupAll(vm); err != nil {
 				utils.Error("EventLoop 中模块设置失败", zap.Error(err))

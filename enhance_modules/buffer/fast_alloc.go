@@ -1,12 +1,16 @@
 package buffer
 
 import (
+	"fmt"
+	"math"
+	"strconv"
+	
 	"github.com/dop251/goja"
 )
 
 // OptimizedBufferAlloc 优化的 Buffer.alloc 实现
-// 使用 Go 的高效内存分配而不是逐字节初始化
-func OptimizedBufferAlloc(runtime *goja.Runtime, size int64, fill interface{}, encoding string) (goja.Value, error) {
+// 使用 Buffer 池和 Go 的高效内存分配
+func OptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool, size int64, fill interface{}, encoding string) (goja.Value, error) {
 	if size < 0 {
 		panic(runtime.NewTypeError("size 参数必须非负"))
 	}
@@ -17,9 +21,22 @@ func OptimizedBufferAlloc(runtime *goja.Runtime, size int64, fill interface{}, e
 		panic(runtime.NewTypeError("size 参数过大"))
 	}
 
-	// 🔥 性能优化：直接创建 ArrayBuffer，让 runtime 管理内存
-	// 这样避免了先创建 []byte 再复制到 ArrayBuffer 的开销
-	ab := runtime.NewArrayBuffer(make([]byte, size))
+	// 🔥 性能优化：使用 Buffer 池分配内存
+	// 小 Buffer (<4KB) 从池中分配，大 Buffer 直接分配
+	var data []byte
+	if pool != nil && fill == nil {
+		// 使用池分配并零初始化
+		data = pool.AllocZeroed(int(size))
+	} else if pool != nil {
+		// 需要填充，先从池分配
+		data = pool.Alloc(int(size))
+	} else {
+		// 没有池，直接分配
+		data = make([]byte, size)
+	}
+
+	// 创建 ArrayBuffer
+	ab := runtime.NewArrayBuffer(data)
 
 	// 如果需要填充（默认是 0，Go 的 make 已经零初始化了）
 	if fill != nil {
@@ -86,7 +103,7 @@ func OptimizedBufferAlloc(runtime *goja.Runtime, size int64, fill interface{}, e
 }
 
 // SetupOptimizedBufferAlloc 设置优化的 Buffer.alloc
-func SetupOptimizedBufferAlloc(runtime *goja.Runtime) {
+func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 	bufferObj := runtime.Get("Buffer")
 	if bufferObj == nil || goja.IsUndefined(bufferObj) {
 		return
@@ -97,15 +114,47 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime) {
 		return
 	}
 
-	// 🔥 覆盖 Buffer.alloc 方法
+	// 🔥 覆盖 Buffer.alloc 方法（使用 Buffer 池优化）
 	buffer.Set("alloc", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
 			panic(runtime.NewTypeError("size 参数是必需的"))
 		}
 
-		size := call.Arguments[0].ToInteger()
+		sizeArg := call.Arguments[0]
+		
+		// 检查 NaN、Infinity 等无效值
+		if sizeArg.ExportType() != nil {
+			switch sizeArg.ExportType().Kind().String() {
+			case "string":
+				// 字符串参数，尝试转换为数字
+				// 如果是非数字字符串，ToInteger() 会返回 0，但我们需要抛出错误
+				str := sizeArg.String()
+				if str != "" {
+					// 尝试解析
+					if _, err := strconv.ParseFloat(str, 64); err != nil {
+						panic(runtime.NewTypeError(fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s", str)))
+					}
+				}
+			case "float64":
+				// 检查 NaN 和 Infinity
+				f := sizeArg.ToFloat()
+				if math.IsNaN(f) {
+					panic(runtime.NewTypeError("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received NaN"))
+				}
+				if math.IsInf(f, 0) {
+					panic(runtime.NewTypeError("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received Infinity"))
+				}
+			}
+		}
+		
+		size := sizeArg.ToInteger()
 		if size < 0 {
-			panic(runtime.NewTypeError("size 参数必须非负"))
+			panic(runtime.NewTypeError(fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
+		}
+		
+		const maxSize = 9007199254740991 // Number.MAX_SAFE_INTEGER
+		if size > maxSize {
+			panic(runtime.NewTypeError(fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
 		}
 
 		// 检查是否有填充值
@@ -145,7 +194,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime) {
 			encoding = call.Arguments[2].String()
 		}
 
-		result, err := OptimizedBufferAlloc(runtime, size, fill, encoding)
+		result, err := OptimizedBufferAlloc(runtime, pool, size, fill, encoding)
 		if err != nil {
 			panic(err)
 		}
@@ -153,15 +202,38 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime) {
 		return result
 	})
 
-	// 🔥 优化 Buffer.allocUnsafe - 不需要零初始化
+	// 🔥 优化 Buffer.allocUnsafe - 使用池但不零初始化
 	buffer.Set("allocUnsafe", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
 			panic(runtime.NewTypeError("size 参数是必需的"))
 		}
 
-		size := call.Arguments[0].ToInteger()
+		sizeArg := call.Arguments[0]
+		
+		// 检查 NaN、Infinity 等无效值
+		if sizeArg.ExportType() != nil {
+			switch sizeArg.ExportType().Kind().String() {
+			case "string":
+				str := sizeArg.String()
+				if str != "" {
+					if _, err := strconv.ParseFloat(str, 64); err != nil {
+						panic(runtime.NewTypeError(fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s", str)))
+					}
+				}
+			case "float64":
+				f := sizeArg.ToFloat()
+				if math.IsNaN(f) {
+					panic(runtime.NewTypeError("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received NaN"))
+				}
+				if math.IsInf(f, 0) {
+					panic(runtime.NewTypeError("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received Infinity"))
+				}
+			}
+		}
+		
+		size := sizeArg.ToInteger()
 		if size < 0 {
-			panic(runtime.NewTypeError("size 参数必须非负"))
+			panic(runtime.NewTypeError(fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
 		}
 
 		const maxSize = 2 * 1024 * 1024 * 1024 // 2GB
@@ -169,11 +241,16 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime) {
 			panic(runtime.NewTypeError("size 参数过大"))
 		}
 
-		// 🔥 allocUnsafe 真正不初始化内存（使用 allocUnsafeSlow 的方式）
-		// 直接创建 ArrayBuffer 但不要求零初始化
-		// 注意：Go 的 make 总是零初始化，这是语言特性
-		// 但我们可以跳过填充步骤
-		ab := runtime.NewArrayBuffer(make([]byte, size))
+		// 🔥 性能优化：使用 Buffer 池分配（不零初始化）
+		// allocUnsafe 的语义是不清零内存，从池中分配正好符合
+		var data []byte
+		if pool != nil {
+			data = pool.Alloc(int(size))
+		} else {
+			data = make([]byte, size)
+		}
+
+		ab := runtime.NewArrayBuffer(data)
 
 		bufferConstructor := runtime.Get("Buffer")
 		if goja.IsUndefined(bufferConstructor) || goja.IsNull(bufferConstructor) {
@@ -204,9 +281,32 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime) {
 			panic(runtime.NewTypeError("size 参数是必需的"))
 		}
 
-		size := call.Arguments[0].ToInteger()
+		sizeArg := call.Arguments[0]
+		
+		// 检查 NaN、Infinity 等无效值
+		if sizeArg.ExportType() != nil {
+			switch sizeArg.ExportType().Kind().String() {
+			case "string":
+				str := sizeArg.String()
+				if str != "" {
+					if _, err := strconv.ParseFloat(str, 64); err != nil {
+						panic(runtime.NewTypeError(fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s", str)))
+					}
+				}
+			case "float64":
+				f := sizeArg.ToFloat()
+				if math.IsNaN(f) {
+					panic(runtime.NewTypeError("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received NaN"))
+				}
+				if math.IsInf(f, 0) {
+					panic(runtime.NewTypeError("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received Infinity"))
+				}
+			}
+		}
+		
+		size := sizeArg.ToInteger()
 		if size < 0 {
-			panic(runtime.NewTypeError("size 参数必须非负"))
+			panic(runtime.NewTypeError(fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
 		}
 
 		const maxSize = 2 * 1024 * 1024 * 1024 // 2GB

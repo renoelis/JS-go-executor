@@ -99,7 +99,7 @@ func (be *BufferEnhancer) setupBigIntSupport(runtime *goja.Runtime) {
 		prototype := runtime.NewObject()
 
 		// 添加 valueOf 方法（qs 库需要检查这个方法是否存在）
-		prototype.Set("valueOf", runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+		valueOfFunc := func(call goja.FunctionCall) goja.Value {
 			// 如果是对象，尝试获取其值
 			if thisObj, ok := call.This.(*goja.Object); ok {
 				if val := thisObj.Get("__bigIntValue__"); !goja.IsUndefined(val) {
@@ -108,17 +108,23 @@ func (be *BufferEnhancer) setupBigIntSupport(runtime *goja.Runtime) {
 			}
 			// 否则返回 this 本身（对于原生 bigint）
 			return call.This
-		}))
+		}
+		valueOfValue := runtime.ToValue(valueOfFunc)
+		setFunctionNameAndLength(runtime, valueOfValue, "valueOf", 0)
+		prototype.Set("valueOf", valueOfValue)
 
 		// 添加 toString 方法
-		prototype.Set("toString", runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+		toStringFunc := func(call goja.FunctionCall) goja.Value {
 			if thisObj, ok := call.This.(*goja.Object); ok {
 				if val := thisObj.Get("__bigIntValue__"); !goja.IsUndefined(val) {
 					return val
 				}
 			}
 			return runtime.ToValue(call.This.String())
-		}))
+		}
+		toStringValue := runtime.ToValue(toStringFunc)
+		setFunctionNameAndLength(runtime, toStringValue, "toString", 0)
+		prototype.Set("toString", toStringValue)
 
 		obj.Set("prototype", prototype)
 	}
@@ -214,11 +220,11 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 	}
 
 	// readBigInt64BE - 读取 64 位有符号大端整数
-	prototype.Set("readBigInt64BE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readBigInt64BEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readBigInt64BE")
 		offset := int64(0)
-		if len(call.Arguments) > 0 {
-			offset = call.Arguments[0].ToInteger()
+		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
+			offset = validateOffset(runtime, call.Arguments[0], "readBigInt64BE")
 		}
 
 		// 检查边界
@@ -228,7 +234,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		bytes := make([]byte, 8)
 		for i := 0; i < 8; i++ {
 			val := this.Get(strconv.FormatInt(offset+int64(i), 10))
-			if goja.IsUndefined(val) {
+			if val == nil || goja.IsUndefined(val) {
 				bytes[i] = 0
 			} else {
 				bytes[i] = byte(val.ToInteger())
@@ -246,14 +252,20 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		}
 
 		return createBigInt(value)
-	})
+	}
+	readBigInt64BEValue := runtime.ToValue(readBigInt64BEFunc)
+	if fnObj := readBigInt64BEValue.ToObject(runtime); fnObj != nil {
+		fnObj.DefineDataProperty("name", runtime.ToValue("readBigInt64BE"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+		fnObj.DefineDataProperty("length", runtime.ToValue(0), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+	}
+	prototype.Set("readBigInt64BE", readBigInt64BEValue)
 
 	// readBigInt64LE - 读取 64 位有符号小端整数
-	prototype.Set("readBigInt64LE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readBigInt64LEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readBigInt64LE")
 		offset := int64(0)
-		if len(call.Arguments) > 0 {
-			offset = call.Arguments[0].ToInteger()
+		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
+			offset = validateOffset(runtime, call.Arguments[0], "readBigInt64LE")
 		}
 
 		// 检查边界
@@ -263,7 +275,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		bytes := make([]byte, 8)
 		for i := 0; i < 8; i++ {
 			val := this.Get(strconv.FormatInt(offset+int64(7-i), 10))
-			if goja.IsUndefined(val) {
+			if val == nil || goja.IsUndefined(val) {
 				bytes[i] = 0
 			} else {
 				bytes[i] = byte(val.ToInteger())
@@ -281,14 +293,20 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		}
 
 		return createBigInt(value)
-	})
+	}
+	readBigInt64LEValue := runtime.ToValue(readBigInt64LEFunc)
+	if fnObj := readBigInt64LEValue.ToObject(runtime); fnObj != nil {
+		fnObj.DefineDataProperty("name", runtime.ToValue("readBigInt64LE"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+		fnObj.DefineDataProperty("length", runtime.ToValue(0), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+	}
+	prototype.Set("readBigInt64LE", readBigInt64LEValue)
 
 	// readBigUInt64BE - 读取 64 位无符号大端整数
-	prototype.Set("readBigUInt64BE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readBigUInt64BEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readBigUInt64BE")
 		offset := int64(0)
-		if len(call.Arguments) > 0 {
-			offset = call.Arguments[0].ToInteger()
+		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
+			offset = validateOffset(runtime, call.Arguments[0], "readBigUInt64BE")
 		}
 
 		// 检查边界
@@ -298,7 +316,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		bytes := make([]byte, 8)
 		for i := 0; i < 8; i++ {
 			val := this.Get(strconv.FormatInt(offset+int64(i), 10))
-			if goja.IsUndefined(val) {
+			if val == nil || goja.IsUndefined(val) {
 				bytes[i] = 0
 			} else {
 				bytes[i] = byte(val.ToInteger())
@@ -309,14 +327,32 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		value := new(big.Int).SetBytes(bytes)
 
 		return createBigInt(value)
-	})
+	}
+	readBigUInt64BEValue := runtime.ToValue(readBigUInt64BEFunc)
+	// 设置函数的 name 属性
+	if fnObj := readBigUInt64BEValue.ToObject(runtime); fnObj != nil {
+		fnObj.DefineDataProperty("name", runtime.ToValue("readBigUInt64BE"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+		fnObj.DefineDataProperty("length", runtime.ToValue(0), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+	}
+	prototype.Set("readBigUInt64BE", readBigUInt64BEValue)
+	
+	// 为别名创建单独的函数对象以设置正确的 name
+	readBigUint64BEFunc := func(call goja.FunctionCall) goja.Value {
+		return readBigUInt64BEFunc(call)
+	}
+	readBigUint64BEValue := runtime.ToValue(readBigUint64BEFunc)
+	if fnObj := readBigUint64BEValue.ToObject(runtime); fnObj != nil {
+		fnObj.DefineDataProperty("name", runtime.ToValue("readBigUint64BE"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+		fnObj.DefineDataProperty("length", runtime.ToValue(1), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+	}
+	prototype.Set("readBigUint64BE", readBigUint64BEValue)
 
 	// readBigUInt64LE - 读取 64 位无符号小端整数
-	prototype.Set("readBigUInt64LE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readBigUInt64LEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readBigUInt64LE")
 		offset := int64(0)
-		if len(call.Arguments) > 0 {
-			offset = call.Arguments[0].ToInteger()
+		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
+			offset = validateOffset(runtime, call.Arguments[0], "readBigUInt64LE")
 		}
 
 		// 检查边界
@@ -326,7 +362,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		bytes := make([]byte, 8)
 		for i := 0; i < 8; i++ {
 			val := this.Get(strconv.FormatInt(offset+int64(7-i), 10))
-			if goja.IsUndefined(val) {
+			if val == nil || goja.IsUndefined(val) {
 				bytes[i] = 0
 			} else {
 				bytes[i] = byte(val.ToInteger())
@@ -337,21 +373,35 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		value := new(big.Int).SetBytes(bytes)
 
 		return createBigInt(value)
-	})
+	}
+	readBigUInt64LEValue := runtime.ToValue(readBigUInt64LEFunc)
+	if fnObj := readBigUInt64LEValue.ToObject(runtime); fnObj != nil {
+		fnObj.DefineDataProperty("name", runtime.ToValue("readBigUInt64LE"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+		fnObj.DefineDataProperty("length", runtime.ToValue(0), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+	}
+	prototype.Set("readBigUInt64LE", readBigUInt64LEValue)
+	
+	// 为别名创建单独的函数对象以设置正确的 name
+	readBigUint64LEFunc := func(call goja.FunctionCall) goja.Value {
+		return readBigUInt64LEFunc(call)
+	}
+	readBigUint64LEValue := runtime.ToValue(readBigUint64LEFunc)
+	if fnObj := readBigUint64LEValue.ToObject(runtime); fnObj != nil {
+		fnObj.DefineDataProperty("name", runtime.ToValue("readBigUint64LE"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+		fnObj.DefineDataProperty("length", runtime.ToValue(1), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+	}
+	prototype.Set("readBigUint64LE", readBigUint64LEValue)
 
 	// writeBigInt64BE - 写入 64 位有符号大端整数
-	prototype.Set("writeBigInt64BE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
-		if this == nil {
-			panic(runtime.NewTypeError("方法 writeBigInt64BE 在不兼容的接收器上调用"))
-		}
+	writeBigInt64BEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeBigInt64BE")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		offset := int64(0)
 		if len(call.Arguments) > 1 {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeBigInt64BE")
 		}
 
 		// 检查边界
@@ -379,21 +429,21 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		}
 
 		return runtime.ToValue(offset + 8)
-	})
+	}
+	writeBigInt64BEValue := runtime.ToValue(writeBigInt64BEFunc)
+	setFunctionNameAndLength(runtime, writeBigInt64BEValue, "writeBigInt64BE", 1)
+	prototype.Set("writeBigInt64BE", writeBigInt64BEValue)
 
 	// writeBigInt64LE - 写入 64 位有符号小端整数
-	prototype.Set("writeBigInt64LE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
-		if this == nil {
-			panic(runtime.NewTypeError("方法 writeBigInt64LE 在不兼容的接收器上调用"))
-		}
+	writeBigInt64LEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeBigInt64LE")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		offset := int64(0)
 		if len(call.Arguments) > 1 {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeBigInt64LE")
 		}
 
 		// 检查边界
@@ -421,21 +471,21 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		}
 
 		return runtime.ToValue(offset + 8)
-	})
+	}
+	writeBigInt64LEValue := runtime.ToValue(writeBigInt64LEFunc)
+	setFunctionNameAndLength(runtime, writeBigInt64LEValue, "writeBigInt64LE", 1)
+	prototype.Set("writeBigInt64LE", writeBigInt64LEValue)
 
 	// writeBigUInt64BE - 写入 64 位无符号大端整数
-	prototype.Set("writeBigUInt64BE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
-		if this == nil {
-			panic(runtime.NewTypeError("方法 writeBigUInt64BE 在不兼容的接收器上调用"))
-		}
+	writeBigUInt64BEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeBigUInt64BE")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		offset := int64(0)
 		if len(call.Arguments) > 1 {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeBigUInt64BE")
 		}
 
 		// 检查边界
@@ -457,21 +507,23 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		}
 
 		return runtime.ToValue(offset + 8)
-	})
+	}
+	writeBigUInt64BEValue := runtime.ToValue(writeBigUInt64BEFunc)
+	setFunctionNameAndLength(runtime, writeBigUInt64BEValue, "writeBigUInt64BE", 1)
+	prototype.Set("writeBigUInt64BE", writeBigUInt64BEValue)
+	// 添加别名 writeBigUint64BE（小写 u），确保是同一个引用
+	prototype.Set("writeBigUint64BE", writeBigUInt64BEValue)
 
 	// writeBigUInt64LE - 写入 64 位无符号小端整数
-	prototype.Set("writeBigUInt64LE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
-		if this == nil {
-			panic(runtime.NewTypeError("方法 writeBigUInt64LE 在不兼容的接收器上调用"))
-		}
+	writeBigUInt64LEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeBigUInt64LE")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
 
 		offset := int64(0)
 		if len(call.Arguments) > 1 {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeBigUInt64LE")
 		}
 
 		// 检查边界
@@ -493,5 +545,10 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		}
 
 		return runtime.ToValue(offset + 8)
-	})
+	}
+	writeBigUInt64LEValue := runtime.ToValue(writeBigUInt64LEFunc)
+	setFunctionNameAndLength(runtime, writeBigUInt64LEValue, "writeBigUInt64LE", 1)
+	prototype.Set("writeBigUInt64LE", writeBigUInt64LEValue)
+	// 添加别名 writeBigUint64LE（小写 u），确保是同一个引用
+	prototype.Set("writeBigUint64LE", writeBigUInt64LEValue)
 }

@@ -10,6 +10,33 @@ import (
 	"github.com/dop251/goja"
 )
 
+// valueToUint8 converts a goja.Value to uint8 according to ECMAScript specification
+// This handles NaN, Infinity, and other edge cases correctly
+func valueToUint8(v goja.Value) uint8 {
+	// First convert to number
+	num := v.ToNumber()
+	
+	// Get float representation to check for special values
+	f := num.ToFloat()
+	
+	// According to ECMAScript spec: NaN, ±Infinity, ±0 all return 0
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0
+	}
+	
+	// For normal values, use ToInteger which handles the conversion properly
+	// ToInteger truncates towards zero
+	i := num.ToInteger()
+	
+	// Apply modulo 256 with proper handling of negative values
+	mod := i % 256
+	if mod < 0 {
+		mod += 256
+	}
+	
+	return uint8(mod)
+}
+
 // safeGetThis 安全地获取 this 对象，如果失败则 panic
 func safeGetThis(runtime *goja.Runtime, call goja.FunctionCall) *goja.Object {
 	this := call.This.ToObject(runtime)
@@ -29,12 +56,12 @@ func safeGetBufferThis(runtime *goja.Runtime, call goja.FunctionCall, methodName
 			panic(newRangeError(runtime, "The value of \"offset\" is out of range. It must be >= 0 && <= 0. Received 0"))
 		}
 	}
-	
+
 	this := call.This.ToObject(runtime)
 	if this == nil {
 		panic(runtime.NewTypeError("无法读取 null 或 undefined 的属性"))
 	}
-	
+
 	// Node.js 允许以下类型调用 Buffer 方法：
 	// 1. Buffer 本身
 	// 2. TypedArray（Uint8Array 等）
@@ -43,12 +70,12 @@ func safeGetBufferThis(runtime *goja.Runtime, call goja.FunctionCall, methodName
 	// 但不允许：
 	// 1. 只有 length 但没有数字索引的对象（如 { length: 8 }）
 	// 2. 字符串（会导致 BigInt 转换错误）
-	
+
 	// 检查是否是 Buffer 或 TypedArray
 	if isBufferOrTypedArray(runtime, this) {
 		return this
 	}
-	
+
 	// 检查是否是数组（通过检查是否有 Array.isArray）
 	if exported := this.Export(); exported != nil {
 		// 检查是否是 []interface{} 类型（数组）
@@ -56,7 +83,7 @@ func safeGetBufferThis(runtime *goja.Runtime, call goja.FunctionCall, methodName
 			return this
 		}
 	}
-	
+
 	// 检查是否是类数组对象（有 length 属性和数字索引）
 	// Node.js 允许在真正的类数组对象上调用 Buffer 方法
 	lengthVal := this.Get("length")
@@ -76,7 +103,7 @@ func safeGetBufferThis(runtime *goja.Runtime, call goja.FunctionCall, methodName
 			return this
 		}
 	}
-	
+
 	// 对于普通对象、字符串等，Node.js 会抛出 RangeError
 	// 模拟 Node.js 的错误消息
 	panic(newRangeError(runtime, "The value of \"offset\" is out of range. It must be >= 0 && <= 0. Received 0"))
@@ -220,10 +247,10 @@ func (be *BufferEnhancer) exportBufferRange(runtime *goja.Runtime, obj *goja.Obj
 }
 
 // shouldUseFastPath 检查是否应该使用快速路径（批量操作）
-// 阈值: 1MB
+// 阈值: 256 字节（降低阈值以提升性能）
 func shouldUseFastPath(dataLength int64) bool {
-	const threshold = 1024 * 1024 // 1MB
-	return dataLength > threshold
+	const threshold = 256 // 256 字节
+	return dataLength >= threshold
 }
 
 // reverseBytesInPlace 反转 Go []byte 数组（原地操作）
@@ -263,6 +290,27 @@ func swapBytesInPlace(data []byte, swapSize int) {
 			data[i+2], data[i+5] = data[i+5], data[i+2]
 			data[i+3], data[i+4] = data[i+4], data[i+3]
 		}
+	}
+}
+
+// swapElementsInPlace 在TypedArray中交换元素块（原地操作）
+// 对于TypedArray，length表示元素个数，需要按元素交换而不是字节对交换
+// elementSize: 元素大小（字节数），elementCount: 元素个数
+func swapElementsInPlace(data []byte, elementSize int, elementCount int) {
+	if elementCount <= 1 || len(data) < elementSize*elementCount {
+		return
+	}
+
+	// 交换元素：把第i个元素和第(elementCount-1-i)个元素交换
+	temp := make([]byte, elementSize)
+	for i := 0; i < elementCount/2; i++ {
+		leftStart := i * elementSize
+		rightStart := (elementCount - 1 - i) * elementSize
+
+		// 交换两个元素
+		copy(temp, data[leftStart:leftStart+elementSize])
+		copy(data[leftStart:leftStart+elementSize], data[rightStart:rightStart+elementSize])
+		copy(data[rightStart:rightStart+elementSize], temp)
 	}
 }
 
@@ -309,35 +357,35 @@ func newBufferOutOfBoundsError(runtime *goja.Runtime) *goja.Object {
 func validateOffset(runtime *goja.Runtime, val goja.Value, methodName string) int64 {
 	// 检查类型（必须在转换之前）
 	exported := val.Export()
-	
+
 	// 检查是否是字符串类型
 	if str, ok := exported.(string); ok {
 		errObj := runtime.NewTypeError(fmt.Sprintf("The \"offset\" argument must be of type number. Received type string ('%s')", str))
 		errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 		panic(errObj)
 	}
-	
+
 	// 检查是否是布尔值类型
 	if _, ok := exported.(bool); ok {
 		errObj := runtime.NewTypeError(fmt.Sprintf("The \"offset\" argument must be of type number. Received type boolean (%v)", exported))
 		errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 		panic(errObj)
 	}
-	
+
 	// 检查是否是 null
 	if goja.IsNull(val) {
 		errObj := runtime.NewTypeError("The \"offset\" argument must be of type number. Received null")
 		errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 		panic(errObj)
 	}
-	
+
 	// 检查是否是 Symbol（Symbol 不能被导出为普通类型）
 	if symStr := val.String(); len(symStr) > 6 && symStr[:7] == "Symbol(" {
 		errObj := runtime.NewTypeError("The \"offset\" argument must be of type number. Received type symbol")
 		errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 		panic(errObj)
 	}
-	
+
 	// 检查是否是 BigInt
 	if _, ok := exported.(int64); !ok {
 		// 尝试检测 BigInt（goja 中 BigInt 可能有特殊的表示）
@@ -348,7 +396,7 @@ func validateOffset(runtime *goja.Runtime, val goja.Value, methodName string) in
 			panic(errObj)
 		}
 	}
-	
+
 	// 检查 Number/String/Boolean 对象包装器
 	// 原理：Object.is(primitive, primitive) → true
 	//      Object.is(new Number(0), new Number(0).valueOf()) → false
@@ -405,7 +453,7 @@ func validateOffset(runtime *goja.Runtime, val goja.Value, methodName string) in
 			}
 		}
 	}
-	
+
 	// 继续检查其他对象类型
 	if obj := val.ToObject(runtime); obj != nil {
 		if !goja.IsUndefined(obj) && obj != nil {
@@ -446,7 +494,7 @@ func validateOffset(runtime *goja.Runtime, val goja.Value, methodName string) in
 							errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 							panic(errObj)
 						}
-						
+
 						// 检查是否是 Buffer（Buffer 的 constructor.name 可能是特殊的）
 						// 在 goja_nodejs 中，Buffer 的 constructor.name 可能不是 "Buffer"，需要额外检查
 						if obj.Get("BYTES_PER_ELEMENT") != nil || obj.Get("buffer") != nil {
@@ -462,7 +510,7 @@ func validateOffset(runtime *goja.Runtime, val goja.Value, methodName string) in
 			}
 		}
 	}
-	
+
 	if exported != nil {
 		switch exported.(type) {
 		case int64, float64, int, int32, uint32, uint64:
@@ -474,28 +522,28 @@ func validateOffset(runtime *goja.Runtime, val goja.Value, methodName string) in
 			panic(errObj)
 		}
 	}
-	
+
 	// 获取浮点数值
 	floatVal := val.ToFloat()
-	
+
 	// 检查 NaN
 	if math.IsNaN(floatVal) {
 		panic(newRangeError(runtime, "The value of \"offset\" is out of range. It must be an integer. Received NaN"))
 	}
-	
+
 	// 检查 Infinity
 	if math.IsInf(floatVal, 0) {
 		panic(newRangeError(runtime, "The value of \"offset\" is out of range. It must be an integer. Received Infinity"))
 	}
-	
+
 	// 转换为整数
 	offset := val.ToInteger()
-	
+
 	// 检查是否是整数（不是浮点数）
 	if float64(offset) != floatVal {
 		panic(newRangeError(runtime, fmt.Sprintf("The value of \"offset\" is out of range. It must be an integer. Received %v", floatVal)))
 	}
-	
+
 	return offset
 }
 
@@ -508,14 +556,14 @@ func validateByteLength(runtime *goja.Runtime, val goja.Value, min, max int64, m
 		errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 		panic(errObj)
 	}
-	
+
 	// 检查是否是布尔类型
 	if _, ok := exported.(bool); ok {
 		errObj := runtime.NewTypeError("The \"byteLength\" argument must be of type number. Received type boolean")
 		errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 		panic(errObj)
 	}
-	
+
 	// 检查是否是对象类型（包括数组、普通对象等，但排除 null）
 	if obj := val.ToObject(runtime); obj != nil && exported != nil {
 		// 检查是否是数组
@@ -531,33 +579,33 @@ func validateByteLength(runtime *goja.Runtime, val goja.Value, min, max int64, m
 			panic(errObj)
 		}
 	}
-	
+
 	// 获取浮点数值
 	floatVal := val.ToFloat()
-	
+
 	// 检查 NaN
 	if math.IsNaN(floatVal) {
 		panic(newRangeError(runtime, "The value of \"byteLength\" is out of range. It must be >= "+strconv.FormatInt(min, 10)+" and <= "+strconv.FormatInt(max, 10)+". Received NaN"))
 	}
-	
+
 	// 检查 Infinity
 	if math.IsInf(floatVal, 0) {
 		panic(newRangeError(runtime, "The value of \"byteLength\" is out of range. It must be >= "+strconv.FormatInt(min, 10)+" and <= "+strconv.FormatInt(max, 10)+". Received Infinity"))
 	}
-	
+
 	// 转换为整数
 	byteLength := val.ToInteger()
-	
+
 	// 检查是否是整数（不是浮点数）
 	if float64(byteLength) != floatVal {
 		panic(newRangeError(runtime, fmt.Sprintf("The value of \"byteLength\" is out of range. It must be an integer. Received %v", floatVal)))
 	}
-	
+
 	// 检查范围
 	if byteLength < min || byteLength > max {
 		panic(newRangeError(runtime, fmt.Sprintf("The value of \"byteLength\" is out of range. It must be >= %d and <= %d. Received %d", min, max, byteLength)))
 	}
-	
+
 	return byteLength
 }
 
@@ -682,13 +730,14 @@ func setFunctionNameAndLength(runtime *goja.Runtime, fn goja.Value, name string,
 
 // assertNotSymbol 检查值是否为 Symbol 类型，如果是则抛出 TypeError
 // 这是一个统一的 Symbol 检测工具，用于所有不支持 Symbol 的 Buffer 方法
-// 
+//
 // Symbol 类型在 JavaScript 中不能转换为数字或字符串（除非显式调用 toString）
 // 因此在需要数字或字符串参数的 Buffer 方法中应该拒绝 Symbol
-// 
+//
 // 使用方式：
-//   assertNotSymbol(runtime, value, "Cannot convert a Symbol value to a number")
-//   assertNotSymbol(runtime, value, "Cannot convert a Symbol value to a string")
+//
+//	assertNotSymbol(runtime, value, "Cannot convert a Symbol value to a number")
+//	assertNotSymbol(runtime, value, "Cannot convert a Symbol value to a string")
 func assertNotSymbol(runtime *goja.Runtime, val goja.Value, errorMessage string) {
 	if _, ok := val.(*goja.Symbol); ok {
 		panic(runtime.NewTypeError(errorMessage))
@@ -776,12 +825,12 @@ func convertObjectToUint8(runtime *goja.Runtime, val goja.Value, exportedVal int
 			// 任何 panic 都返回 0
 		}
 	}()
-	
+
 	obj := val.ToObject(runtime)
 	if obj == nil {
 		return 0
 	}
-	
+
 	// 步骤 1: 尝试调用 valueOf()
 	valueOfFunc := obj.Get("valueOf")
 	if valueOfFunc != nil && !goja.IsUndefined(valueOfFunc) {
@@ -790,7 +839,7 @@ func convertObjectToUint8(runtime *goja.Runtime, val goja.Value, exportedVal int
 			if err == nil && result != nil {
 				// 检查 valueOf 是否返回原始值（非对象）
 				resultExport := result.Export()
-				
+
 				// 尝试转换 valueOf 的返回值
 				// 如果返回的是原始值，tryConvertPrimitive 会返回 true
 				// 如果返回的是对象，tryConvertPrimitive 会返回 false，我们继续尝试 toString
@@ -801,7 +850,7 @@ func convertObjectToUint8(runtime *goja.Runtime, val goja.Value, exportedVal int
 			}
 		}
 	}
-	
+
 	// 步骤 2: valueOf 失败或返回对象本身，尝试 toString()
 	toStringFunc := obj.Get("toString")
 	if toStringFunc != nil && !goja.IsUndefined(toStringFunc) {
@@ -815,7 +864,7 @@ func convertObjectToUint8(runtime *goja.Runtime, val goja.Value, exportedVal int
 			}
 		}
 	}
-	
+
 	// 都失败了，返回 0（NaN 的行为）
 	return 0
 }
@@ -852,7 +901,7 @@ func stringToUint8(str string) byte {
 	if str == "" {
 		return 0
 	}
-	
+
 	// 🔥 修复：支持 JavaScript 的数字字面量格式
 	// 十六进制：0x 或 0X
 	if len(str) > 2 && (str[0:2] == "0x" || str[0:2] == "0X") {
@@ -861,7 +910,7 @@ func stringToUint8(str string) byte {
 		}
 		return 0
 	}
-	
+
 	// 二进制：0b 或 0B
 	if len(str) > 2 && (str[0:2] == "0b" || str[0:2] == "0B") {
 		if i, err := strconv.ParseInt(str, 0, 64); err == nil {
@@ -869,7 +918,7 @@ func stringToUint8(str string) byte {
 		}
 		return 0
 	}
-	
+
 	// 八进制：0o 或 0O
 	if len(str) > 2 && (str[0:2] == "0o" || str[0:2] == "0O") {
 		if i, err := strconv.ParseInt(str, 0, 64); err == nil {
@@ -877,17 +926,17 @@ func stringToUint8(str string) byte {
 		}
 		return 0
 	}
-	
+
 	// 普通数字（包括浮点数和科学计数法）
 	f, err := strconv.ParseFloat(str, 64)
 	if err != nil {
 		return 0 // 解析失败 -> NaN -> 0
 	}
-	
+
 	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return 0
 	}
-	
+
 	return byte(int64(f) & 0xFF)
 }
 
@@ -899,48 +948,48 @@ func extractTypedArrayBytes(obj *goja.Object) ([]byte, int, int, bool) {
 	if obj == nil {
 		return nil, 0, 0, false
 	}
-	
+
 	// 检查是否有 buffer 属性（TypedArray 特征）
 	bufferVal := obj.Get("buffer")
 	if bufferVal == nil || goja.IsUndefined(bufferVal) {
 		return nil, 0, 0, false
 	}
-	
+
 	// 获取 byteOffset
 	byteOffsetVal := obj.Get("byteOffset")
 	if byteOffsetVal == nil || goja.IsUndefined(byteOffsetVal) {
 		return nil, 0, 0, false
 	}
 	byteOffset := int(byteOffsetVal.ToInteger())
-	
+
 	// 获取 byteLength
 	byteLengthVal := obj.Get("byteLength")
 	if byteLengthVal == nil || goja.IsUndefined(byteLengthVal) {
 		return nil, 0, 0, false
 	}
 	byteLength := int(byteLengthVal.ToInteger())
-	
+
 	// 获取 BYTES_PER_ELEMENT (每个元素的字节数)
 	bpeVal := obj.Get("BYTES_PER_ELEMENT")
 	bytesPerElement := 1
 	if bpeVal != nil && !goja.IsUndefined(bpeVal) {
 		bytesPerElement = int(bpeVal.ToInteger())
 	}
-	
+
 	// 尝试获取底层 ArrayBuffer 的数据
 	// 通过反射访问 goja 内部结构
 	bufferObj := bufferVal.ToObject(nil)
 	if bufferObj == nil {
 		return nil, 0, 0, false
 	}
-	
+
 	// 尝试通过 Export() 获取底层数据
 	// goja 的 ArrayBuffer 导出为 []byte
 	exported := bufferObj.Export()
 	if exported == nil {
 		return nil, 0, 0, false
 	}
-	
+
 	// 检查是否为 []byte 类型
 	if bytes, ok := exported.([]byte); ok {
 		// 验证边界
@@ -949,7 +998,7 @@ func extractTypedArrayBytes(obj *goja.Object) ([]byte, int, int, bool) {
 		}
 		return bytes[byteOffset : byteOffset+byteLength], byteOffset, bytesPerElement, true
 	}
-	
+
 	return nil, 0, 0, false
 }
 
@@ -958,13 +1007,13 @@ func isTypedArrayOrBuffer(obj *goja.Object) bool {
 	if obj == nil {
 		return false
 	}
-	
+
 	// 检查是否有 buffer 属性
 	bufferVal := obj.Get("buffer")
 	if bufferVal == nil || goja.IsUndefined(bufferVal) {
 		return false
 	}
-	
+
 	// 检查是否有 BYTES_PER_ELEMENT 属性（TypedArray 特征）
 	bpeVal := obj.Get("BYTES_PER_ELEMENT")
 	return bpeVal != nil && !goja.IsUndefined(bpeVal)
@@ -975,21 +1024,21 @@ func getTypedArrayConstructorName(obj *goja.Object) string {
 	if obj == nil {
 		return ""
 	}
-	
+
 	constructorVal := obj.Get("constructor")
 	if constructorVal == nil || goja.IsUndefined(constructorVal) {
 		return ""
 	}
-	
+
 	constructorObj := constructorVal.ToObject(nil)
 	if constructorObj == nil {
 		return ""
 	}
-	
+
 	nameVal := constructorObj.Get("name")
 	if nameVal == nil || goja.IsUndefined(nameVal) {
 		return ""
 	}
-	
+
 	return nameVal.String()
 }

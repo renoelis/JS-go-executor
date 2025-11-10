@@ -49,7 +49,7 @@ yarn-error.log*
 package-lock.json
 
 # 编译产物和二进制文件
-flow-codeblock-go
+# flow-codeblock-go  # 临时注释，用于本地 Dockerfile
 *.exe
 *.dll
 *.so

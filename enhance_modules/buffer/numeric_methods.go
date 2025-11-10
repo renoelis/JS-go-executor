@@ -11,11 +11,11 @@ import (
 
 func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototype *goja.Object) {
 	// readInt8
-	prototype.Set("readInt8", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readInt8Func := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readInt8")
 		offset := int64(0)
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			offset = call.Arguments[0].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[0], "readInt8")
 		}
 
 		// 检查边界
@@ -29,11 +29,14 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			}
 		}
 		panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
-	})
+	}
+	readInt8Value := runtime.ToValue(readInt8Func)
+	setFunctionNameAndLength(runtime, readInt8Value, "readInt8", 0)
+	prototype.Set("readInt8", readInt8Value)
 
 	// writeInt8
-	prototype.Set("writeInt8", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	writeInt8Func := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeInt8")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
@@ -41,7 +44,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		value := call.Arguments[0].ToInteger()
 		offset := int64(0)
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeInt8")
 		}
 
 		// 🔥 修复：添加范围校验（Node.js 行为）
@@ -61,14 +64,17 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 写入值
 		this.Set(strconv.FormatInt(offset, 10), runtime.ToValue(value&0xFF))
 		return runtime.ToValue(offset + 1)
-	})
+	}
+	writeInt8Value := runtime.ToValue(writeInt8Func)
+	setFunctionNameAndLength(runtime, writeInt8Value, "writeInt8", 1)
+	prototype.Set("writeInt8", writeInt8Value)
 
 	// readUInt8
-	prototype.Set("readUInt8", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readUInt8Func := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readUInt8")
 		offset := int64(0)
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			offset = call.Arguments[0].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[0], "readUInt8")
 		}
 
 		// 检查边界
@@ -80,11 +86,14 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			}
 		}
 		panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
-	})
+	}
+	readUInt8Value := runtime.ToValue(readUInt8Func)
+	setFunctionNameAndLength(runtime, readUInt8Value, "readUInt8", 0)
+	prototype.Set("readUInt8", readUInt8Value)
 
 	// writeUInt8
-	prototype.Set("writeUInt8", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	writeUInt8Func := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeUInt8")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
@@ -92,7 +101,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		value := call.Arguments[0].ToInteger()
 		offset := int64(0)
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeUInt8")
 		}
 
 		// 🔥 修复：添加范围校验（Node.js 行为）
@@ -115,16 +124,19 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 写入值
 		this.Set(strconv.FormatInt(offset, 10), runtime.ToValue(value&0xFF))
 		return runtime.ToValue(offset + 1)
-	})
+	}
+	writeUInt8Value := runtime.ToValue(writeUInt8Func)
+	setFunctionNameAndLength(runtime, writeUInt8Value, "writeUInt8", 1)
+	prototype.Set("writeUInt8", writeUInt8Value)
 
 	// === 16位整数读写方法 ===
 
 	// readInt16BE (Big Endian)
-	prototype.Set("readInt16BE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readInt16BEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readInt16BE")
 		offset := int64(0)
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			offset = call.Arguments[0].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[0], "readInt16BE")
 		}
 
 		// 检查边界
@@ -135,14 +147,17 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		byte2 := be.getBufferByte(this, offset+1)
 		value := int16((uint16(byte1) << 8) | uint16(byte2))
 		return runtime.ToValue(int64(value))
-	})
+	}
+	readInt16BEValue := runtime.ToValue(readInt16BEFunc)
+	setFunctionNameAndLength(runtime, readInt16BEValue, "readInt16BE", 0)
+	prototype.Set("readInt16BE", readInt16BEValue)
 
 	// readInt16LE (Little Endian)
-	prototype.Set("readInt16LE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readInt16LEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readInt16LE")
 		offset := int64(0)
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			offset = call.Arguments[0].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[0], "readInt16LE")
 		}
 
 		// 检查边界
@@ -153,14 +168,17 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		byte2 := be.getBufferByte(this, offset+1)
 		value := int16(uint16(byte1) | (uint16(byte2) << 8))
 		return runtime.ToValue(int64(value))
-	})
+	}
+	readInt16LEValue := runtime.ToValue(readInt16LEFunc)
+	setFunctionNameAndLength(runtime, readInt16LEValue, "readInt16LE", 0)
+	prototype.Set("readInt16LE", readInt16LEValue)
 
 	// readUInt16BE
-	prototype.Set("readUInt16BE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readUInt16BEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readUInt16BE")
 		offset := int64(0)
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			offset = call.Arguments[0].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[0], "readUInt16BE")
 		}
 
 		// 检查边界
@@ -171,14 +189,17 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		byte2 := be.getBufferByte(this, offset+1)
 		value := uint16((uint16(byte1) << 8) | uint16(byte2))
 		return runtime.ToValue(int64(value))
-	})
+	}
+	readUInt16BEValue := runtime.ToValue(readUInt16BEFunc)
+	setFunctionNameAndLength(runtime, readUInt16BEValue, "readUInt16BE", 0)
+	prototype.Set("readUInt16BE", readUInt16BEValue)
 
 	// readUInt16LE
-	prototype.Set("readUInt16LE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readUInt16LEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readUInt16LE")
 		offset := int64(0)
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			offset = call.Arguments[0].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[0], "readUInt16LE")
 		}
 
 		// 检查边界
@@ -189,11 +210,14 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		byte2 := be.getBufferByte(this, offset+1)
 		value := uint16(uint16(byte1) | (uint16(byte2) << 8))
 		return runtime.ToValue(int64(value))
-	})
+	}
+	readUInt16LEValue := runtime.ToValue(readUInt16LEFunc)
+	setFunctionNameAndLength(runtime, readUInt16LEValue, "readUInt16LE", 0)
+	prototype.Set("readUInt16LE", readUInt16LEValue)
 
 	// writeInt16BE
-	prototype.Set("writeInt16BE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	writeInt16BEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeInt16BE")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
@@ -204,7 +228,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 
 		offset := int64(0)
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeInt16BE")
 		}
 
 		// 检查边界
@@ -220,11 +244,14 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		this.Set(strconv.FormatInt(offset, 10), runtime.ToValue((value>>8)&0xFF))
 		this.Set(strconv.FormatInt(offset+1, 10), runtime.ToValue(value&0xFF))
 		return runtime.ToValue(offset + 2)
-	})
+	}
+	writeInt16BEValue := runtime.ToValue(writeInt16BEFunc)
+	setFunctionNameAndLength(runtime, writeInt16BEValue, "writeInt16BE", 1)
+	prototype.Set("writeInt16BE", writeInt16BEValue)
 
 	// writeInt16LE
-	prototype.Set("writeInt16LE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	writeInt16LEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeInt16LE")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
@@ -235,7 +262,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 
 		offset := int64(0)
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeInt16LE")
 		}
 
 		// 检查边界
@@ -251,11 +278,14 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		this.Set(strconv.FormatInt(offset, 10), runtime.ToValue(value&0xFF))
 		this.Set(strconv.FormatInt(offset+1, 10), runtime.ToValue((value>>8)&0xFF))
 		return runtime.ToValue(offset + 2)
-	})
+	}
+	writeInt16LEValue := runtime.ToValue(writeInt16LEFunc)
+	setFunctionNameAndLength(runtime, writeInt16LEValue, "writeInt16LE", 1)
+	prototype.Set("writeInt16LE", writeInt16LEValue)
 
 	// writeUInt16BE
-	prototype.Set("writeUInt16BE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	writeUInt16BEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeUInt16BE")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
@@ -266,7 +296,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 
 		offset := int64(0)
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeUInt16BE")
 		}
 
 		// 检查边界
@@ -285,11 +315,14 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		this.Set(strconv.FormatInt(offset, 10), runtime.ToValue((value>>8)&0xFF))
 		this.Set(strconv.FormatInt(offset+1, 10), runtime.ToValue(value&0xFF))
 		return runtime.ToValue(offset + 2)
-	})
+	}
+	writeUInt16BEValue := runtime.ToValue(writeUInt16BEFunc)
+	setFunctionNameAndLength(runtime, writeUInt16BEValue, "writeUInt16BE", 1)
+	prototype.Set("writeUInt16BE", writeUInt16BEValue)
 
 	// writeUInt16LE
-	prototype.Set("writeUInt16LE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	writeUInt16LEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeUInt16LE")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
@@ -300,7 +333,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 
 		offset := int64(0)
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeUInt16LE")
 		}
 
 		// 检查边界
@@ -309,23 +342,29 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			bufferLength = lengthVal.ToInteger()
 		}
 		if offset < 0 || offset+2 > bufferLength {
-			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
+			errObj := runtime.NewGoError(fmt.Errorf("The value of \"offset\" is out of range. It must be >= 0 && <= %d. Received %d", bufferLength-2, offset))
+			errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
+			errObj.Set("name", runtime.ToValue("RangeError"))
+			panic(errObj)
 		}
 
 		// 写入小端16位无符号整数
 		this.Set(strconv.FormatInt(offset, 10), runtime.ToValue(value&0xFF))
 		this.Set(strconv.FormatInt(offset+1, 10), runtime.ToValue((value>>8)&0xFF))
 		return runtime.ToValue(offset + 2)
-	})
+	}
+	writeUInt16LEValue := runtime.ToValue(writeUInt16LEFunc)
+	setFunctionNameAndLength(runtime, writeUInt16LEValue, "writeUInt16LE", 1)
+	prototype.Set("writeUInt16LE", writeUInt16LEValue)
 
 	// === 32位整数读写方法 ===
 
 	// readInt32BE
-	prototype.Set("readInt32BE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readInt32BEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readInt32BE")
 		offset := int64(0)
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			offset = call.Arguments[0].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[0], "readInt32BE")
 		}
 
 		// 检查边界
@@ -338,14 +377,17 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		byte4 := be.getBufferByte(this, offset+3)
 		value := int32((uint32(byte1) << 24) | (uint32(byte2) << 16) | (uint32(byte3) << 8) | uint32(byte4))
 		return runtime.ToValue(int64(value))
-	})
+	}
+	readInt32BEValue := runtime.ToValue(readInt32BEFunc)
+	setFunctionNameAndLength(runtime, readInt32BEValue, "readInt32BE", 0)
+	prototype.Set("readInt32BE", readInt32BEValue)
 
 	// readInt32LE
-	prototype.Set("readInt32LE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readInt32LEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readInt32LE")
 		offset := int64(0)
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			offset = call.Arguments[0].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[0], "readInt32LE")
 		}
 
 		// 检查边界
@@ -358,14 +400,17 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		byte4 := be.getBufferByte(this, offset+3)
 		value := int32(uint32(byte1) | (uint32(byte2) << 8) | (uint32(byte3) << 16) | (uint32(byte4) << 24))
 		return runtime.ToValue(int64(value))
-	})
+	}
+	readInt32LEValue := runtime.ToValue(readInt32LEFunc)
+	setFunctionNameAndLength(runtime, readInt32LEValue, "readInt32LE", 0)
+	prototype.Set("readInt32LE", readInt32LEValue)
 
 	// readUInt32BE
-	prototype.Set("readUInt32BE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readUInt32BEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readUInt32BE")
 		offset := int64(0)
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			offset = call.Arguments[0].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[0], "readUInt32BE")
 		}
 
 		// 检查边界
@@ -378,14 +423,17 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		byte4 := be.getBufferByte(this, offset+3)
 		value := uint32((uint32(byte1) << 24) | (uint32(byte2) << 16) | (uint32(byte3) << 8) | uint32(byte4))
 		return runtime.ToValue(int64(value))
-	})
+	}
+	readUInt32BEValue := runtime.ToValue(readUInt32BEFunc)
+	setFunctionNameAndLength(runtime, readUInt32BEValue, "readUInt32BE", 0)
+	prototype.Set("readUInt32BE", readUInt32BEValue)
 
 	// readUInt32LE
-	prototype.Set("readUInt32LE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readUInt32LEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readUInt32LE")
 		offset := int64(0)
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			offset = call.Arguments[0].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[0], "readUInt32LE")
 		}
 
 		// 检查边界
@@ -398,11 +446,14 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		byte4 := be.getBufferByte(this, offset+3)
 		value := uint32(uint32(byte1) | (uint32(byte2) << 8) | (uint32(byte3) << 16) | (uint32(byte4) << 24))
 		return runtime.ToValue(int64(value))
-	})
+	}
+	readUInt32LEValue := runtime.ToValue(readUInt32LEFunc)
+	setFunctionNameAndLength(runtime, readUInt32LEValue, "readUInt32LE", 0)
+	prototype.Set("readUInt32LE", readUInt32LEValue)
 
 	// writeInt32BE
-	prototype.Set("writeInt32BE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	writeInt32BEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeInt32BE")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
@@ -416,7 +467,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 
 		offset := int64(0)
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeInt32BE")
 		}
 
 		// 检查边界
@@ -434,11 +485,14 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		this.Set(strconv.FormatInt(offset+2, 10), runtime.ToValue((value>>8)&0xFF))
 		this.Set(strconv.FormatInt(offset+3, 10), runtime.ToValue(value&0xFF))
 		return runtime.ToValue(offset + 4)
-	})
+	}
+	writeInt32BEValue := runtime.ToValue(writeInt32BEFunc)
+	setFunctionNameAndLength(runtime, writeInt32BEValue, "writeInt32BE", 1)
+	prototype.Set("writeInt32BE", writeInt32BEValue)
 
 	// writeInt32LE
-	prototype.Set("writeInt32LE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	writeInt32LEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeInt32LE")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
@@ -452,7 +506,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 
 		offset := int64(0)
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeInt32LE")
 		}
 
 		// 检查边界
@@ -470,11 +524,14 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		this.Set(strconv.FormatInt(offset+2, 10), runtime.ToValue((value>>16)&0xFF))
 		this.Set(strconv.FormatInt(offset+3, 10), runtime.ToValue((value>>24)&0xFF))
 		return runtime.ToValue(offset + 4)
-	})
+	}
+	writeInt32LEValue := runtime.ToValue(writeInt32LEFunc)
+	setFunctionNameAndLength(runtime, writeInt32LEValue, "writeInt32LE", 1)
+	prototype.Set("writeInt32LE", writeInt32LEValue)
 
 	// writeUInt32BE
-	prototype.Set("writeUInt32BE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	writeUInt32BEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeUInt32BE")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
@@ -485,7 +542,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 
 		offset := int64(0)
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeUInt32BE")
 		}
 
 		// 检查边界
@@ -503,11 +560,14 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		this.Set(strconv.FormatInt(offset+2, 10), runtime.ToValue((value>>8)&0xFF))
 		this.Set(strconv.FormatInt(offset+3, 10), runtime.ToValue(value&0xFF))
 		return runtime.ToValue(offset + 4)
-	})
+	}
+	writeUInt32BEValue := runtime.ToValue(writeUInt32BEFunc)
+	setFunctionNameAndLength(runtime, writeUInt32BEValue, "writeUInt32BE", 1)
+	prototype.Set("writeUInt32BE", writeUInt32BEValue)
 
 	// writeUInt32LE
-	prototype.Set("writeUInt32LE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	writeUInt32LEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeUInt32LE")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
@@ -518,7 +578,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 
 		offset := int64(0)
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeUInt32LE")
 		}
 
 		// 检查边界
@@ -536,16 +596,19 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		this.Set(strconv.FormatInt(offset+2, 10), runtime.ToValue((value>>16)&0xFF))
 		this.Set(strconv.FormatInt(offset+3, 10), runtime.ToValue((value>>24)&0xFF))
 		return runtime.ToValue(offset + 4)
-	})
+	}
+	writeUInt32LEValue := runtime.ToValue(writeUInt32LEFunc)
+	setFunctionNameAndLength(runtime, writeUInt32LEValue, "writeUInt32LE", 1)
+	prototype.Set("writeUInt32LE", writeUInt32LEValue)
 
 	// === 浮点数读写方法 ===
 
 	// readFloatBE
-	prototype.Set("readFloatBE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readFloatBEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readFloatBE")
 		offset := int64(0)
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			offset = call.Arguments[0].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[0], "readFloatBE")
 		}
 
 		// 检查边界
@@ -558,14 +621,17 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		}
 		value := math.Float32frombits(binary.BigEndian.Uint32(bytes))
 		return runtime.ToValue(float64(value))
-	})
+	}
+	readFloatBEValue := runtime.ToValue(readFloatBEFunc)
+	setFunctionNameAndLength(runtime, readFloatBEValue, "readFloatBackwards", 0)
+	prototype.Set("readFloatBE", readFloatBEValue)
 
 	// readFloatLE
-	prototype.Set("readFloatLE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readFloatLEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readFloatLE")
 		offset := int64(0)
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			offset = call.Arguments[0].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[0], "readFloatLE")
 		}
 
 		// 检查边界
@@ -578,14 +644,17 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		}
 		value := math.Float32frombits(binary.LittleEndian.Uint32(bytes))
 		return runtime.ToValue(float64(value))
-	})
+	}
+	readFloatLEValue := runtime.ToValue(readFloatLEFunc)
+	setFunctionNameAndLength(runtime, readFloatLEValue, "readFloatForwards", 0)
+	prototype.Set("readFloatLE", readFloatLEValue)
 
 	// readDoubleBE
-	prototype.Set("readDoubleBE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readDoubleBEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readDoubleBE")
 		offset := int64(0)
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			offset = call.Arguments[0].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[0], "readDoubleBE")
 		}
 
 		// 检查边界
@@ -598,14 +667,17 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		}
 		value := math.Float64frombits(binary.BigEndian.Uint64(bytes))
 		return runtime.ToValue(value)
-	})
+	}
+	readDoubleBEValue := runtime.ToValue(readDoubleBEFunc)
+	setFunctionNameAndLength(runtime, readDoubleBEValue, "readDoubleBackwards", 0)
+	prototype.Set("readDoubleBE", readDoubleBEValue)
 
 	// readDoubleLE
-	prototype.Set("readDoubleLE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	readDoubleLEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "readDoubleLE")
 		offset := int64(0)
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			offset = call.Arguments[0].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[0], "readDoubleLE")
 		}
 
 		// 检查边界
@@ -618,11 +690,14 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		}
 		value := math.Float64frombits(binary.LittleEndian.Uint64(bytes))
 		return runtime.ToValue(value)
-	})
+	}
+	readDoubleLEValue := runtime.ToValue(readDoubleLEFunc)
+	setFunctionNameAndLength(runtime, readDoubleLEValue, "readDoubleForwards", 0)
+	prototype.Set("readDoubleLE", readDoubleLEValue)
 
 	// writeFloatBE
-	prototype.Set("writeFloatBE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	writeFloatBEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeFloatBE")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
@@ -630,17 +705,11 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		value := float32(call.Arguments[0].ToFloat())
 		offset := int64(0)
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeFloatBE")
 		}
 
 		// 检查边界
-		bufferLength := int64(0)
-		if lengthVal := this.Get("length"); !goja.IsUndefined(lengthVal) {
-			bufferLength = lengthVal.ToInteger()
-		}
-		if offset < 0 || offset+4 > bufferLength {
-			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
-		}
+		checkBounds(runtime, this, offset, 4, "writeFloatBE")
 
 		// 写入大端32位浮点数
 		bits := math.Float32bits(value)
@@ -650,11 +719,14 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			this.Set(strconv.FormatInt(offset+i, 10), runtime.ToValue(bytes[i]))
 		}
 		return runtime.ToValue(offset + 4)
-	})
+	}
+	writeFloatBEValue := runtime.ToValue(writeFloatBEFunc)
+	setFunctionNameAndLength(runtime, writeFloatBEValue, "writeFloatBackwards", 1)
+	prototype.Set("writeFloatBE", writeFloatBEValue)
 
 	// writeFloatLE
-	prototype.Set("writeFloatLE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	writeFloatLEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeFloatLE")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
@@ -662,17 +734,11 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		value := float32(call.Arguments[0].ToFloat())
 		offset := int64(0)
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeFloatLE")
 		}
 
 		// 检查边界
-		bufferLength := int64(0)
-		if lengthVal := this.Get("length"); !goja.IsUndefined(lengthVal) {
-			bufferLength = lengthVal.ToInteger()
-		}
-		if offset < 0 || offset+4 > bufferLength {
-			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
-		}
+		checkBounds(runtime, this, offset, 4, "writeFloatLE")
 
 		// 写入小端32位浮点数
 		bits := math.Float32bits(value)
@@ -682,11 +748,14 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			this.Set(strconv.FormatInt(offset+i, 10), runtime.ToValue(bytes[i]))
 		}
 		return runtime.ToValue(offset + 4)
-	})
+	}
+	writeFloatLEValue := runtime.ToValue(writeFloatLEFunc)
+	setFunctionNameAndLength(runtime, writeFloatLEValue, "writeFloatForwards", 1)
+	prototype.Set("writeFloatLE", writeFloatLEValue)
 
 	// writeDoubleBE
-	prototype.Set("writeDoubleBE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	writeDoubleBEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeDoubleBE")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
@@ -694,17 +763,11 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		value := call.Arguments[0].ToFloat()
 		offset := int64(0)
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeDoubleBE")
 		}
 
 		// 检查边界
-		bufferLength := int64(0)
-		if lengthVal := this.Get("length"); !goja.IsUndefined(lengthVal) {
-			bufferLength = lengthVal.ToInteger()
-		}
-		if offset < 0 || offset+8 > bufferLength {
-			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
-		}
+		checkBounds(runtime, this, offset, 8, "writeDoubleBE")
 
 		// 写入大端64位双精度浮点数
 		bits := math.Float64bits(value)
@@ -714,11 +777,14 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			this.Set(strconv.FormatInt(offset+i, 10), runtime.ToValue(bytes[i]))
 		}
 		return runtime.ToValue(offset + 8)
-	})
+	}
+	writeDoubleBEValue := runtime.ToValue(writeDoubleBEFunc)
+	setFunctionNameAndLength(runtime, writeDoubleBEValue, "writeDoubleBackwards", 1)
+	prototype.Set("writeDoubleBE", writeDoubleBEValue)
 
 	// writeDoubleLE
-	prototype.Set("writeDoubleLE", func(call goja.FunctionCall) goja.Value {
-		this := call.This.ToObject(runtime)
+	writeDoubleLEFunc := func(call goja.FunctionCall) goja.Value {
+		this := safeGetBufferThis(runtime, call, "writeDoubleLE")
 		if len(call.Arguments) < 1 {
 			panic(runtime.NewTypeError("Value 参数是必需的"))
 		}
@@ -726,17 +792,11 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		value := call.Arguments[0].ToFloat()
 		offset := int64(0)
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			offset = call.Arguments[1].ToInteger()
+			offset = validateOffset(runtime, call.Arguments[1], "writeDoubleLE")
 		}
 
 		// 检查边界
-		bufferLength := int64(0)
-		if lengthVal := this.Get("length"); !goja.IsUndefined(lengthVal) {
-			bufferLength = lengthVal.ToInteger()
-		}
-		if offset < 0 || offset+8 > bufferLength {
-			panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
-		}
+		checkBounds(runtime, this, offset, 8, "writeDoubleLE")
 
 		// 写入小端64位双精度浮点数
 		bits := math.Float64bits(value)
@@ -746,5 +806,8 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			this.Set(strconv.FormatInt(offset+i, 10), runtime.ToValue(bytes[i]))
 		}
 		return runtime.ToValue(offset + 8)
-	})
+	}
+	writeDoubleLEValue := runtime.ToValue(writeDoubleLEFunc)
+	setFunctionNameAndLength(runtime, writeDoubleLEValue, "writeDoubleForwards", 1)
+	prototype.Set("writeDoubleLE", writeDoubleLEValue)
 }

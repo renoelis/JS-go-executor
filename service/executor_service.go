@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -809,6 +810,10 @@ func (e *JSExecutor) setupRuntime(runtime *goja.Runtime) error {
 	// 步骤1: 先设置 Node.js 基础模块（需要正常的原型）
 	e.setupNodeJSModules(runtime)
 
+	// 🔥 步骤1.5: 拦截 Object.freeze 以支持 Node.js v25 Buffer 行为
+	// 必须在 buffer.Enable 之后、用户代码执行之前
+	e.interceptObjectFreezeForBuffer(runtime)
+
 	// 步骤2: 设置全局对象
 	e.setupGlobalObjects(runtime)
 
@@ -830,8 +835,8 @@ func (e *JSExecutor) setupRuntime(runtime *goja.Runtime) error {
 
 	// 🔥 禁用 Reflect 和 Proxy（防止绕过 constructor 防护）
 	// 注意：JSMemoryLimiter 必须在此之前注册
-	runtime.Set("Reflect", goja.Undefined())
-	runtime.Set("Proxy", goja.Undefined())
+	//runtime.Set("Reflect", goja.Undefined())
+	//runtime.Set("Proxy", goja.Undefined())
 
 	// 🔥 步骤4: 统一设置所有模块（使用模块注册器）
 	// 注意：必须在 disableConstructorAccess 之前执行，因为某些模块（如 date-fns）依赖 Date.prototype.constructor
@@ -844,6 +849,141 @@ func (e *JSExecutor) setupRuntime(runtime *goja.Runtime) error {
 	e.disableConstructorAccess(runtime)
 
 	return nil
+}
+
+// interceptObjectFreezeForBuffer 拦截 Object.freeze 和 Object.seal，对 Buffer/TypedArray 特殊处理
+// Node.js v25 不允许冻结或密封有元素的 TypedArray/Buffer，需要抛出 TypeError
+func (e *JSExecutor) interceptObjectFreezeForBuffer(runtime *goja.Runtime) {
+	objectVal := runtime.Get("Object")
+	if objectVal == nil {
+		return
+	}
+
+	objectObj, ok := objectVal.(*goja.Object)
+	if !ok {
+		return
+	}
+
+	// 保存原始的 Object.freeze 和 Object.seal
+	originalFreeze := objectObj.Get("freeze")
+	originalSeal := objectObj.Get("seal")
+	if originalFreeze == nil || originalSeal == nil {
+		return
+	}
+
+	// 检查是否是有元素的 TypedArray/Buffer 的辅助函数
+	checkTypedArrayWithElements := func(arg goja.Value, operation string) bool {
+		if obj, ok := arg.(*goja.Object); ok {
+			// 检查是否有 length 属性且大于 0
+			lengthVal := obj.Get("length")
+			if lengthVal != nil && !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
+				length := lengthVal.ToInteger()
+
+				// 检查是否是 TypedArray/Buffer (通过检查是否有数字索引属性)
+				if length > 0 {
+					// 尝试访问索引 0，如果存在则可能是 TypedArray/Buffer
+					val0 := obj.Get("0")
+					if val0 != nil && !goja.IsUndefined(val0) {
+						// 是有元素的类数组对象，检查是否是 Buffer/TypedArray
+						constructor := obj.Get("constructor")
+						if constructor != nil {
+							constructorObj, ok := constructor.(*goja.Object)
+							if ok {
+								name := constructorObj.Get("name")
+								if name != nil {
+									typeName := name.String()
+									// 检查是否是 TypedArray 类型
+									// 注意：goja_nodejs 的 Buffer 的 constructor.name 可能是完整的 Go 函数签名
+									isTypedArray := typeName == "Buffer" ||
+										typeName == "Uint8Array" ||
+										typeName == "Int8Array" ||
+										typeName == "Uint16Array" ||
+										typeName == "Int16Array" ||
+										typeName == "Uint32Array" ||
+										typeName == "Int32Array" ||
+										typeName == "Float32Array" ||
+										typeName == "Float64Array" ||
+										typeName == "BigInt64Array" ||
+										typeName == "BigUint64Array" ||
+										typeName == "Uint8ClampedArray" ||
+										// goja_nodejs Buffer 的完整签名检测
+										(len(typeName) > 0 && (typeName[0:1] == "g" || typeName[0:1] == "*") &&
+											(strings.Contains(typeName, "buffer.(*Buffer)") ||
+												strings.Contains(typeName, "Buffer.ctor")))
+
+									if isTypedArray {
+										// 抛出与 Node.js v25 一致的错误
+										panic(runtime.NewTypeError(fmt.Sprintf("Cannot %s array buffer views with elements", operation)))
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		return false
+	}
+
+	// 包装 Object.freeze
+	objectObj.Set("freeze", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			// 调用原始 freeze
+			if freezeFunc, ok := goja.AssertFunction(originalFreeze); ok {
+				res, err := freezeFunc(goja.Undefined(), call.Arguments...)
+				if err != nil {
+					panic(err)
+				}
+				return res
+			}
+			return goja.Undefined()
+		}
+
+		arg := call.Arguments[0]
+
+		// 检查是否是有元素的 TypedArray/Buffer
+		checkTypedArrayWithElements(arg, "freeze")
+
+		// 不是 Buffer 或没有元素，调用原始 freeze
+		if freezeFunc, ok := goja.AssertFunction(originalFreeze); ok {
+			res, err := freezeFunc(goja.Undefined(), call.Arguments...)
+			if err != nil {
+				panic(err)
+			}
+			return res
+		}
+		return arg
+	})
+
+	// 包装 Object.seal
+	objectObj.Set("seal", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			// 调用原始 seal
+			if sealFunc, ok := goja.AssertFunction(originalSeal); ok {
+				res, err := sealFunc(goja.Undefined(), call.Arguments...)
+				if err != nil {
+					panic(err)
+				}
+				return res
+			}
+			return goja.Undefined()
+		}
+
+		arg := call.Arguments[0]
+
+		// 检查是否是有元素的 TypedArray/Buffer
+		checkTypedArrayWithElements(arg, "seal")
+
+		// 不是 Buffer 或没有元素，调用原始 seal
+		if sealFunc, ok := goja.AssertFunction(originalSeal); ok {
+			res, err := sealFunc(goja.Undefined(), call.Arguments...)
+			if err != nil {
+				panic(err)
+			}
+			return res
+		}
+		return arg
+	})
 }
 
 // injectUnicodeRegexPolyfill 注入 Unicode 正则表达式 polyfill
