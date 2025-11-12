@@ -496,12 +496,24 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 	// 在 32 位架构上约为 2^30 - 1 (~1GB)
 	// 在 64 位架构上约为 2^31 - 1 (~2GB) 或 Number.MAX_SAFE_INTEGER
 	const maxSafeInteger = 9007199254740991 // Number.MAX_SAFE_INTEGER
-	constantsObj.Set("MAX_LENGTH", runtime.ToValue(maxSafeInteger))
+	constantsObj.DefineDataProperty(
+		"MAX_LENGTH",
+		runtime.ToValue(maxSafeInteger),
+		goja.FLAG_FALSE, // writable
+		goja.FLAG_FALSE, // configurable
+		goja.FLAG_TRUE,  // enumerable
+	)
 
 	// MAX_STRING_LENGTH: 单个字符串实例允许的最大长度
 	// 取决于 JS 引擎的实现，Node.js 中约为 2^29 - 24 (~536MB)
 	const maxStringLength = 536870888 // Node.js v25 的值
-	constantsObj.Set("MAX_STRING_LENGTH", runtime.ToValue(maxStringLength))
+	constantsObj.DefineDataProperty(
+		"MAX_STRING_LENGTH",
+		runtime.ToValue(maxStringLength),
+		goja.FLAG_FALSE, // writable
+		goja.FLAG_FALSE, // configurable
+		goja.FLAG_TRUE,  // enumerable
+	)
 
 	buffer.Set("constants", constantsObj)
 }

@@ -26,6 +26,11 @@ tests=(
   "part9_encoding_aliases.js"
   "part10_return_type.js"
   "part11_performance.js"
+  "part12_combination.js"
+  "part13_boundary_values.js"
+  "part14_real_scenarios.js"
+  "part15_extreme_cases.js"
+  "part16_nodejs_compatibility.js"
 )
 
 # 统计变量
