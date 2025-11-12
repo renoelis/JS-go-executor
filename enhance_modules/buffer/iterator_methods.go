@@ -48,6 +48,26 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 	// 实现策略：
 	// 1. 创建共享的迭代器原型（iteratorProto），在原型上定义 next 方法
 	// 2. 使用 Go map 存储每个迭代器实例的状态（索引、buffer引用等）
+	// 3. 🔥 将 entries/keys/values 定义到 Uint8Array.prototype 上（与 Node.js 一致）
+	//    这样 Buffer 会自动继承这些方法，符合原型链设计
+	
+	// 🔥 获取 Uint8Array.prototype（迭代器方法应该定义在这里）
+	// 这样 Buffer 会自动继承这些方法，符合 Node.js 的原型链设计
+	uint8ArrayCtor := runtime.Get("Uint8Array")
+	var targetProto *goja.Object
+	
+	if uint8ArrayCtor != nil && !goja.IsUndefined(uint8ArrayCtor) {
+		uint8ArrayObj := uint8ArrayCtor.ToObject(runtime)
+		uint8ArrayProto := uint8ArrayObj.Get("prototype")
+		if uint8ArrayProto != nil && !goja.IsUndefined(uint8ArrayProto) {
+			targetProto = uint8ArrayProto.ToObject(runtime)
+		}
+	}
+	
+	// 如果无法获取 Uint8Array.prototype，则回退到 Buffer.prototype
+	if targetProto == nil {
+		targetProto = prototype
+	}
 	// 3. 每个迭代器实例通过 SetPrototype 继承共享原型
 	//
 	// 兼容性：100% (246/246 测试通过) ✅
@@ -56,6 +76,11 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 	// 1. 修正了 DefineDataProperty 参数顺序 (value, writable, configurable, enumerable)
 	// 2. 在 goja 源码中增强了属性迭代器的枚举性检查
 	// ==================================================================================
+	
+	// 🔥 性能优化：缓存常用的 goja.Value，避免重复的 runtime.ToValue() 调用
+	valueTrue := runtime.ToValue(true)
+	valueFalse := runtime.ToValue(false)
+	valueUndefined := goja.Undefined()
 	
 	// 创建共享的迭代器原型
 	iteratorProto := runtime.NewObject()
@@ -85,18 +110,25 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 			switch state.iterType {
 			case "entries":
 				// 返回 [index, value]
-				val := uint8(0)
+				var val goja.Value
 				if state.cachedBytes != nil && int64(len(state.cachedBytes)) > state.index {
-					val = state.cachedBytes[state.index]
+					val = runtime.ToValue(state.cachedBytes[state.index])
 				} else if state.buffer != nil {
-					if v := state.buffer.Get(getIndexString(state.index)); !goja.IsUndefined(v) {
-						val = uint8(v.ToInteger() & 0xFF)
+					// 直接获取索引位置的值，不进行类型转换
+					// 这样可以正确处理 TypedArray 的不同元素类型
+					v := state.buffer.Get(getIndexString(state.index))
+					if !goja.IsUndefined(v) && !goja.IsNull(v) {
+						val = v
+					} else {
+						val = runtime.ToValue(uint8(0))
 					}
+				} else {
+					val = runtime.ToValue(uint8(0))
 				}
 				
 				valueArray := runtime.NewArray(int64(2))
 				valueArray.Set("0", runtime.ToValue(state.index))
-				valueArray.Set("1", runtime.ToValue(val))
+				valueArray.Set("1", val)
 				result.Set("value", valueArray)
 				
 			case "keys":
@@ -104,23 +136,30 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 				result.Set("value", runtime.ToValue(state.index))
 				
 			case "values":
-				// 返回 value
-				val := uint8(0)
+				// 返回 value - 直接返回元素值，不进行类型转换
+				// 这样可以正确处理 TypedArray 的不同元素类型（Uint16Array、Float64Array 等）
+				var val goja.Value
 				if state.cachedBytes != nil && int64(len(state.cachedBytes)) > state.index {
-					val = state.cachedBytes[state.index]
+					val = runtime.ToValue(state.cachedBytes[state.index])
 				} else if state.buffer != nil {
-					if v := state.buffer.Get(getIndexString(state.index)); !goja.IsUndefined(v) {
-						val = uint8(v.ToInteger() & 0xFF)
+					// 直接获取索引位置的值，不进行类型转换
+					v := state.buffer.Get(getIndexString(state.index))
+					if !goja.IsUndefined(v) && !goja.IsNull(v) {
+						val = v
+					} else {
+						val = runtime.ToValue(uint8(0))
 					}
+				} else {
+					val = runtime.ToValue(uint8(0))
 				}
-				result.Set("value", runtime.ToValue(val))
+				result.Set("value", val)
 			}
 			
-			result.Set("done", runtime.ToValue(false))
+			result.Set("done", valueFalse)
 			state.index++
 		} else {
-			result.Set("value", goja.Undefined())
-			result.Set("done", runtime.ToValue(true))
+			result.Set("value", valueUndefined)
+			result.Set("done", valueTrue)
 		}
 		
 		return result
@@ -128,7 +167,9 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 	
 	// 在原型上设置 next 方法（可写、可配置、不可枚举）
 	// ⚠️ 注意参数顺序: value, writable, configurable, enumerable
-	if err := iteratorProto.DefineDataProperty("next", runtime.ToValue(nextFunc), goja.FLAG_TRUE, goja.FLAG_TRUE, goja.FLAG_FALSE); err != nil {
+	nextValue := runtime.ToValue(nextFunc)
+	setFunctionNameAndLength(runtime, nextValue, "next", 0)
+	if err := iteratorProto.DefineDataProperty("next", nextValue, goja.FLAG_TRUE, goja.FLAG_TRUE, goja.FLAG_FALSE); err != nil {
 		panic(runtime.NewTypeError("Failed to define next method on iterator prototype: " + err.Error()))
 	}
 	
@@ -181,7 +222,7 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 	}
 	entriesValue := runtime.ToValue(entriesFunc)
 	setFunctionNameAndLength(runtime, entriesValue, "entries", 0)
-	prototype.Set("entries", entriesValue)
+	targetProto.Set("entries", entriesValue)
 
 	// keys() - 返回索引迭代器
 	keysFunc := func(call goja.FunctionCall) goja.Value {
@@ -225,7 +266,7 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 	if err := keysFuncObj.DefineDataProperty("length", runtime.ToValue(0), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_FALSE); err != nil {
 		keysFuncObj.Set("length", runtime.ToValue(0))
 	}
-	prototype.Set("keys", keysFuncObj)
+	targetProto.Set("keys", keysFuncObj)
 
 	// values() - 返回值迭代器
 	valuesFunc := func(call goja.FunctionCall) goja.Value {
@@ -267,7 +308,7 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 	}
 	valuesValue := runtime.ToValue(valuesFunc)
 	setFunctionNameAndLength(runtime, valuesValue, "values", 0)
-	prototype.Set("values", valuesValue)
+	targetProto.Set("values", valuesValue)
 
 	// 🔥 确保 Buffer.prototype[Symbol.iterator] === Buffer.prototype.values
 	// 这与 Node.js 的行为一致

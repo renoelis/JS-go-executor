@@ -232,15 +232,16 @@ test('ascii 只保留 0-127', () => {
   return true;
 });
 
-test('ascii 高位字节会被截断', () => {
-  // String.fromCharCode(200) 在 ascii 编码下会被截断为 200 & 0x7F = 72
+test('ascii 高位字节保留原始值', () => {
+  // Node.js ascii 编码实际上保留原始字节值，不进行截断
   const highChar = String.fromCharCode(200);
   const buf = Buffer.from(highChar, 'ascii');
   const json = buf.toJSON();
 
   if (json.type !== 'Buffer') return false;
   if (json.data.length !== 1) return false;
-  if (json.data[0] !== (200 & 0x7F)) return false;
+  // ascii 编码保留原始字节值 200
+  if (json.data[0] !== 200) return false;
 
   return true;
 });

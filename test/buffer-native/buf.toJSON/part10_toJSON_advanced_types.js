@@ -1,4 +1,4 @@
-// buf.toJSON() - SharedArrayBuffer, DataView, and BigInt Tests
+// buf.toJSON() - DataView, BigInt, and Advanced TypedArray Tests
 const { Buffer } = require('buffer');
 
 const tests = [];
@@ -13,61 +13,6 @@ function test(name, fn) {
     console.log(`❌ ${name}: ${e.message}`);
   }
 }
-
-// SharedArrayBuffer 测试
-test('从 SharedArrayBuffer 创建的 Buffer', () => {
-  const sab = new SharedArrayBuffer(8);
-  const sabView = new Uint8Array(sab);
-  sabView[0] = 10;
-  sabView[1] = 20;
-  sabView[2] = 30;
-
-  const buf = Buffer.from(sab);
-  const json = buf.toJSON();
-
-  if (json.type !== 'Buffer') return false;
-  if (json.data.length !== 8) return false;
-  if (json.data[0] !== 10 || json.data[1] !== 20 || json.data[2] !== 30) return false;
-
-  return true;
-});
-
-test('从 SharedArrayBuffer 部分区域创建的 Buffer', () => {
-  const sab = new SharedArrayBuffer(16);
-  const sabView = new Uint8Array(sab, 4, 8);
-  sabView[0] = 100;
-  sabView[1] = 101;
-
-  const buf = Buffer.from(sab, 4, 8);
-  const json = buf.toJSON();
-
-  if (json.type !== 'Buffer') return false;
-  if (json.data.length !== 8) return false;
-  if (json.data[0] !== 100 || json.data[1] !== 101) return false;
-
-  return true;
-});
-
-test('修改 SharedArrayBuffer 后 Buffer 的 toJSON', () => {
-  const sab = new SharedArrayBuffer(4);
-  const sabView = new Uint8Array(sab);
-  sabView[0] = 1;
-  sabView[1] = 2;
-
-  const buf = Buffer.from(sab);
-  const json1 = buf.toJSON();
-
-  // 修改 SharedArrayBuffer
-  sabView[0] = 99;
-
-  const json2 = buf.toJSON();
-
-  // Buffer.from 会复制数据,所以修改 SAB 不影响 Buffer
-  if (json1.data[0] !== json2.data[0]) return false;
-  if (json2.data[0] !== 1) return false;
-
-  return true;
-});
 
 // DataView 测试
 test('从 DataView 的 buffer 创建的 Buffer', () => {

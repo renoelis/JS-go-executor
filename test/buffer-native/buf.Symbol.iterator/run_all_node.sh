@@ -3,9 +3,13 @@
 # Buffer Symbol.iterator 完整测试套件
 # 使用 Node.js v25.0.0 运行所有测试
 
+# 获取脚本所在目录
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 echo "=========================================="
 echo "Buffer Symbol.iterator Test Suite"
 echo "Node.js version: $(node --version)"
+echo "Test directory: $SCRIPT_DIR"
 echo "=========================================="
 echo ""
 
@@ -39,7 +43,7 @@ for test in "${tests[@]}"; do
 
   total_suites=$((total_suites + 1))
 
-  if node "$test"; then
+  if node "$SCRIPT_DIR/$test"; then
     passed_suites=$((passed_suites + 1))
     echo "✅ $test PASSED"
   else

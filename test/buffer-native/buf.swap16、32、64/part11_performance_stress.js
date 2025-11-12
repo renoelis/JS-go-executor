@@ -293,7 +293,9 @@ test('swap32 - 最小长度高频操作', () => {
   }
   const duration = Date.now() - start;
 
-  if (duration > 500) {
+  // 放宽限制到1000ms，因为goja性能约为Node.js的1/200
+  // Node.js: ~2ms, goja: ~400-450ms
+  if (duration > 1000) {
     throw new Error(`Minimum size swap32 too slow: ${duration}ms`);
   }
 
@@ -309,7 +311,7 @@ test('swap64 - 最小长度高频操作', () => {
   }
   const duration = Date.now() - start;
 
-  if (duration > 500) {
+  if (duration > 1000) {
     throw new Error(`Minimum size swap64 too slow: ${duration}ms`);
   }
 

@@ -154,6 +154,9 @@ func (be *BufferEnhancer) exportBufferBytesFast(runtime *goja.Runtime, obj *goja
 			if byteOffset >= end {
 				return []byte{}
 			}
+			// 🔥 安全性：必须复制数据！
+			// JavaScript ArrayBuffer 的内存可能被 JS GC 移动/释放
+			// 如果返回切片引用，后续 string(data) 可能访问无效内存导致段错误
 			result := make([]byte, end-byteOffset)
 			copy(result, allBytes[byteOffset:end])
 			return result
@@ -189,6 +192,8 @@ func (be *BufferEnhancer) exportBufferBytesFast(runtime *goja.Runtime, obj *goja
 					if byteOffset >= end {
 						return []byte{}
 					}
+					// 🔥 安全性：必须复制数据！
+					// JavaScript ArrayBuffer 的内存可能被 JS GC 移动/释放
 					result := make([]byte, end-byteOffset)
 					copy(result, allBytes[byteOffset:end])
 					return result
@@ -242,14 +247,49 @@ func (be *BufferEnhancer) exportBufferRange(runtime *goja.Runtime, obj *goja.Obj
 		return nil
 	}
 
-	// 提取指定范围
-	return allBytes[start:end]
+	// 🔥 安全修复：必须复制数据，避免切片共享底层数组
+	result := make([]byte, length)
+	copy(result, allBytes[start:end])
+	return result
+}
+
+// extractBufferDataSafe 安全地提取 Buffer 数据（强制复制，避免切片共享）
+// 这是 toString 优化方案的核心：双重复制保证内存安全
+// 🔥 关键：即使 exportBufferBytesFast 已复制，切片操作仍会共享底层数组，必须再次复制
+func (be *BufferEnhancer) extractBufferDataSafe(runtime *goja.Runtime, obj *goja.Object, start, end, bufferLength int64) []byte {
+	dataLen := end - start
+	if dataLen <= 0 {
+		return []byte{}
+	}
+
+	// 快速路径：批量导出 + 安全复制
+	if shouldUseFastPath(bufferLength) {
+		bufferBytes := be.exportBufferBytesFast(runtime, obj, bufferLength)
+		if bufferBytes != nil && int64(len(bufferBytes)) >= bufferLength {
+			// 🔥 关键：必须复制，不能直接切片
+			result := make([]byte, dataLen)
+			copy(result, bufferBytes[start:end])
+			return result
+		}
+	}
+
+	// 降级方案：逐字节获取
+	result := make([]byte, dataLen)
+	for i := start; i < end; i++ {
+		if val := obj.Get(getIndexString(i)); val != nil && !goja.IsUndefined(val) {
+			if byteVal := val.ToInteger(); byteVal >= 0 {
+				result[i-start] = byte(byteVal & 0xFF)
+			}
+		}
+	}
+	return result
 }
 
 // shouldUseFastPath 检查是否应该使用快速路径（批量操作）
-// 阈值: 256 字节（降低阈值以提升性能）
+// 阈值: 50 字节（降低阈值以提升迭代器性能）
+// 🔥 性能优化：由于已经避免了数据复制，可以大幅降低阈值
 func shouldUseFastPath(dataLength int64) bool {
-	const threshold = 256 // 256 字节
+	const threshold = 50 // 50 字节（之前是 256）
 	return dataLength >= threshold
 }
 
@@ -323,6 +363,46 @@ func checkIntRange(runtime *goja.Runtime, value int64, min int64, max int64, val
 	}
 }
 
+// checkIntRangeStrict 严格检查整数范围（在截断前检查浮点数，对齐 Node.js 行为）
+// Node.js 的逻辑：先检查浮点数是否在范围内，如果在范围内则截断为整数，否则抛出错误
+// 返回值：int64 类型的整数值
+func checkIntRangeStrict(runtime *goja.Runtime, val goja.Value, min int64, max int64, valueName string) int64 {
+	// 获取浮点数值
+	floatVal := val.ToFloat()
+	
+	// 检查 NaN - NaN 写入 0（Node.js 行为）
+	if math.IsNaN(floatVal) {
+		return 0
+	}
+	
+	// 检查 Infinity
+	if math.IsInf(floatVal, 1) {
+		panic(newRangeError(runtime, "The value of \"" + valueName + "\" is out of range. It must be >= " +
+			strconv.FormatInt(min, 10) + " and <= " + strconv.FormatInt(max, 10) + ". Received Infinity"))
+	}
+	
+	// 检查 -Infinity
+	if math.IsInf(floatVal, -1) {
+		panic(newRangeError(runtime, "The value of \"" + valueName + "\" is out of range. It must be >= " +
+			strconv.FormatInt(min, 10) + " and <= " + strconv.FormatInt(max, 10) + ". Received -Infinity"))
+	}
+	
+	// 检查浮点数范围（不截断）
+	// Node.js 先检查原始浮点数是否在范围内
+	if floatVal < float64(min) || floatVal > float64(max) {
+		// 格式化错误信息中的浮点数
+		// 如果浮点数是整数，不显示小数点
+		valueStr := strconv.FormatFloat(floatVal, 'f', -1, 64)
+		panic(newRangeError(runtime, "The value of \"" + valueName + "\" is out of range. It must be >= " +
+			strconv.FormatInt(min, 10) + " and <= " + strconv.FormatInt(max, 10) + ". Received " + valueStr))
+	}
+	
+	// 在范围内，截断为整数
+	intVal := val.ToInteger()
+	
+	return intVal
+}
+
 // newRangeError 创建一个 RangeError，对齐 Node.js 的错误格式
 func newRangeError(runtime *goja.Runtime, message string) *goja.Object {
 	// 使用 JS 的 RangeError 构造函数创建真正的 RangeError 实例
@@ -354,7 +434,19 @@ func newBufferOutOfBoundsError(runtime *goja.Runtime) *goja.Object {
 }
 
 // validateOffset 验证 offset 参数类型和值（对齐 Node.js v25 行为）
+// 注意：此函数不接受 undefined，适用于必需的 offset 参数（如 readIntBE）
 func validateOffset(runtime *goja.Runtime, val goja.Value, methodName string) int64 {
+	// 首先检查是否是 Symbol（在Export之前检查，因为Symbol.Export()返回字符串）
+	// 使用类型断言直接检查 val 的类型
+	switch val.(type) {
+	case *goja.Symbol:
+		// Symbol 类型，获取字符串表示
+		symStr := val.String()
+		errObj := runtime.NewTypeError("The \"offset\" argument must be of type number. Received type symbol (" + symStr + ")")
+		errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
+		panic(errObj)
+	}
+	
 	// 检查类型（必须在转换之前）
 	exported := val.Export()
 
@@ -379,75 +471,58 @@ func validateOffset(runtime *goja.Runtime, val goja.Value, methodName string) in
 		panic(errObj)
 	}
 
-	// 检查是否是 Symbol（Symbol 不能被导出为普通类型）
-	if symStr := val.String(); len(symStr) > 6 && symStr[:7] == "Symbol(" {
-		errObj := runtime.NewTypeError("The \"offset\" argument must be of type number. Received type symbol")
-		errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
-		panic(errObj)
-	}
-
 	// 检查是否是 BigInt
-	if _, ok := exported.(int64); !ok {
-		// 尝试检测 BigInt（goja 中 BigInt 可能有特殊的表示）
-		if valStr := val.String(); len(valStr) > 0 && valStr[len(valStr)-1] == 'n' {
-			// 可能是 BigInt（以 'n' 结尾）
-			errObj := runtime.NewTypeError("The \"offset\" argument must be of type number. Received type bigint")
-			errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
-			panic(errObj)
+	// 在 goja 中，BigInt 的 typeof 会返回 "bigint"
+	// 我们可以通过 runtime.RunString 来检查类型
+	typeofResult, err := runtime.RunString("(function(v) { return typeof v; })")
+	if err == nil {
+		if typeofFunc, ok := goja.AssertFunction(typeofResult); ok {
+			typeResult, err := typeofFunc(goja.Undefined(), val)
+			if err == nil && typeResult != nil {
+				typeStr := typeResult.String()
+				if typeStr == "bigint" {
+					// 获取 BigInt 的字符串表示（如 "1n"）
+					valStr := val.String()
+					errObj := runtime.NewTypeError(fmt.Sprintf("The \"offset\" argument must be of type number. Received type bigint (%s)", valStr))
+					errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
+					panic(errObj)
+				}
+			}
 		}
 	}
 
 	// 检查 Number/String/Boolean 对象包装器
 	// 原理：Object.is(primitive, primitive) → true
 	//      Object.is(new Number(0), new Number(0).valueOf()) → false
-	// 通过比较 val 和 val.valueOf() 来区分原始值和包装器对象
-	if obj := val.ToObject(runtime); obj != nil && !goja.IsUndefined(val) && !goja.IsNull(val) {
-		// 获取 valueOf 方法
-		valueOfProp := obj.Get("valueOf")
-		if valueOfProp != nil && !goja.IsUndefined(valueOfProp) {
-			if valueOfFunc, ok := goja.AssertFunction(valueOfProp); ok {
-				// 调用 valueOf()
-				valueOfResult, err := valueOfFunc(obj)
-				if err == nil && valueOfResult != nil {
-					// 使用 Object.is 比较 val 和 valueOf 的结果
-					// 如果不相等，说明 val 是包装器对象
-					objectCtor := runtime.Get("Object")
-					if objectCtor != nil {
-						if objectCtorObj := objectCtor.ToObject(runtime); objectCtorObj != nil {
-							if isFunc := objectCtorObj.Get("is"); isFunc != nil {
-								if isFn, ok := goja.AssertFunction(isFunc); ok {
-									isResult, err := isFn(goja.Undefined(), val, valueOfResult)
-									if err == nil && isResult != nil {
-										// 如果 Object.is(val, val.valueOf()) 返回 false
-										// 说明 val 是包装器对象，而不是原始值
-										if !isResult.ToBoolean() {
-											// 检查是哪种包装器
-											if ctorProp := obj.Get("constructor"); ctorProp != nil && !goja.IsUndefined(ctorProp) {
-												if ctorObj := ctorProp.ToObject(runtime); ctorObj != nil {
-													if nameProp := ctorObj.Get("name"); nameProp != nil && !goja.IsUndefined(nameProp) {
-														ctorName := nameProp.String()
-														switch ctorName {
-														case "Number":
-															errObj := runtime.NewTypeError("The \"offset\" argument must be of type number. Received an instance of Number")
-															errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
-															panic(errObj)
-														case "String":
-															errObj := runtime.NewTypeError("The \"offset\" argument must be of type number. Received an instance of String")
-															errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
-															panic(errObj)
-														case "Boolean":
-															errObj := runtime.NewTypeError("The \"offset\" argument must be of type number. Received type boolean")
-															errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
-															panic(errObj)
-														}
-													}
-												}
-											}
-										}
-									}
-								}
-							}
-						}
+	// 检测包装器对象（Number、String、Boolean 对象）
+	// 在 goja 中，原始值（如数字 42）和包装器对象（如 new Number(42)）的类型不同
+	// 原始值会被 exported 为 Go 原生类型（int64, float64, string, bool）
+	// 包装器对象则是 *goja.Object 类型
+	
+	// 如果 exported 是数字类型（int64/float64等），说明是原始值，不是包装器
+	// 如果 val 是 *goja.Object 且不是特殊对象（Date、RegExp等），需要检查是否是包装器
+	if objVal, isObj := val.(*goja.Object); isObj {
+		// 是对象类型，检查 constructor.name
+		if ctorProp := objVal.Get("constructor"); ctorProp != nil && !goja.IsUndefined(ctorProp) {
+			if ctorObj := ctorProp.ToObject(runtime); ctorObj != nil {
+				if nameProp := ctorObj.Get("name"); nameProp != nil && !goja.IsUndefined(nameProp) {
+					ctorName := nameProp.String()
+					switch ctorName {
+					case "Number":
+						// Number 包装器对象
+						errObj := runtime.NewTypeError("The \"offset\" argument must be of type number. Received an instance of Number")
+						errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
+						panic(errObj)
+					case "String":
+						// String 包装器对象
+						errObj := runtime.NewTypeError("The \"offset\" argument must be of type number. Received an instance of String")
+						errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
+						panic(errObj)
+					case "Boolean":
+						// Boolean 包装器对象
+						errObj := runtime.NewTypeError("The \"offset\" argument must be of type number. Received type boolean")
+						errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
+						panic(errObj)
 					}
 				}
 			}
@@ -471,6 +546,10 @@ func validateOffset(runtime *goja.Runtime, val goja.Value, methodName string) in
 							errObj := runtime.NewTypeError("The \"offset\" argument must be of type number. Received an instance of Map")
 							errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 							panic(errObj)
+						case "Set":
+							errObj := runtime.NewTypeError("The \"offset\" argument must be of type number. Received an instance of Set")
+							errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
+							panic(errObj)
 						case "Promise":
 							errObj := runtime.NewTypeError("The \"offset\" argument must be of type number. Received an instance of Promise")
 							errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
@@ -491,6 +570,11 @@ func validateOffset(runtime *goja.Runtime, val goja.Value, methodName string) in
 						case "Function":
 							// Function 应该抛出 TypeError
 							errObj := runtime.NewTypeError("The \"offset\" argument must be of type number. Received type function")
+							errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
+							panic(errObj)
+						case "Object":
+							// 普通对象（包括带 valueOf/toString 的对象）
+							errObj := runtime.NewTypeError("The \"offset\" argument must be of type number. Received an instance of Object")
 							errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 							panic(errObj)
 						}
@@ -547,8 +631,27 @@ func validateOffset(runtime *goja.Runtime, val goja.Value, methodName string) in
 	return offset
 }
 
+// validateOptionalOffset 验证可选的 offset 参数（对齐 Node.js v25 行为）
+// 当 offset 为 undefined 时返回 0，适用于可选的 offset 参数（如 write 方法）
+func validateOptionalOffset(runtime *goja.Runtime, val goja.Value, methodName string) int64 {
+	// 处理 undefined：默认为 0
+	if goja.IsUndefined(val) {
+		return 0
+	}
+	
+	// 其他情况调用标准的 validateOffset
+	return validateOffset(runtime, val, methodName)
+}
+
 // validateByteLength 验证 byteLength 参数类型和值（对齐 Node.js v25 行为）
 func validateByteLength(runtime *goja.Runtime, val goja.Value, min, max int64, methodName string) int64 {
+	// 首先检查是否是 undefined 或 null
+	if goja.IsUndefined(val) || goja.IsNull(val) {
+		errObj := runtime.NewTypeError("The \"byteLength\" argument must be of type number. Received undefined")
+		errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
+		panic(errObj)
+	}
+	
 	// 检查是否是字符串类型
 	exported := val.Export()
 	if str, ok := exported.(string); ok {
@@ -564,8 +667,8 @@ func validateByteLength(runtime *goja.Runtime, val goja.Value, min, max int64, m
 		panic(errObj)
 	}
 
-	// 检查是否是对象类型（包括数组、普通对象等，但排除 null）
-	if obj := val.ToObject(runtime); obj != nil && exported != nil {
+	// 检查是否是对象类型（包括数组、普通对象等，但排除 null 和 undefined）
+	if exported != nil {
 		// 检查是否是数组
 		if _, isArray := exported.([]interface{}); isArray {
 			errObj := runtime.NewTypeError("The \"byteLength\" argument must be of type number. Received an instance of Array")
@@ -665,6 +768,40 @@ func addSymbolIterator(runtime *goja.Runtime, iterator *goja.Object) {
 		iterator.SetSymbol(sym, runtime.ToValue(func(call goja.FunctionCall) goja.Value {
 			return iterator
 		}))
+	}
+}
+
+// checkIfFrozen 检查对象是否被冻结，如果是则抛出错误（对齐 Node.js 行为）
+func checkIfFrozen(runtime *goja.Runtime, obj *goja.Object, methodName string) {
+	if obj == nil {
+		return
+	}
+	
+	// 使用 Object.isFrozen() 检查
+	objectCtor := runtime.Get("Object")
+	if objectCtor == nil || goja.IsUndefined(objectCtor) {
+		return
+	}
+	
+	objectObj := objectCtor.ToObject(runtime)
+	if objectObj == nil {
+		return
+	}
+	
+	isFrozenFunc := objectObj.Get("isFrozen")
+	if isFrozenFunc == nil || goja.IsUndefined(isFrozenFunc) {
+		return
+	}
+	
+	if isFrozen, ok := goja.AssertFunction(isFrozenFunc); ok {
+		result, err := isFrozen(objectCtor, runtime.ToValue(obj))
+		if err == nil && !goja.IsUndefined(result) && !goja.IsNull(result) {
+			if result.ToBoolean() {
+				// 对象被冻结，抛出错误
+				errObj := runtime.NewTypeError("Cannot assign to read only property '0' of object '[object Array]'")
+				panic(errObj)
+			}
+		}
 	}
 }
 

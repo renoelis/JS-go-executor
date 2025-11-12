@@ -211,17 +211,27 @@ test('replacer 可以修改 Buffer 序列化结果', () => {
   return true;
 });
 
-test('replacer 可以完全替换 Buffer', () => {
+test('replacer 接收 toJSON 结果而非原始 Buffer', () => {
   const buf = Buffer.from([1, 2, 3]);
 
+  let receivedBuffer = false;
+  let receivedToJSONResult = false;
+
   const str = JSON.stringify(buf, (key, value) => {
+    // JSON.stringify 会先调用 toJSON()，然后传递结果给 replacer
+    // 所以 replacer 接收到的是 toJSON 的返回值，不是原始 Buffer
     if (Buffer.isBuffer(value)) {
-      return 'replaced';
+      receivedBuffer = true;
+    }
+    if (value && value.type === 'Buffer' && Array.isArray(value.data)) {
+      receivedToJSONResult = true;
     }
     return value;
   });
 
-  if (str !== '"replaced"') return false;
+  // replacer 不会接收到原始 Buffer，只会接收到 toJSON 的结果
+  if (receivedBuffer) return false;
+  if (!receivedToJSONResult) return false;
 
   return true;
 });

@@ -1,10 +1,27 @@
 package buffer
 
 import (
-	"strconv"
+	"fmt"
+	"sync"
 
 	"github.com/dop251/goja"
 )
+
+// 🚀 性能优化：预分配字节值缓存（0-255）
+var byteValueCache [256]goja.Value
+var byteValueCacheOnce sync.Once
+
+func initByteValueCache(runtime *goja.Runtime) {
+	for i := 0; i < 256; i++ {
+		byteValueCache[i] = runtime.ToValue(byte(i))
+	}
+}
+
+// getByteValue 获取字节对应的 goja.Value，使用缓存优化性能
+func getByteValue(runtime *goja.Runtime, b byte) goja.Value {
+	byteValueCacheOnce.Do(func() { initByteValueCache(runtime) })
+	return byteValueCache[b]
+}
 
 // isBufferInstance 检查对象是否是 Buffer 实例（不包括 TypedArray）
 func isBufferInstance(runtime *goja.Runtime, obj *goja.Object) bool {
@@ -177,6 +194,9 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 	// writeIntBE - 写入可变长度有符号整数（大端）
 	writeIntBEFunc := func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
+		if this == nil {
+			panic(runtime.NewTypeError("方法 writeIntBE 在不兼容的接收器上调用"))
+		}
 		if len(call.Arguments) < 3 {
 			panic(runtime.NewTypeError("Value、offset 和 byteLength 参数是必需的"))
 		}
@@ -198,17 +218,26 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 
 		// 检查 offset 边界
 		bufferLength := int64(0)
-		if lengthVal := this.Get("length"); !goja.IsUndefined(lengthVal) {
+		if lengthVal := this.Get("length"); lengthVal != nil && !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
 			bufferLength = lengthVal.ToInteger()
 		}
-		if offset < 0 || offset+byteLength > bufferLength {
-			panic(runtime.NewTypeError("RangeError: offset 超出 Buffer 边界"))
+		// 检查 offset 范围，分别处理负数和超出范围的情况
+		if offset < 0 {
+			panic(newRangeError(runtime, fmt.Sprintf("The value of \"offset\" is out of range. It must be >= 0 and <= %d. Received %d", bufferLength-byteLength, offset)))
+		}
+		if offset+byteLength > bufferLength {
+			if bufferLength == 0 {
+				panic(newBufferOutOfBoundsError(runtime))
+			} else {
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"offset\" is out of range. It must be >= 0 and <= %d. Received %d", bufferLength-byteLength, offset)))
+			}
 		}
 
 		// 写入字节（大端）
+		// 🚀 性能优化：使用索引字符串缓存 + 字节值缓存
 		for i := byteLength - 1; i >= 0; i-- {
 			b := byte(value & 0xFF)
-			this.Set(strconv.FormatInt(offset+i, 10), runtime.ToValue(b))
+			this.Set(getIndexString(offset+i), getByteValue(runtime, b))
 			value >>= 8
 		}
 
@@ -221,6 +250,9 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 	// writeIntLE - 写入可变长度有符号整数（小端）
 	writeIntLEFunc := func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
+		if this == nil {
+			panic(runtime.NewTypeError("方法 writeIntLE 在不兼容的接收器上调用"))
+		}
 		if len(call.Arguments) < 3 {
 			panic(runtime.NewTypeError("Value、offset 和 byteLength 参数是必需的"))
 		}
@@ -242,17 +274,26 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 
 		// 检查 offset 边界
 		bufferLength := int64(0)
-		if lengthVal := this.Get("length"); !goja.IsUndefined(lengthVal) {
+		if lengthVal := this.Get("length"); lengthVal != nil && !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
 			bufferLength = lengthVal.ToInteger()
 		}
-		if offset < 0 || offset+byteLength > bufferLength {
-			panic(runtime.NewTypeError("RangeError: offset 超出 Buffer 边界"))
+		// 检查 offset 范围，分别处理负数和超出范围的情况
+		if offset < 0 {
+			panic(newRangeError(runtime, fmt.Sprintf("The value of \"offset\" is out of range. It must be >= 0 and <= %d. Received %d", bufferLength-byteLength, offset)))
+		}
+		if offset+byteLength > bufferLength {
+			if bufferLength == 0 {
+				panic(newBufferOutOfBoundsError(runtime))
+			} else {
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"offset\" is out of range. It must be >= 0 and <= %d. Received %d", bufferLength-byteLength, offset)))
+			}
 		}
 
 		// 写入字节（小端）
+		// 🚀 性能优化：使用索引字符串缓存 + 字节值缓存
 		for i := int64(0); i < byteLength; i++ {
 			b := byte(value & 0xFF)
-			this.Set(strconv.FormatInt(offset+i, 10), runtime.ToValue(b))
+			this.Set(getIndexString(offset+i), getByteValue(runtime, b))
 			value >>= 8
 		}
 
@@ -265,37 +306,85 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 	// writeUIntBE - 写入可变长度无符号整数（大端）
 	writeUIntBEFunc := func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
-		if len(call.Arguments) < 3 {
-			panic(runtime.NewTypeError("Value、offset 和 byteLength 参数是必需的"))
+		if this == nil {
+			panic(runtime.NewTypeError("方法 writeUIntBE 在不兼容的接收器上调用"))
 		}
+		// 不检查参数数量，让 validateByteLength 处理 undefined
 
-		value := uint64(call.Arguments[0].ToInteger())
-		offset := validateOffset(runtime, call.Arguments[1], "writeUIntBE")
-		byteLength := call.Arguments[2].ToInteger()
+		// 使用严格的参数验证（只对 offset 和 byteLength 严格验证）
+		var valueArg goja.Value
+		if len(call.Arguments) > 0 {
+			valueArg = call.Arguments[0]
+		} else {
+			valueArg = goja.Undefined()
+		}
+		var offsetArg goja.Value
+		if len(call.Arguments) > 1 {
+			offsetArg = call.Arguments[1]
+		} else {
+			offsetArg = goja.Undefined()
+		}
+		var byteLengthArg goja.Value
+		if len(call.Arguments) > 2 {
+			byteLengthArg = call.Arguments[2]
+		} else {
+			byteLengthArg = goja.Undefined()
+		}
+		byteLength := validateByteLength(runtime, byteLengthArg, 1, 6, "writeUIntBE")
+		offset := validateOffset(runtime, offsetArg, "writeUIntBE")
+
+		// value 参数允许类型转换，但需要检查范围
+		valueFloat := valueArg.ToFloat()
+		value := uint64(valueArg.ToInteger())
 
 		if byteLength < 1 || byteLength > 6 {
 			panic(runtime.NewTypeError("RangeError: byteLength 必须在 1 到 6 之间"))
 		}
 
-		// 检查 value 范围（无符号）
+		// 检查 value 范围（无符号） - 先检查浮点值范围
 		max := uint64(1)<<(8*uint(byteLength)) - 1
+		maxFloat := float64(max)
+		// 检查负数
+		if valueFloat < 0 {
+			if byteLength == 6 {
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"value\" is out of range. It must be >= 0 and < 2 ** %d. Received %v", byteLength*8, valueFloat)))
+			} else {
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"value\" is out of range. It must be >= 0 and <= %d. Received %v", max, valueFloat)))
+			}
+		}
+		if valueFloat > maxFloat {
+			if byteLength == 6 {
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"value\" is out of range. It must be >= 0 and < 2 ** %d. Received %v", byteLength*8, valueFloat)))
+			} else {
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"value\" is out of range. It must be >= 0 and <= %d. Received %v", max, valueFloat)))
+			}
+		}
 		if value > max {
 			panic(runtime.NewTypeError("RangeError: value 超出范围"))
 		}
 
 		// 检查 offset 边界
 		bufferLength := int64(0)
-		if lengthVal := this.Get("length"); !goja.IsUndefined(lengthVal) {
+		if lengthVal := this.Get("length"); lengthVal != nil && !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
 			bufferLength = lengthVal.ToInteger()
 		}
-		if offset < 0 || offset+byteLength > bufferLength {
-			panic(runtime.NewTypeError("RangeError: offset 超出 Buffer 边界"))
+		// 检查 offset 范围，分别处理负数和超出范围的情况
+		if offset < 0 {
+			panic(newRangeError(runtime, fmt.Sprintf("The value of \"offset\" is out of range. It must be >= 0 and <= %d. Received %d", bufferLength-byteLength, offset)))
+		}
+		if offset+byteLength > bufferLength {
+			if bufferLength == 0 {
+				panic(newBufferOutOfBoundsError(runtime))
+			} else {
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"offset\" is out of range. It must be >= 0 and <= %d. Received %d", bufferLength-byteLength, offset)))
+			}
 		}
 
 		// 写入字节（大端）
+		// 🚀 性能优化：使用索引字符串缓存 + 字节值缓存
 		for i := byteLength - 1; i >= 0; i-- {
 			b := byte(value & 0xFF)
-			this.Set(strconv.FormatInt(offset+i, 10), runtime.ToValue(b))
+			this.Set(getIndexString(offset+i), getByteValue(runtime, b))
 			value >>= 8
 		}
 
@@ -308,22 +397,85 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 	// writeUIntLE - 写入可变长度无符号整数（小端）
 	writeUIntLEFunc := func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
-		if len(call.Arguments) < 3 {
-			panic(runtime.NewTypeError("Value、offset 和 byteLength 参数是必需的"))
+		if this == nil {
+			panic(runtime.NewTypeError("方法 writeUIntLE 在不兼容的接收器上调用"))
 		}
+		// 不检查参数数量，让 validateByteLength 处理 undefined
 
-		value := uint64(call.Arguments[0].ToInteger())
-		offset := validateOffset(runtime, call.Arguments[1], "writeUIntLE")
-		byteLength := call.Arguments[2].ToInteger()
+		// 使用严格的参数验证（只对 offset 和 byteLength 严格验证）
+		var valueArg goja.Value
+		if len(call.Arguments) > 0 {
+			valueArg = call.Arguments[0]
+		} else {
+			valueArg = goja.Undefined()
+		}
+		var offsetArg goja.Value
+		if len(call.Arguments) > 1 {
+			offsetArg = call.Arguments[1]
+		} else {
+			offsetArg = goja.Undefined()
+		}
+		var byteLengthArg goja.Value
+		if len(call.Arguments) > 2 {
+			byteLengthArg = call.Arguments[2]
+		} else {
+			byteLengthArg = goja.Undefined()
+		}
+		byteLength := validateByteLength(runtime, byteLengthArg, 1, 6, "writeUIntLE")
+		offset := validateOffset(runtime, offsetArg, "writeUIntLE")
+
+		// value 参数允许类型转换，但需要检查范围
+		valueFloat := valueArg.ToFloat()
+		value := uint64(valueArg.ToInteger())
 
 		if byteLength < 1 || byteLength > 6 {
 			panic(runtime.NewTypeError("byteLength 必须在 1 到 6 之间"))
 		}
 
+		// 检查 value 范围（无符号） - 先检查浮点值范围
+		max := uint64(1)<<(8*uint(byteLength)) - 1
+		maxFloat := float64(max)
+		// 检查负数
+		if valueFloat < 0 {
+			if byteLength == 6 {
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"value\" is out of range. It must be >= 0 and < 2 ** %d. Received %v", byteLength*8, valueFloat)))
+			} else {
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"value\" is out of range. It must be >= 0 and <= %d. Received %v", max, valueFloat)))
+			}
+		}
+		if valueFloat > maxFloat {
+			if byteLength == 6 {
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"value\" is out of range. It must be >= 0 and < 2 ** %d. Received %v", byteLength*8, valueFloat)))
+			} else {
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"value\" is out of range. It must be >= 0 and <= %d. Received %v", max, valueFloat)))
+			}
+		}
+		if value > max {
+			panic(runtime.NewTypeError("RangeError: value 超出范围"))
+		}
+
+		// 检查 offset 边界
+		bufferLength := int64(0)
+		if lengthVal := this.Get("length"); lengthVal != nil && !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
+			bufferLength = lengthVal.ToInteger()
+		}
+		// 检查 offset 范围，分别处理负数和超出范围的情况
+		if offset < 0 {
+			panic(newRangeError(runtime, fmt.Sprintf("The value of \"offset\" is out of range. It must be >= 0 and <= %d. Received %d", bufferLength-byteLength, offset)))
+		}
+		if offset+byteLength > bufferLength {
+			if bufferLength == 0 {
+				panic(newBufferOutOfBoundsError(runtime))
+			} else {
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"offset\" is out of range. It must be >= 0 and <= %d. Received %d", bufferLength-byteLength, offset)))
+			}
+		}
+
 		// 写入字节（小端）
+		// 🚀 性能优化：使用索引字符串缓存 + 字节值缓存
 		for i := int64(0); i < byteLength; i++ {
 			b := byte(value & 0xFF)
-			this.Set(strconv.FormatInt(offset+i, 10), runtime.ToValue(b))
+			this.Set(getIndexString(offset+i), getByteValue(runtime, b))
 			value >>= 8
 		}
 

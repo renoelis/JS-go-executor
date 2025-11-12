@@ -191,7 +191,7 @@ services:
       #   - Array.push 超限时会抛出中文错误："Array.push 操作会导致数组长度超过限制..."
       #   - 其他限制包括：new Array(n)、new Uint8Array(n)、new ArrayBuffer(n)
       - ENABLE_JS_MEMORY_LIMIT=true      # 🔧 启用 JS 侧内存限制（默认：true）
-      - JS_MEMORY_LIMIT_MB=10              # 🔧 限制大小（0=使用 MAX_BLOB_FILE_SIZE_MB，当前为1MB → 131K元素）
+      - JS_MEMORY_LIMIT_MB=100
       
       # ==================== 🔥 健康检查和池管理配置 ====================
       # 开发环境：较宽松的阈值，便于调试

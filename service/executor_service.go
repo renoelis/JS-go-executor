@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"runtime"
 	"strings"
@@ -13,11 +12,12 @@ import (
 	"flow-codeblock-go/assets"
 	"flow-codeblock-go/config"
 	"flow-codeblock-go/enhance_modules"
+	"flow-codeblock-go/enhance_modules/buffer"
 	"flow-codeblock-go/model"
 	"flow-codeblock-go/utils"
 
 	"github.com/dop251/goja"
-	"github.com/dop251/goja_nodejs/buffer"
+	goja_buffer "github.com/dop251/goja_nodejs/buffer"
 	"github.com/dop251/goja_nodejs/console"
 	"github.com/dop251/goja_nodejs/process"
 	"github.com/dop251/goja_nodejs/require"
@@ -1064,7 +1064,7 @@ func (e *JSExecutor) setupNodeJSModules(runtime *goja.Runtime) {
 		e.setupConsoleStub(runtime)
 	}
 
-	buffer.Enable(runtime)
+	goja_buffer.Enable(runtime)
 
 	// 注意: Buffer 和 Crypto 的增强功能会通过 moduleRegistry.SetupAll() 统一调用
 	// 这里只需要启用基础的 Node.js 模块
@@ -1135,26 +1135,8 @@ func (e *JSExecutor) setupGlobalObjectsForEventLoop(runtime *goja.Runtime) {
 
 // registerBase64Functions 注册 Base64 编码/解码函数
 func (e *JSExecutor) registerBase64Functions(runtime *goja.Runtime) {
-	runtime.Set("btoa", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("btoa: At least 1 argument required"))
-		}
-		input := call.Arguments[0].String()
-		encoded := base64.StdEncoding.EncodeToString([]byte(input))
-		return runtime.ToValue(encoded)
-	})
-
-	runtime.Set("atob", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("atob: At least 1 argument required"))
-		}
-		input := call.Arguments[0].String()
-		decoded, err := base64.StdEncoding.DecodeString(input)
-		if err != nil {
-			panic(runtime.NewTypeError(fmt.Sprintf("atob: Invalid Base64 string: %v", err)))
-		}
-		return runtime.ToValue(string(decoded))
-	})
+	// 使用 enhance_modules/buffer 中的实现
+	buffer.RegisterBase64Functions(runtime)
 }
 
 // registerTextEncoders 注册 TextEncoder 和 TextDecoder（Node.js 兼容）

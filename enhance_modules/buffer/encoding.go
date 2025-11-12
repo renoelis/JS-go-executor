@@ -22,32 +22,29 @@ func decodeBase64Lenient(str string) ([]byte, error) {
 		return []byte{}, nil
 	}
 
-	// 🔥 修复：Node.js 行为 - 遇到第一个 '=' 就停止解码
-	// 例如：'SGVsbG8=SGVsbG8=' 只解码到第一个 '='，结果是 'Hello'
+	// 🔥 修复：Node.js v25 行为 - 单字符或不完整的 base64 会解码为空或部分数据
+	// 例如：'A' -> Buffer[], 'AB' -> Buffer[0], 'ABC' -> Buffer[0, 16]
+	
+	// 处理 padding
 	if idx := strings.Index(cleaned, "="); idx >= 0 {
 		cleaned = cleaned[:idx]
-		// 补齐到 4 的倍数（base64 要求）
-		remainder := len(cleaned) % 4
-		if remainder > 0 {
-			cleaned += strings.Repeat("=", 4-remainder)
-		}
 	}
-
-	// 🔥 修复：先尝试标准解码（带 padding）
-	decoded, err := base64.StdEncoding.DecodeString(cleaned)
-	if err == nil {
-		return decoded, nil
-	}
-
-	// 🔥 修复：如果标准解码失败，尝试 RawStdEncoding（无 padding）
-	// 移除所有 padding
+	
+	// 移除所有 padding（如果还有）
 	cleaned = strings.TrimRight(cleaned, "=")
-	decoded, err = base64.RawStdEncoding.DecodeString(cleaned)
+	
+	// 如果为空或只有1个字符，返回空 Buffer（Node.js 行为）
+	if len(cleaned) <= 1 {
+		return []byte{}, nil
+	}
+
+	// 先尝试 RawStdEncoding（无 padding）
+	decoded, err := base64.RawStdEncoding.DecodeString(cleaned)
 	if err == nil {
 		return decoded, nil
 	}
 
-	// 🔥 修复：如果还是失败，尝试补齐 padding
+	// 如果失败，尝试补齐 padding
 	remainder := len(cleaned) % 4
 	if remainder > 0 {
 		cleaned += strings.Repeat("=", 4-remainder)
@@ -57,42 +54,80 @@ func decodeBase64Lenient(str string) ([]byte, error) {
 		}
 	}
 
-	// 所有尝试都失败，返回错误
-	return nil, err
+	// 所有尝试都失败，返回空 Buffer（Node.js 宽松行为）
+	return []byte{}, nil
 }
 
 // decodeBase64URLLenient 宽松的 base64url 解码（Node.js 行为）
 // 允许：空格、换行、有/无 padding
 func decodeBase64URLLenient(str string) ([]byte, error) {
-	// 移除空格、换行、制表符等空白字符
-	str = strings.Map(func(r rune) rune {
-		if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
-			return -1 // 删除字符
+	// 🔥 修复：移除所有非 base64url 字符
+	// 只保留 A-Z, a-z, 0-9, -, _, =
+	cleaned := strings.Map(func(r rune) rune {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '=' {
+			return r
 		}
-		return r
+		return -1 // 删除无效字符
 	}, str)
 
-	// 检查是否有 padding
-	hasPadding := strings.Contains(str, "=")
+	// 如果清理后为空，返回空字节数组
+	if len(cleaned) == 0 {
+		return []byte{}, nil
+	}
 
-	if hasPadding {
-		// 有 padding：使用 URLEncoding
-		decoded, err := base64.URLEncoding.DecodeString(str)
+	// 处理 padding
+	if idx := strings.Index(cleaned, "="); idx >= 0 {
+		cleaned = cleaned[:idx]
+	}
+	
+	// 移除所有 padding（如果还有）
+	cleaned = strings.TrimRight(cleaned, "=")
+	
+	// 如果为空或只有1个字符，返回空 Buffer（Node.js 行为）
+	if len(cleaned) <= 1 {
+		return []byte{}, nil
+	}
+
+	// 先尝试 RawURLEncoding（无 padding）
+	decoded, err := base64.RawURLEncoding.DecodeString(cleaned)
+	if err == nil {
+		return decoded, nil
+	}
+
+	// 如果失败，尝试补齐 padding
+	remainder := len(cleaned) % 4
+	if remainder > 0 {
+		cleaned += strings.Repeat("=", 4-remainder)
+		decoded, err = base64.URLEncoding.DecodeString(cleaned)
 		if err == nil {
 			return decoded, nil
 		}
-		// 如果失败，移除 padding 再试
-		str = strings.TrimRight(str, "=")
 	}
 
-	// 无 padding 或移除 padding 后：使用 RawURLEncoding
-	return base64.RawURLEncoding.DecodeString(str)
+	// 所有尝试都失败，返回空 Buffer（Node.js 宽松行为）
+	return []byte{}, nil
 }
 
 // decodeHexLenient 宽松的 hex 解码（Node.js 行为）
 // Node.js 对奇数长度的 hex 字符串会忽略最后一个字符
 // 例如：'010' -> <Buffer 01>, '0' -> <Buffer>
+// Node.js v25 行为：遇到无效字符（包括空格）会停止解析
+// 例如：'ab cd' -> <Buffer ab>, 'abc g' -> <Buffer ab>
 func decodeHexLenient(str string) ([]byte, error) {
+	// 🔥 修复：遇到无效字符时停止解析（Node.js v25 行为）
+	// 不是忽略空格，而是遇到空格就停止
+	validStr := ""
+	for i := 0; i < len(str); i++ {
+		c := str[i]
+		if hexCharToByte(c) == 255 {
+			// 遇到无效字符，停止解析
+			break
+		}
+		validStr += string(c)
+	}
+	
+	str = validStr
+	
 	// 如果长度为奇数，去掉最后一个字符
 	if len(str)%2 != 0 {
 		str = str[:len(str)-1]
@@ -109,7 +144,7 @@ func decodeHexLenient(str string) ([]byte, error) {
 		high := hexCharToByte(str[i])
 		low := hexCharToByte(str[i+1])
 		if high == 255 || low == 255 {
-			// 无效的 hex 字符
+			// 无效的 hex 字符（不应该发生，因为上面已经过滤了）
 			return nil, nil
 		}
 		result[i/2] = (high << 4) | low
@@ -170,4 +205,57 @@ func stringToUTF16CodeUnits(str string) []uint16 {
 	}
 
 	return codeUnits
+}
+
+// findUTF8ByteBoundary 找到 UTF-8 字符边界，确保不会截断多字节字符
+// 返回可以安全写入的字节数（<= maxBytes）
+// Node.js 行为：如果空间不足以容纳完整的多字节字符，则不写入该字符
+func findUTF8ByteBoundary(data []byte, maxBytes int64) int64 {
+	if maxBytes <= 0 {
+		return 0
+	}
+	if maxBytes > int64(len(data)) {
+		maxBytes = int64(len(data))
+	}
+	
+	// 从后往前检查，找到最后一个完整的 UTF-8 字符
+	i := maxBytes
+	
+	// 如果最后一个字节是单字节字符（0xxxxxxx），直接返回
+	if i > 0 && data[i-1] < 0x80 {
+		return i
+	}
+	
+	// 从后往前找到字符的开始字节
+	for i > 0 && i > maxBytes-4 {
+		i--
+		b := data[i]
+		
+		// 检查这是否是一个字符的开始字节
+		if b < 0x80 {
+			// 单字节字符 (0xxxxxxx)
+			return i + 1
+		} else if b&0xE0 == 0xC0 {
+			// 2 字节字符开始 (110xxxxx)
+			if i+2 <= maxBytes && i+2 <= int64(len(data)) {
+				return i + 2
+			}
+			return i // 空间不足，不写入此字符
+		} else if b&0xF0 == 0xE0 {
+			// 3 字节字符开始 (1110xxxx)
+			if i+3 <= maxBytes && i+3 <= int64(len(data)) {
+				return i + 3
+			}
+			return i // 空间不足，不写入此字符
+		} else if b&0xF8 == 0xF0 {
+			// 4 字节字符开始 (11110xxx)
+			if i+4 <= maxBytes && i+4 <= int64(len(data)) {
+				return i + 4
+			}
+			return i // 空间不足，不写入此字符
+		}
+		// 否则是continuation byte (10xxxxxx)，继续往前找
+	}
+	
+	return maxBytes // 默认返回 maxBytes（理论上不应该到这里）
 }

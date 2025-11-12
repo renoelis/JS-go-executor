@@ -210,12 +210,12 @@ test('修改视图影响原 Buffer 的 toJSON', () => {
   const view = base.subarray(1, 4);
 
   view[0] = 200;
-  view[2] = 400;
+  view[2] = 400; // 400 会被截断为 144 (400 & 0xFF)
 
   const baseJson = base.toJSON();
 
   if (baseJson.data[1] !== 200) return false;
-  if (baseJson.data[3] !== 400) return false;
+  if (baseJson.data[3] !== (400 & 0xFF)) return false;
 
   return true;
 });

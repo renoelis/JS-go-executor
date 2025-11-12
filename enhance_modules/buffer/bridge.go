@@ -88,12 +88,12 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 					data[i] = byte(unit) & 0xFF
 				}
 			case "ascii":
-				// 🔥 修复：按 UTF-16 码元处理，不是 Unicode 码点
-				// ASCII: 每个 UTF-16 码元的低 7 位
+				// 🔥 修复：Node.js v25 行为 - ascii 编码保留原始字节值（不截断到 7 位）
+				// 按 UTF-16 码元处理，不是 Unicode 码点
 				codeUnits := stringToUTF16CodeUnits(str)
 				data = make([]byte, len(codeUnits))
 				for i, unit := range codeUnits {
-					data[i] = byte(unit) & 0x7F
+					data[i] = byte(unit) & 0xFF // 保留完整字节值，与 Node.js v25 对齐
 				}
 			case "utf16le", "ucs2", "ucs-2", "utf-16le":
 				// UTF-16LE 编码
@@ -146,8 +146,43 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 			panic(runtime.NewTypeError("Buffer.from 不可用"))
 		}
 
-		// 🔥 修复：处理数组类型，确保 Infinity、NaN 等特殊值正确转换为 uint8
+		// 🔥 修复：处理 JSON 格式 {type: "Buffer", data: [...]}
 		if arg0Obj := arg0.ToObject(runtime); arg0Obj != nil {
+			// 检查是否是 Buffer.toJSON() 返回的格式
+			typeVal := arg0Obj.Get("type")
+			dataVal := arg0Obj.Get("data")
+			if typeVal != nil && !goja.IsUndefined(typeVal) && !goja.IsNull(typeVal) &&
+				dataVal != nil && !goja.IsUndefined(dataVal) && !goja.IsNull(dataVal) {
+				// 检查 type 是否为 "Buffer"
+				if typeVal.String() == "Buffer" {
+					// data 应该是一个数组
+					if dataObj := dataVal.ToObject(runtime); dataObj != nil {
+						dataLengthVal := dataObj.Get("length")
+						if dataLengthVal != nil && !goja.IsUndefined(dataLengthVal) {
+							dataLength := dataLengthVal.ToInteger()
+							data := make([]byte, dataLength)
+							for i := int64(0); i < dataLength; i++ {
+								itemVal := dataObj.Get(fmt.Sprintf("%d", i))
+								if itemVal != nil && !goja.IsUndefined(itemVal) && !goja.IsNull(itemVal) {
+									data[i] = valueToUint8(itemVal)
+								}
+							}
+							// 使用处理后的字节数组创建 ArrayBuffer
+							ab := runtime.NewArrayBuffer(data)
+							fromFunc, ok := goja.AssertFunction(originalFrom)
+							if !ok {
+								panic(runtime.NewTypeError("Buffer.from 不是一个函数"))
+							}
+							result, err := fromFunc(goja.Undefined(), runtime.ToValue(ab))
+							if err != nil {
+								panic(err)
+							}
+							return result
+						}
+					}
+				}
+			}
+
 			// 检查是否是类数组对象（有 length 属性）
 			lengthVal := arg0Obj.Get("length")
 			if lengthVal != nil && !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
@@ -788,6 +823,165 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 	// 默认值：8192 (8KB)
 	buffer.Set("poolSize", runtime.ToValue(8192))
 
+	// 🔥 添加 Buffer.copyBytesFrom 静态方法（Node.js v17+）
+	// 创建一个新 Buffer，包含 view 的副本
+	buffer.Set("copyBytesFrom", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			panic(runtime.NewTypeError("The \"view\" argument must be specified"))
+		}
+
+		view := call.Arguments[0]
+		if goja.IsNull(view) || goja.IsUndefined(view) {
+			panic(runtime.NewTypeError("The \"view\" argument must be an instance of TypedArray or DataView"))
+		}
+
+		viewObj := view.ToObject(runtime)
+		
+		// 获取 byteLength
+		byteLengthVal := viewObj.Get("byteLength")
+		if goja.IsUndefined(byteLengthVal) {
+			panic(runtime.NewTypeError("The \"view\" argument must be an instance of TypedArray or DataView"))
+		}
+		byteLength := byteLengthVal.ToInteger()
+
+		// 处理可选的 offset 和 length 参数
+		offset := int64(0)
+		length := byteLength
+
+		if len(call.Arguments) >= 2 && !goja.IsUndefined(call.Arguments[1]) {
+			offset = call.Arguments[1].ToInteger()
+			if offset < 0 {
+				panic(newRangeError(runtime, "The value of \"offset\" is out of range"))
+			}
+		}
+
+		if len(call.Arguments) >= 3 && !goja.IsUndefined(call.Arguments[2]) {
+			length = call.Arguments[2].ToInteger()
+			if length < 0 {
+				panic(newRangeError(runtime, "The value of \"length\" is out of range"))
+			}
+		}
+
+		// 验证范围
+		if offset > byteLength {
+			panic(newRangeError(runtime, "The value of \"offset\" is out of range"))
+		}
+		if offset+length > byteLength {
+			panic(newRangeError(runtime, "The value of \"offset\" + \"length\" is out of range"))
+		}
+
+		// 创建新 Buffer
+		allocFunc, ok := goja.AssertFunction(buffer.Get("alloc"))
+		if !ok {
+			panic(runtime.NewTypeError("Buffer.alloc 不可用"))
+		}
+
+		newBuffer, err := allocFunc(buffer, runtime.ToValue(length))
+		if err != nil {
+			panic(runtime.ToValue(err.Error()))
+		}
+
+		newBufObj := newBuffer.ToObject(runtime)
+
+		// 复制数据
+		for i := int64(0); i < length; i++ {
+			val := viewObj.Get(strconv.FormatInt(offset+i, 10))
+			if !goja.IsUndefined(val) {
+				newBufObj.Set(strconv.FormatInt(i, 10), val)
+			}
+		}
+
+		return newBuffer
+	})
+
+	// 🔥 添加 Buffer.transcode 静态方法（Node.js v7.1.0+）
+	// 将 Buffer 从一种编码转换为另一种编码
+	buffer.Set("transcode", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) < 3 {
+			panic(runtime.NewTypeError("transcode requires 3 arguments"))
+		}
+
+		// 获取 source buffer
+		source := call.Arguments[0]
+		if goja.IsNull(source) || goja.IsUndefined(source) {
+			panic(runtime.NewTypeError("The \"source\" argument must be an instance of Buffer or Uint8Array"))
+		}
+
+		sourceObj := source.ToObject(runtime)
+		
+		// 获取源编码和目标编码
+		fromEncoding := strings.ToLower(call.Arguments[1].String())
+		toEncoding := strings.ToLower(call.Arguments[2].String())
+
+		// 获取 source buffer 的长度
+		lengthVal := sourceObj.Get("length")
+		if goja.IsUndefined(lengthVal) {
+			panic(runtime.NewTypeError("The \"source\" argument must be an instance of Buffer or Uint8Array"))
+		}
+		length := lengthVal.ToInteger()
+
+		// 读取源 buffer 数据
+		sourceData := make([]byte, length)
+		for i := int64(0); i < length; i++ {
+			val := sourceObj.Get(strconv.FormatInt(i, 10))
+			if !goja.IsUndefined(val) {
+				sourceData[i] = byte(val.ToInteger() & 0xFF)
+			}
+		}
+
+		// 将源数据转换为字符串（使用源编码）
+		str := ""
+		switch fromEncoding {
+		case "utf8", "utf-8":
+			str = string(sourceData)
+		case "latin1", "binary":
+			// Latin1: 直接将字节转为字符
+			runes := make([]rune, len(sourceData))
+			for i, b := range sourceData {
+				runes[i] = rune(b)
+			}
+			str = string(runes)
+		case "ascii":
+			// ASCII: 直接将字节转为字符（与 latin1 相同）
+			runes := make([]rune, len(sourceData))
+			for i, b := range sourceData {
+				runes[i] = rune(b)
+			}
+			str = string(runes)
+		default:
+			// 其他编码暂不支持，直接使用 UTF-8
+			str = string(sourceData)
+		}
+
+		// 使用 Buffer.from 创建目标 buffer（使用目标编码）
+		fromFunc, ok := goja.AssertFunction(buffer.Get("from"))
+		if !ok {
+			panic(runtime.NewTypeError("Buffer.from 不可用"))
+		}
+
+		result, err := fromFunc(buffer, runtime.ToValue(str), runtime.ToValue(toEncoding))
+		if err != nil {
+			panic(runtime.ToValue(err.Error()))
+		}
+
+		return result
+	})
+
+	// 🔥 将 transcode 函数导出到 buffer 模块
+	// 使其可以通过 require('buffer').transcode 访问
+	_, _ = runtime.RunString(`
+		(function() {
+			try {
+				var bufferModule = require('buffer');
+				if (bufferModule && typeof Buffer !== 'undefined' && typeof Buffer.transcode === 'function') {
+					bufferModule.transcode = Buffer.transcode;
+				}
+			} catch (e) {
+				// 静默忽略
+			}
+		})();
+	`)
+
 	// 🔥 性能优化：使用优化的 Buffer.alloc 实现（带 Buffer 池）
 	SetupOptimizedBufferAlloc(runtime, be.pool)
 
@@ -799,6 +993,10 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 	// 但通过 _putProp 添加的方法无法在 JavaScript 中访问（原因未知）
 	// 因此使用 JavaScript polyfill 作为可靠的解决方案
 	be.polyfillTypedArrayFeatures(runtime)
+
+	// 🔥 添加 structuredClone 全局函数（Web API）
+	// 用于深拷贝对象，Buffer 会被转换为 Uint8Array
+	SetupStructuredClone(runtime)
 
 	// 注：length 属性只读行为已在 goja/typedarrays.go 中修复
 }
@@ -835,6 +1033,10 @@ func (be *BufferEnhancer) enhanceBufferPrototype(runtime *goja.Runtime) {
 
 	// 添加迭代器方法（entries, keys, values）
 	be.addBufferIteratorMethods(runtime, prototype)
+
+	// 注：forEach, map, filter, reduce, find, some, every, join 等方法
+	// 已由 goja 在 TypedArray.prototype 上原生实现，无需额外添加
+	// Buffer 继承自 Uint8Array，自动继承这些高性能方法
 
 	// 添加可变长度整数方法（readIntLE, writeUIntBE 等）
 	be.addBufferVariableLengthMethods(runtime, prototype)
