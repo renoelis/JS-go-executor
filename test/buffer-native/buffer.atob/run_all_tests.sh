@@ -31,6 +31,9 @@ tests=(
   "part12_atob_ultimate_gap_filling.js"
   "part13_atob_ultimate_deep_gap.js"
   "part14_atob_extreme_objects.js"
+  "part15_deep_spec_compliance.js"
+  "part16_extreme_performance.js"
+  "part_global_atob_test.js"
 )
 
 total_tests=0

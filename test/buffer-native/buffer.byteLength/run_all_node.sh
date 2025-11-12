@@ -22,6 +22,7 @@ tests=(
   "part9_extreme_scenarios.js"
   "part10_deep_coverage.js"
   "part11_additional_coverage.js"
+  "part12_deep_gap_analysis_final.js"
 )
 
 total_tests=0

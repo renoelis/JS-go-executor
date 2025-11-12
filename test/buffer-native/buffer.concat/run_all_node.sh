@@ -26,6 +26,7 @@ tests=(
   "part13_concat_ultra_deep.js"
   "part14_concat_special_objects.js"
   "part15_concat_async_errors.js"
+  "part16_additional_api_coverage.js"
 )
 
 # 初始化计数器

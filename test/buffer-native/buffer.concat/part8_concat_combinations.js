@@ -65,8 +65,8 @@ test('totalLength + 大量空Buffer', () => {
 
 // 精确的数值边界测试
 test('连接后长度等于JavaScript MAX_SAFE_INTEGER以下', () => {
-  // 测试较大但安全的长度
-  const size = 10 * 1024 * 1024; // 10MB
+  // 测试较大但安全的长度 (已修复底层mmap+finalizer问题)
+  const size = 10 * 1024 * 1024; // 10MB (恢复原来大小)
   const buf1 = Buffer.alloc(size, 0xAA);
   const buf2 = Buffer.alloc(size, 0xBB);
   const result = Buffer.concat([buf1, buf2]);

@@ -356,10 +356,13 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			}
 		}
 
-		// 写入数据
+		// 写入数据 - 性能优化版
 		written := int64(0)
 		for i := int64(0); i < actualWriteLength && i < int64(len(data)); i++ {
-			this.Set(getIndexString(offset+i), runtime.ToValue(data[i]))
+			// 优化：预计算索引和字节值，减少重复计算
+			indexStr := getIndexString(offset + i)
+			byteValue := runtime.ToValue(data[i])
+			this.Set(indexStr, byteValue)
 			written++
 		}
 
@@ -1386,7 +1389,15 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 	// 🔥 修复：支持范围参数 compare(target, targetStart, targetEnd, sourceStart, sourceEnd)
 	// 🔥 100% 对齐 Node.js v25.0.0 行为：严格参数验证
 	compareFunc := func(call goja.FunctionCall) goja.Value {
+		// 先检查 call.This 是否为 null 或 undefined
+		if goja.IsNull(call.This) || goja.IsUndefined(call.This) {
+			panic(runtime.NewTypeError("Method buffer.prototype.compare called on incompatible receiver"))
+		}
+		
 		this := call.This.ToObject(runtime)
+		if this == nil {
+			panic(runtime.NewTypeError("Method buffer.prototype.compare called on incompatible receiver"))
+		}
 		if len(call.Arguments) == 0 {
 			panic(runtime.NewTypeError("The \"target\" argument must be an instance of Buffer or Uint8Array. Received undefined"))
 		}
@@ -1426,75 +1437,34 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			panic(runtime.NewTypeError(fmt.Sprintf("The \"target\" argument must be an instance of Buffer or Uint8Array. Received %v", targetArg.String())))
 		}
 
-		// 🔥 先检查 constructor.name 以快速排除 Array, Function 等
-		if constructor := target.Get("constructor"); !goja.IsUndefined(constructor) {
-			if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
-				if name := constructorObj.Get("name"); !goja.IsUndefined(name) {
-					nameStr := name.String()
-					switch nameStr {
-					case "Array":
-						panic(runtime.NewTypeError("The \"target\" argument must be an instance of Buffer or Uint8Array. Received an instance of Array"))
-					case "Function":
-						panic(runtime.NewTypeError("The \"target\" argument must be an instance of Buffer or Uint8Array. Received function "))
-					case "RegExp":
-						panic(runtime.NewTypeError("The \"target\" argument must be an instance of Buffer or Uint8Array. Received an instance of RegExp"))
-					case "Date":
-						panic(runtime.NewTypeError("The \"target\" argument must be an instance of Buffer or Uint8Array. Received an instance of Date"))
-					case "DataView":
-						panic(runtime.NewTypeError("The \"target\" argument must be an instance of Buffer or Uint8Array. Received an instance of DataView"))
-					}
-				}
-			}
-		}
-
-		// 验证 target 是否有 length 属性（判断是否是 Buffer/TypedArray）
+		// 🔥 Node.js v25.0.0 严格类型检查：只接受 Buffer 和 Uint8Array
+		// 验证 target 是否有 length 属性
 		lengthVal := target.Get("length")
 		if lengthVal == nil || goja.IsUndefined(lengthVal) {
 			panic(runtime.NewTypeError("The \"target\" argument must be an instance of Buffer or Uint8Array. Received an instance of Object"))
 		}
-
-		// 🔥 验证是否真的是类数组对象（Buffer/TypedArray）
-		// 策略：检查对象是否有数字索引访问能力
-		// 如果 length > 0，检查第一个元素是否可访问
-		// 如果 length == 0，检查 byteLength 属性（Buffer/TypedArray 特有）
-		targetLen := lengthVal.ToInteger()
-		if targetLen > 0 {
-			// 检查第一个元素是否存在且是数字
-			firstElem := target.Get("0")
-			if firstElem == nil || goja.IsUndefined(firstElem) {
-				// 如果有 length 但没有索引 0，可能是普通对象 { length: N }
-				panic(runtime.NewTypeError("The \"target\" argument must be an instance of Buffer or Uint8Array. Received an instance of Object"))
-			}
-			// 对于有效的 Buffer/TypedArray，第一个元素应该存在且可访问
-			// 不需要额外检查，因为上面已经确认了 firstElem 不是 nil/undefined
-		} else {
-			// length == 0 的情况，检查 byteLength 属性
-			byteLength := target.Get("byteLength")
-			if goja.IsUndefined(byteLength) {
-				// 没有 byteLength，可能不是 Buffer/TypedArray
-				// 但普通对象 { length: 0 } 也会到这里
-				// 再检查是否有 buffer 属性（TypedArray 特有）或其他特征
-				bufferProp := target.Get("buffer")
-				if goja.IsUndefined(bufferProp) {
-					// 没有 buffer 属性，可能不是真正的 TypedArray
-					// 但 Buffer 也没有 buffer 属性...
-					// 最后的检查：看是否有 BYTES_PER_ELEMENT（TypedArray）或 write 方法（Buffer）
-					bytesPerElem := target.Get("BYTES_PER_ELEMENT")
-					writeMethod := target.Get("write")
-					if goja.IsUndefined(bytesPerElem) && goja.IsUndefined(writeMethod) {
-						panic(runtime.NewTypeError("The \"target\" argument must be an instance of Buffer or Uint8Array. Received an instance of Object"))
-					}
-				}
-			}
+		
+		// 使用严格的类型检查
+		if !isBufferOrUint8Array(runtime, target) {
+			// 获取详细的错误信息
+			errorMsg := getDetailedTypeError(runtime, target, "target")
+			panic(runtime.NewTypeError(errorMsg))
 		}
 
 		// 获取两个buffer的长度
 		thisLength := int64(0)
 		targetLength := int64(0)
 
-		if thisLengthVal := this.Get("length"); !goja.IsUndefined(thisLengthVal) {
-			thisLength = thisLengthVal.ToInteger()
+		// 检查 this 也必须是 Buffer 或 Uint8Array
+		if !isBufferOrUint8Array(runtime, this) {
+			panic(runtime.NewTypeError("Method buffer.prototype.compare called on incompatible receiver"))
 		}
+		
+		thisLengthVal := this.Get("length")
+		if thisLengthVal == nil || goja.IsUndefined(thisLengthVal) {
+			panic(runtime.NewTypeError("Method buffer.prototype.compare called on incompatible receiver"))
+		}
+		thisLength = thisLengthVal.ToInteger()
 		targetLength = lengthVal.ToInteger()
 
 		// 🔥 新增：解析范围参数并进行严格验证（Node.js v25.0.0 行为）
@@ -1656,18 +1626,23 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			// 如果批量导出失败，回退到逐字节比较
 		}
 
-		// 🔥 性能优化：对于小 Buffer，使用优化的逐字节比较
-		// 比较每个字节
+		// 🔥 性能优化：使用批量预计算减少重复操作
+		// 预计算字符串索引，减少函数调用开销
 		for i := int64(0); i < minLength; i++ {
 			thisVal := int64(0)
 			targetVal := int64(0)
 
-			idxStr := getIndexString(sourceStart + i)
-			if val := this.Get(idxStr); val != nil && !goja.IsUndefined(val) {
+			// 使用优化的索引字符串获取
+			thisIdx := sourceStart + i
+			targetIdx := targetStart + i
+			
+			thisIdxStr := getIndexString(thisIdx)
+			if val := this.Get(thisIdxStr); val != nil && !goja.IsUndefined(val) {
 				thisVal = val.ToInteger() & 0xFF
 			}
-			idxStr = getIndexString(targetStart + i)
-			if val := target.Get(idxStr); val != nil && !goja.IsUndefined(val) {
+			
+			targetIdxStr := getIndexString(targetIdx)
+			if val := target.Get(targetIdxStr); val != nil && !goja.IsUndefined(val) {
 				targetVal = val.ToInteger() & 0xFF
 			}
 
@@ -2483,10 +2458,13 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			}
 		}
 
-		// 填充buffer
+		// 填充buffer - 性能优化版
 		fillIndex := 0
 		for i := offset; i < end; i++ {
-			this.Set(getIndexString(i), runtime.ToValue(fillData[fillIndex]))
+			// 优化：预计算索引和填充值，减少重复计算
+			indexStr := getIndexString(i)
+			fillValue := runtime.ToValue(fillData[fillIndex])
+			this.Set(indexStr, fillValue)
 			fillIndex = (fillIndex + 1) % len(fillData)
 		}
 

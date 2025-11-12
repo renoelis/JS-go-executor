@@ -14,45 +14,55 @@ import (
 
 // OptimizedBufferAlloc 优化的 Buffer.alloc 实现
 // 使用 Buffer 池和 Go 的高效内存分配
+// 🔥 支持 mmap cleanup 管理，避免内存泄漏和崩溃
 func OptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool, size int64, fill interface{}, encoding string) (goja.Value, error) {
 	if size < 0 {
 		panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
 	}
 
-	// Node.js 兼容的最大限制检查 
+	// Node.js 兼容的最大限制检查
 	const maxSafeInteger = 9007199254740991
 	if size > maxSafeInteger {
 		panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
 	}
-	
+
 	// 实际内存分配限制（防止系统内存耗尽）
 	const maxActualSize = 2 * 1024 * 1024 * 1024 // 2GB
 	if size > maxActualSize {
 		panic(newRangeError(runtime, "Array buffer allocation failed"))
 	}
 
-	// 🔥 性能优化：使用 Buffer 池分配内存
-	// 小 Buffer (<4KB) 从池中分配，大 Buffer 直接分配
+	// 🔥 性能优化：使用 Buffer 池分配内存，支持 cleanup 管理
+	// 小 Buffer (<4KB) 从池中分配，大 Buffer 直接分配（可能使用 mmap）
 	var data []byte
+	var cleanup *MmapCleanup
+
 	if pool != nil && fill == nil {
 		// 使用池分配并零初始化
-		data = pool.AllocZeroed(int(size))
+		data, cleanup = pool.AllocZeroed(int(size))
 	} else if pool != nil {
 		// 需要填充，先从池分配
-		data = pool.Alloc(int(size))
+		data, cleanup = pool.Alloc(int(size))
 	} else {
 		// 没有池，直接分配
 		data = make([]byte, size)
 	}
 
-	// 创建 ArrayBuffer
-	ab := runtime.NewArrayBuffer(data)
+	// 🔥 创建 ArrayBuffer，根据 cleanup 是否存在选择方法
+	var ab goja.ArrayBuffer
+	if cleanup != nil {
+		// 使用支持 cleanup 回调的 ArrayBuffer
+		ab = runtime.NewArrayBufferWithCleanup(data, cleanup.Release)
+	} else {
+		// 普通 ArrayBuffer
+		ab = runtime.NewArrayBuffer(data)
+	}
 
 	// 如果需要填充（默认是 0，Go 的 make 已经零初始化了）
 	if fill != nil {
 		// 获取 ArrayBuffer 的底层字节数组
 		data := ab.Bytes()
-		
+
 		// 处理填充值
 		fillBuffer(data, fill, encoding, runtime)
 	}
@@ -264,7 +274,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 		}
 
 		sizeArg := call.Arguments[0]
-		
+
 		// 严格的类型检查（与 Buffer.alloc 一致）
 		if goja.IsNull(sizeArg) {
 			panic(runtime.NewTypeError("The \"size\" argument must be of type number. Received null"))
@@ -272,7 +282,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 		if goja.IsUndefined(sizeArg) {
 			panic(runtime.NewTypeError("The \"size\" argument must be of type number. Received undefined"))
 		}
-		
+
 		// 检查是否为数字类型
 		if sizeArg.ExportType() != nil {
 			switch sizeArg.ExportType().Kind().String() {
@@ -288,7 +298,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 				panic(runtime.NewTypeError(fmt.Sprintf("The \"size\" argument must be of type number. Received type object")))
 			}
 		}
-		
+
 		// 获取数字值并检查特殊值
 		var size int64
 		if sizeArg.ExportType() != nil && sizeArg.ExportType().Kind().String() == "float64" {
@@ -310,13 +320,13 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 		} else {
 			size = sizeArg.ToInteger()
 		}
-		
+
 		// 范围检查 - 使用 RangeError
 		if size < 0 {
 			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
 		}
-		
-		const maxSafeInteger = 9007199254740991 // Number.MAX_SAFE_INTEGER  
+
+		const maxSafeInteger = 9007199254740991 // Number.MAX_SAFE_INTEGER
 		if size > maxSafeInteger {
 			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
 		}
@@ -328,14 +338,23 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 
 		// 🔥 性能优化：使用 Buffer 池分配（不零初始化）
 		// allocUnsafe 的语义是不清零内存，从池中分配正好符合
+		// 支持 cleanup 管理
 		var data []byte
+		var cleanup *MmapCleanup
+
 		if pool != nil {
-			data = pool.Alloc(int(size))
+			data, cleanup = pool.Alloc(int(size))
 		} else {
 			data = make([]byte, size)
 		}
 
-		ab := runtime.NewArrayBuffer(data)
+		// 🔥 创建 ArrayBuffer，根据 cleanup 是否存在选择方法
+		var ab goja.ArrayBuffer
+		if cleanup != nil {
+			ab = runtime.NewArrayBufferWithCleanup(data, cleanup.Release)
+		} else {
+			ab = runtime.NewArrayBuffer(data)
+		}
 
 		bufferConstructor := runtime.Get("Buffer")
 		if goja.IsUndefined(bufferConstructor) || goja.IsNull(bufferConstructor) {

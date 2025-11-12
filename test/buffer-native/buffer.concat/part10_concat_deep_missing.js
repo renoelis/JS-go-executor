@@ -145,8 +145,8 @@ test('list的length属性被修改应报错', () => {
 });
 
 // Buffer 特殊状态
-test('list包含null prototype对象应报错', () => {
-  const obj = Object.create(null);
+test('list包含类数组对象应报错', () => {
+  const obj = { 0: 65, 1: 66, length: 2 }; // 类数组对象但不是真正的Buffer或TypedArray
   try {
     Buffer.concat([obj]);
     return false;

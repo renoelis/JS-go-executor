@@ -21,19 +21,19 @@ var (
 	iteratorStatesMutex sync.RWMutex
 )
 
-// 预分配常用索引字符串（0-255），避免重复格式化
-var indexStringCache [256]string
+// 索引字符串缓存（优化性能）- 扩大到 4096 覆盖更多场景
+var indexStringCache [4096]string
 var indexStringCacheOnce sync.Once
 
 func initIndexStringCache() {
-	for i := 0; i < 256; i++ {
+	for i := 0; i < 4096; i++ {
 		indexStringCache[i] = strconv.FormatInt(int64(i), 10)
 	}
 }
 
 // getIndexString 获取索引字符串，使用缓存优化性能
 func getIndexString(index int64) string {
-	if index >= 0 && index < 256 {
+	if index >= 0 && index < 4096 {
 		indexStringCacheOnce.Do(initIndexStringCache)
 		return indexStringCache[index]
 	}

@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/big"
 	"strconv"
+	"strings"
 
 	"github.com/dop251/goja"
 )
@@ -1178,4 +1179,189 @@ func getTypedArrayConstructorName(obj *goja.Object) string {
 	}
 
 	return nameVal.String()
+}
+
+// isBufferOrUint8Array 严格检查对象是否是 Buffer 或 Uint8Array（不包括其他 TypedArray）
+func isBufferOrUint8Array(runtime *goja.Runtime, obj *goja.Object) bool {
+	if obj == nil {
+		return false
+	}
+	
+	// 检查是否有 length 属性
+	lengthVal := obj.Get("length")
+	if lengthVal == nil || goja.IsUndefined(lengthVal) {
+		return false
+	}
+	
+	// 优先使用 constructor.name 进行严格类型检查
+	if constructor := obj.Get("constructor"); !goja.IsUndefined(constructor) {
+		if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
+			if name := constructorObj.Get("name"); !goja.IsUndefined(name) {
+				nameStr := name.String()
+				
+				// 检查是否是 goja_nodejs 内部 Buffer 构造函数
+				if strings.Contains(nameStr, "Buffer") && strings.Contains(nameStr, "ctor") {
+					return true
+				}
+				
+				// 检查标准名称
+				if nameStr == "Buffer" {
+					return true
+				}
+				
+				// 检查是否是 Uint8Array
+				if nameStr == "Uint8Array" {
+					// 验证确实有 TypedArray 特征
+					if bytesPerElem := obj.Get("BYTES_PER_ELEMENT"); !goja.IsUndefined(bytesPerElem) {
+						if bytesPerElem.ToInteger() == 1 {
+							return true
+						}
+					}
+				}
+				
+				// 其他所有类型都拒绝
+				return false
+			}
+		}
+	}
+	
+	// 如果无法获取 constructor.name，使用回退检查
+	// Buffer 的特征：有 write 方法
+	if writeMethod := obj.Get("write"); !goja.IsUndefined(writeMethod) {
+		return true
+	}
+	
+	return false
+}
+
+// getDetailedTypeError 获取详细的类型错误信息
+func getDetailedTypeError(runtime *goja.Runtime, obj *goja.Object, argName string) string {
+	if obj == nil {
+		return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received null", argName)
+	}
+	
+	// 尝试获取 constructor.name
+	if constructor := obj.Get("constructor"); !goja.IsUndefined(constructor) {
+		if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
+			if name := constructorObj.Get("name"); !goja.IsUndefined(name) {
+				nameStr := name.String()
+				
+				// 处理 goja 内部构造函数名称
+				if strings.Contains(nameStr, "Buffer") && strings.Contains(nameStr, "ctor") {
+					nameStr = "Buffer"
+				}
+				
+				// 生成具体的错误消息
+				switch nameStr {
+				case "Array":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of Array", argName)
+				case "Function":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received function ", argName)
+				case "RegExp":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of RegExp", argName)
+				case "Date":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of Date", argName)
+				case "DataView":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of DataView", argName)
+				case "ArrayBuffer":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of ArrayBuffer", argName)
+				case "SharedArrayBuffer":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of SharedArrayBuffer", argName)
+				// 拒绝其他所有 TypedArray 类型
+				case "Int8Array":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of Int8Array", argName)
+				case "Uint8ClampedArray":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of Uint8ClampedArray", argName)
+				case "Int16Array":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of Int16Array", argName)
+				case "Uint16Array":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of Uint16Array", argName)
+				case "Int32Array":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of Int32Array", argName)
+				case "Uint32Array":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of Uint32Array", argName)
+				case "Float32Array":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of Float32Array", argName)
+				case "Float64Array":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of Float64Array", argName)
+				case "BigInt64Array":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of BigInt64Array", argName)
+				case "BigUint64Array":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of BigUint64Array", argName)
+				case "Object":
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of Object", argName)
+				default:
+					return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of %s", argName, nameStr)
+				}
+			}
+		}
+	}
+	
+	// 如果无法获取类型名称，返回通用错误
+	return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of Object", argName)
+}
+
+// isArrayLike 检查对象是否类似数组（有length属性且为数组类型）
+func isArrayLike(runtime *goja.Runtime, obj *goja.Object) bool {
+	if obj == nil {
+		return false
+	}
+	
+	// 检查是否有length属性
+	lengthVal := obj.Get("length")
+	if lengthVal == nil || goja.IsUndefined(lengthVal) {
+		return false
+	}
+	
+	// 检查constructor.name是否包含Array（因为可能返回函数签名）
+	if constructor := obj.Get("constructor"); !goja.IsUndefined(constructor) {
+		if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
+			if name := constructorObj.Get("name"); !goja.IsUndefined(name) {
+				nameStr := name.String()
+				// 检查是否包含"Array"关键字，而不是精确匹配
+				if strings.Contains(nameStr, "Array") && !strings.Contains(nameStr, "Buffer") {
+					return true
+				}
+				// 如果明确是Buffer类型，则不是数组
+				if strings.Contains(nameStr, "Buffer") {
+					return false
+				}
+			}
+		}
+	}
+	
+	// 如果无法确定类型，则不认为是数组
+	return false
+}
+
+// getObjectTypeName 获取对象的类型名称
+func getObjectTypeName(runtime *goja.Runtime, obj *goja.Object) string {
+	if obj == nil {
+		return "null"
+	}
+	
+	// 尝试获取 constructor.name
+	if constructor := obj.Get("constructor"); !goja.IsUndefined(constructor) {
+		if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
+			if name := constructorObj.Get("name"); !goja.IsUndefined(name) {
+				nameStr := name.String()
+				switch nameStr {
+				case "Number":
+					return "number"
+				case "String":
+					return "string"
+				case "Boolean":
+					return "boolean"
+				case "Object":
+					return "an instance of Object"
+				case "Array":
+					return "an instance of Array"
+				default:
+					return fmt.Sprintf("an instance of %s", nameStr)
+				}
+			}
+		}
+	}
+	
+	return "an instance of Object"
 }

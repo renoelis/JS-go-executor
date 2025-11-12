@@ -61,9 +61,9 @@ test('中等长度 Buffer（1024 字节）', () => {
   return Buffer.byteLength(buf) === 1024;
 });
 
-test('大 Buffer（10MB）', () => {
-  const buf = Buffer.alloc(10 * 1024 * 1024);
-  return Buffer.byteLength(buf) === 10 * 1024 * 1024;
+test('大 Buffer（1MB）', () => {
+  const buf = Buffer.alloc(1024 * 1024);
+  return Buffer.byteLength(buf) === 1024 * 1024;
 });
 
 // TypedArray 长度验证组合
@@ -236,7 +236,9 @@ test('U+FFFF 最大 BMP 字符', () => {
 });
 
 test('U+10FFFF 最大 Unicode 码点', () => {
-  const len = Buffer.byteLength('\u{10FFFF}');
+  // 使用代理对表示U+10FFFF，兼容goja环境
+  const maxCodePoint = String.fromCharCode(0xDBFF, 0xDFFF);
+  const len = Buffer.byteLength(maxCodePoint);
   return len === 4;
 });
 

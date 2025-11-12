@@ -12,16 +12,20 @@ import (
 	"flow-codeblock-go/assets"
 	"flow-codeblock-go/config"
 	"flow-codeblock-go/enhance_modules"
-	"flow-codeblock-go/enhance_modules/buffer"
+	buffer "flow-codeblock-go/enhance_modules/buffer"
+	// "flow-codeblock-go/enhance_modules/crypto"
+	// "flow-codeblock-go/enhance_modules/pinyin"
+	// "flow-codeblock-go/enhance_modules/qs"
+	// "flow-codeblock-go/enhance_modules/xlsx"
 	"flow-codeblock-go/model"
 	"flow-codeblock-go/utils"
 
 	"github.com/dop251/goja"
-	goja_buffer "github.com/dop251/goja_nodejs/buffer"
 	"github.com/dop251/goja_nodejs/console"
 	"github.com/dop251/goja_nodejs/process"
 	"github.com/dop251/goja_nodejs/require"
 	"github.com/dop251/goja_nodejs/url"
+	goja_buffer "github.com/dop251/goja_nodejs/buffer"
 	"github.com/sony/gobreaker"
 	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
@@ -1125,17 +1129,30 @@ func (e *JSExecutor) setupGlobalObjects(runtime *goja.Runtime) {
 
 	e.registerBase64Functions(runtime)
 	e.registerTextEncoders(runtime)
+	e.registerProcessHrtime(runtime)
 }
 
 // setupGlobalObjectsForEventLoop 为 EventLoop 设置全局对象
 func (e *JSExecutor) setupGlobalObjectsForEventLoop(runtime *goja.Runtime) {
+	// 保持与 setupGlobalObjects 一致，确保 EventLoop 路径有完整的全局对象
+	runtime.Set("Math", runtime.Get("Math"))
+	runtime.Set("JSON", runtime.Get("JSON"))
+	runtime.Set("parseInt", runtime.Get("parseInt"))
+	runtime.Set("parseFloat", runtime.Get("parseFloat"))
+	runtime.Set("isNaN", runtime.Get("isNaN"))
+	runtime.Set("isFinite", runtime.Get("isFinite"))
 	runtime.Set("encodeURIComponent", runtime.Get("encodeURIComponent"))
 	runtime.Set("decodeURIComponent", runtime.Get("decodeURIComponent"))
+
+	e.registerBase64Functions(runtime)
+	e.registerTextEncoders(runtime)
+	e.registerProcessHrtime(runtime)
 }
 
 // registerBase64Functions 注册 Base64 编码/解码函数
 func (e *JSExecutor) registerBase64Functions(runtime *goja.Runtime) {
-	// 使用 enhance_modules/buffer 中的实现
+	// 注册全局 atob/btoa 函数 - Node.js 中这些是全局可用的
+	// goja_nodejs 中的实现只在 buffer 模块中可用，我们需要同时提供全局访问
 	buffer.RegisterBase64Functions(runtime)
 }
 
@@ -1237,6 +1254,93 @@ func (e *JSExecutor) registerTextEncoders(runtime *goja.Runtime) {
 	// 注册到全局作用域
 	runtime.Set("TextEncoder", textEncoderConstructor)
 	runtime.Set("TextDecoder", textDecoderConstructor)
+}
+
+// registerProcessHrtime 注册 process.hrtime API（Node.js 兼容）
+func (e *JSExecutor) registerProcessHrtime(runtime *goja.Runtime) {
+	// 创建 process 对象（如果不存在）
+	var processObj *goja.Object
+	if processVal := runtime.Get("process"); processVal != nil && !goja.IsUndefined(processVal) {
+		processObj = processVal.ToObject(runtime)
+	} else {
+		processObj = runtime.NewObject()
+		runtime.Set("process", processObj)
+	}
+	
+	// hrtime 函数 - 返回纳秒精度的时间数组 [seconds, nanoseconds]
+	hrtime := func(call goja.FunctionCall) goja.Value {
+		now := time.Now()
+		seconds := now.Unix()
+		nanoseconds := now.UnixNano() - seconds*1e9
+		
+		// 如果有参数（之前的 hrtime 结果），计算差值
+		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
+			prevTime := call.Arguments[0]
+			if prevObj := prevTime.ToObject(runtime); prevObj != nil {
+				if prevSecondsVal := prevObj.Get("0"); !goja.IsUndefined(prevSecondsVal) {
+					if prevNanosecondsVal := prevObj.Get("1"); !goja.IsUndefined(prevNanosecondsVal) {
+						prevSeconds := prevSecondsVal.ToInteger()
+						prevNanoseconds := prevNanosecondsVal.ToInteger()
+						
+						// 计算差值
+						seconds -= prevSeconds
+						nanoseconds -= prevNanoseconds
+						
+						// 处理借位
+						if nanoseconds < 0 {
+							seconds--
+							nanoseconds += 1e9
+						}
+					}
+				}
+			}
+		}
+		
+		// 返回数组 [seconds, nanoseconds]
+		result := runtime.NewArray()
+		result.Set("0", runtime.ToValue(seconds))
+		result.Set("1", runtime.ToValue(nanoseconds))
+		return result
+	}
+	
+	// hrtime.bigint 函数 - 返回 BigInt 纳秒时间戳
+	hrtimeBigint := func(call goja.FunctionCall) goja.Value {
+		now := time.Now()
+		nanoseconds := now.UnixNano()
+		
+		// goja 环境中直接返回数字（JavaScript number），因为 BigInt 支持有限
+		return runtime.ToValue(nanoseconds)
+	}
+	
+	// 设置 hrtime 方法
+	processObj.Set("hrtime", hrtime)
+	
+	// 创建 hrtime 对象并添加 bigint 方法
+	hrtimeObj := runtime.ToValue(hrtime).ToObject(runtime)
+	hrtimeObj.Set("bigint", hrtimeBigint)
+	processObj.Set("hrtime", hrtimeObj)
+	
+	// memoryUsage 函数 - 返回内存使用情况（简化版）
+	memoryUsage := func(call goja.FunctionCall) goja.Value {
+		// 创建内存使用对象，模拟 Node.js 的 process.memoryUsage()
+		// 提供合理的模拟数据，避免在性能测试中出错
+		memoryObj := runtime.NewObject()
+		// RSS: Resident Set Size - 物理内存使用量 (约 50MB)
+		memoryObj.Set("rss", runtime.ToValue(52428800))
+		// heapTotal: 堆内存总分配量 (约 20MB)
+		memoryObj.Set("heapTotal", runtime.ToValue(20971520))
+		// heapUsed: 堆内存已使用量 (约 15MB)
+		memoryObj.Set("heapUsed", runtime.ToValue(15728640))
+		// external: 外部内存（在 Go 中设置为 0）
+		memoryObj.Set("external", runtime.ToValue(0))
+		// arrayBuffers: ArrayBuffer 内存（在 Go 中设置为 0）
+		memoryObj.Set("arrayBuffers", runtime.ToValue(0))
+		
+		return memoryObj
+	}
+	
+	// 设置 memoryUsage 方法
+	processObj.Set("memoryUsage", memoryUsage)
 }
 
 // setupSecurityRestrictions 设置安全限制

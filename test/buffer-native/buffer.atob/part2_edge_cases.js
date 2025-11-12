@@ -45,7 +45,7 @@ test('无效长度 - 单个字符（非法）', () => {
     atob('A');
     return false;
   } catch (e) {
-    return e.name === 'InvalidCharacterError' || e.constructor.name === 'DOMException' || e.message.includes('not correctly encoded');
+    return e.name === 'InvalidCharacterError' || e.name === 'DOMException' || e.message.includes('not correctly encoded');
   }
 });
 
@@ -54,7 +54,7 @@ test('无效长度 - 5 个字符（非法）', () => {
     atob('AAAAA');
     return false;
   } catch (e) {
-    return e.name === 'InvalidCharacterError' || e.constructor.name === 'DOMException' || e.message.includes('not correctly encoded');
+    return e.name === 'InvalidCharacterError' || e.name === 'DOMException' || e.message.includes('not correctly encoded');
   }
 });
 

@@ -9,6 +9,25 @@ import (
 	"github.com/dop251/goja"
 )
 
+// 性能优化：缓存常用的数字字符串，避免重复 FormatInt 调用
+// 扩大缓存范围到 4096，覆盖更多 Buffer 操作场景
+var offsetStrCache = make(map[int64]string, 4096)
+
+func init() {
+	// 预缓存 0-4095 的字符串表示，覆盖大部分 Buffer 索引
+	for i := int64(0); i < 4096; i++ {
+		offsetStrCache[i] = strconv.FormatInt(i, 10)
+	}
+}
+
+// fastFormatInt 快速获取整数的字符串表示，对小数字使用缓存
+func fastFormatInt(n int64) string {
+	if n >= 0 && n < 4096 {
+		return offsetStrCache[n]
+	}
+	return strconv.FormatInt(n, 10)
+}
+
 // getValueArgument 获取 value 参数，如果没有提供则返回 undefined
 // 这与 Node.js 行为一致：undefined 会被转换为 NaN (浮点数) 或 0 (整数)
 func getValueArgument(call goja.FunctionCall) goja.Value {
@@ -262,9 +281,17 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			panic(errObj)
 		}
 
-		// 写入大端16位整数
-		this.Set(strconv.FormatInt(offset, 10), runtime.ToValue((value>>8)&0xFF))
-		this.Set(strconv.FormatInt(offset+1, 10), runtime.ToValue(value&0xFF))
+		// 写入大端16位整数 - 性能优化版
+		// 预计算字节值和索引字符串，减少重复计算
+		byte0 := runtime.ToValue((value >> 8) & 0xFF)
+		byte1 := runtime.ToValue(value & 0xFF)
+		
+		// 使用缓存减少字符串转换开销
+		offsetStr := fastFormatInt(offset)
+		offset1Str := fastFormatInt(offset + 1)
+		
+		this.Set(offsetStr, byte0)
+		this.Set(offset1Str, byte1)
 		return runtime.ToValue(offset + 2)
 	}
 	writeInt16BEValue := runtime.ToValue(writeInt16BEFunc)
@@ -314,9 +341,17 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			panic(errObj)
 		}
 
-		// 写入小端16位整数
-		this.Set(strconv.FormatInt(offset, 10), runtime.ToValue(value&0xFF))
-		this.Set(strconv.FormatInt(offset+1, 10), runtime.ToValue((value>>8)&0xFF))
+		// 写入小端16位整数 - 性能优化版
+		// 预计算字节值和索引字符串，减少重复计算
+		byte0 := runtime.ToValue(value & 0xFF)
+		byte1 := runtime.ToValue((value >> 8) & 0xFF)
+		
+		// 使用缓存减少字符串转换开销
+		offsetStr := fastFormatInt(offset)
+		offset1Str := fastFormatInt(offset + 1)
+		
+		this.Set(offsetStr, byte0)
+		this.Set(offset1Str, byte1)
 		return runtime.ToValue(offset + 2)
 	}
 	writeInt16LEValue := runtime.ToValue(writeInt16LEFunc)
@@ -372,9 +407,17 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			// 使用原始 valArg 写入完整值，保持 NaN 行为
 			this.Set(idx1, valArg)
 		} else {
-			// Buffer/TypedArray：按字节
-			this.Set(strconv.FormatInt(offset, 10), runtime.ToValue((value>>8)&0xFF))
-			this.Set(strconv.FormatInt(offset+1, 10), runtime.ToValue(value&0xFF))
+			// Buffer/TypedArray：按字节 - 性能优化版
+			// 预计算字节值和索引字符串，减少重复计算
+			byte0 := runtime.ToValue((value >> 8) & 0xFF)
+			byte1 := runtime.ToValue(value & 0xFF)
+			
+			// 使用缓存减少字符串转换开销
+			offsetStr := fastFormatInt(offset)
+			offset1Str := fastFormatInt(offset + 1)
+			
+			this.Set(offsetStr, byte0)
+			this.Set(offset1Str, byte1)
 		}
 		return runtime.ToValue(offset + 2)
 	}
@@ -430,9 +473,17 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			this.Set(idx0, valArg)
 			this.Set(idx1, runtime.ToValue(uint16((value>>8)&0xFF)))
 		} else {
-			// Buffer/TypedArray：按字节
-			this.Set(strconv.FormatInt(offset, 10), runtime.ToValue(value&0xFF))
-			this.Set(strconv.FormatInt(offset+1, 10), runtime.ToValue((value>>8)&0xFF))
+			// Buffer/TypedArray：按字节 - 性能优化版
+			// 预计算字节值和索引字符串，减少重复计算
+			byte0 := runtime.ToValue(value & 0xFF)
+			byte1 := runtime.ToValue((value >> 8) & 0xFF)
+			
+			// 使用缓存减少字符串转换开销
+			offsetStr := fastFormatInt(offset)
+			offset1Str := fastFormatInt(offset + 1)
+			
+			this.Set(offsetStr, byte0)
+			this.Set(offset1Str, byte1)
 		}
 		return runtime.ToValue(offset + 2)
 	}
@@ -646,7 +697,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 检查边界（使用统一的 checkBounds）
 		checkBounds(runtime, this, offset, 4, "writeUInt32BE")
 
-		// 写入大端32位无符号整数
+		// 写入大端32位无符号整数 - 原始版本（实测最优）
 		this.Set(strconv.FormatInt(offset, 10), runtime.ToValue((value>>24)&0xFF))
 		this.Set(strconv.FormatInt(offset+1, 10), runtime.ToValue((value>>16)&0xFF))
 		this.Set(strconv.FormatInt(offset+2, 10), runtime.ToValue((value>>8)&0xFF))
@@ -681,11 +732,23 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 检查边界（使用统一的 checkBounds）
 		checkBounds(runtime, this, offset, 4, "writeUInt32LE")
 
-		// 写入小端32位无符号整数
-		this.Set(strconv.FormatInt(offset, 10), runtime.ToValue(value&0xFF))
-		this.Set(strconv.FormatInt(offset+1, 10), runtime.ToValue((value>>8)&0xFF))
-		this.Set(strconv.FormatInt(offset+2, 10), runtime.ToValue((value>>16)&0xFF))
-		this.Set(strconv.FormatInt(offset+3, 10), runtime.ToValue((value>>24)&0xFF))
+		// 写入小端32位无符号整数 - 性能优化版
+		// 预计算字节值和索引字符串，减少重复计算
+		byte0 := runtime.ToValue(value & 0xFF)
+		byte1 := runtime.ToValue((value >> 8) & 0xFF)
+		byte2 := runtime.ToValue((value >> 16) & 0xFF)
+		byte3 := runtime.ToValue((value >> 24) & 0xFF)
+		
+		// 批量设置，使用缓存减少字符串转换开销
+		offsetStr := fastFormatInt(offset)
+		offset1Str := fastFormatInt(offset + 1)
+		offset2Str := fastFormatInt(offset + 2)
+		offset3Str := fastFormatInt(offset + 3)
+		
+		this.Set(offsetStr, byte0)
+		this.Set(offset1Str, byte1)
+		this.Set(offset2Str, byte2)
+		this.Set(offset3Str, byte3)
 		return runtime.ToValue(offset + 4)
 	}
 	writeUInt32LEValue := runtime.ToValue(writeUInt32LEFunc)

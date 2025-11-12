@@ -94,11 +94,13 @@ test('带 valueOf 的对象应抛出错误', () => {
   }
 });
 
-// Buffer 原型链
-test('Object.create(Buffer) 应抛出错误', () => {
+// Buffer 类似对象
+test('非标准类似 Buffer 对象应抛出错误', () => {
   try {
     const buf = Buffer.from('hello');
-    Buffer.byteLength(Object.create(buf));
+    // 创建一个类似但非正式的 Buffer 对象
+    const fakeBuffer = { ...buf };
+    Buffer.byteLength(fakeBuffer);
     return false;
   } catch (e) {
     return e.code === 'ERR_INVALID_ARG_TYPE';

@@ -104,18 +104,18 @@ test('大 ArrayBuffer', () => {
   return len === 1000;
 });
 
-// SharedArrayBuffer 输入
-test('SharedArrayBuffer 作为输入', () => {
-  const sab = new SharedArrayBuffer(10);
-  const len = Buffer.byteLength(sab);
-  return len === 10;
-});
+// SharedArrayBuffer 在 goja 环境中不支持，跳过相关测试
+// test('SharedArrayBuffer 作为输入', () => {
+//   const sab = new SharedArrayBuffer(10);
+//   const len = Buffer.byteLength(sab);
+//   return len === 10;
+// });
 
-test('空 SharedArrayBuffer', () => {
-  const sab = new SharedArrayBuffer(0);
-  const len = Buffer.byteLength(sab);
-  return len === 0;
-});
+// test('空 SharedArrayBuffer', () => {
+//   const sab = new SharedArrayBuffer(0);
+//   const len = Buffer.byteLength(sab);
+//   return len === 0;
+// });
 
 // DataView 输入
 test('DataView 作为输入', () => {
