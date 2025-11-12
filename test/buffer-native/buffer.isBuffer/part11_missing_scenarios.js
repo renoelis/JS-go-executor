@@ -240,12 +240,12 @@ test('Buffer.concat 数组包含非 Buffer 抛错', () => {
   }
 });
 
-test('Buffer.concat 数组包含 Uint8Array 抛错', () => {
+test('Buffer.concat 数组可包含 Uint8Array', () => {
   try {
-    Buffer.concat([Buffer.from('test'), new Uint8Array([1, 2, 3])]);
-    return false;
+    const result = Buffer.concat([Buffer.from('test'), new Uint8Array([1, 2, 3])]);
+    return Buffer.isBuffer(result) === true;
   } catch (e) {
-    return true;
+    return false;
   }
 });
 

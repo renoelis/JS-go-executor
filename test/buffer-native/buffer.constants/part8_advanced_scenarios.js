@@ -47,17 +47,14 @@ test('Object.freeze 不影响现有属性访问', () => {
   return constants.MAX_STRING_LENGTH === original;
 });
 
-// 4. 验证 constants 在 with 语句中的行为
-test('constants 可以在 with 语句中使用', () => {
+// 4. 验证 constants 解构赋值行为
+test('constants 可以正确解构赋值', () => {
   try {
-    let result;
-    with (constants) {
-      result = MAX_LENGTH;
-    }
-    return result === constants.MAX_LENGTH;
+    const { MAX_LENGTH, MAX_STRING_LENGTH } = constants;
+    return MAX_LENGTH === constants.MAX_LENGTH && 
+           MAX_STRING_LENGTH === constants.MAX_STRING_LENGTH;
   } catch (e) {
-    // with 语句在严格模式下不可用
-    return true;
+    return false;
   }
 });
 

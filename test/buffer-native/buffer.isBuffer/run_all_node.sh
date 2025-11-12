@@ -25,6 +25,9 @@ tests=(
   "part8_node_behavior.js"
   "part9_combinations.js"
   "part10_extreme_cases.js"
+  "part11_missing_scenarios.js"
+  "part12_advanced_methods.js"
+  "part13_array_methods.js"
 )
 
 # 统计变量

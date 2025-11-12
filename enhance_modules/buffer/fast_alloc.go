@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf16"
-	
+
 	"github.com/dop251/goja"
 )
 
@@ -94,7 +94,7 @@ func OptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool, size int64, f
 // fillBuffer 处理 Buffer 填充逻辑
 func fillBuffer(data []byte, fill interface{}, encoding string, runtime *goja.Runtime) {
 	size := int64(len(data))
-	
+
 	switch v := fill.(type) {
 	case int64:
 		// 填充单个字节值
@@ -155,7 +155,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 		}
 
 		sizeArg := call.Arguments[0]
-		
+
 		// 严格的 Node.js 类型检查
 		if goja.IsNull(sizeArg) {
 			panic(runtime.NewTypeError("The \"size\" argument must be of type number. Received null"))
@@ -163,7 +163,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 		if goja.IsUndefined(sizeArg) {
 			panic(runtime.NewTypeError("The \"size\" argument must be of type number. Received undefined"))
 		}
-		
+
 		// 检查是否为数字类型
 		if sizeArg.ExportType() != nil {
 			switch sizeArg.ExportType().Kind().String() {
@@ -179,7 +179,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 				panic(runtime.NewTypeError(fmt.Sprintf("The \"size\" argument must be of type number. Received type object")))
 			}
 		}
-		
+
 		// 获取数字值并检查特殊值
 		var size int64
 		if sizeArg.ExportType() != nil && sizeArg.ExportType().Kind().String() == "float64" {
@@ -201,13 +201,13 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 		} else {
 			size = sizeArg.ToInteger()
 		}
-		
+
 		// 范围检查 - 使用 RangeError
 		if size < 0 {
 			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
 		}
-		
-		const maxSafeInteger = 9007199254740991 // Number.MAX_SAFE_INTEGER  
+
+		const maxSafeInteger = 9007199254740991 // Number.MAX_SAFE_INTEGER
 		if size > maxSafeInteger {
 			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
 		}
@@ -218,7 +218,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 
 		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
 			fillArg := call.Arguments[1]
-			
+
 			// 在调用String()之前检查是否是Symbol或BigInt类型（使用类型断言）
 			// 这是唯一能在Go层面检测这些特殊类型的方法
 			if _, isSymbol := fillArg.(*goja.Symbol); isSymbol {
@@ -228,7 +228,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 			if fillArg.ExportType() != nil && fillArg.ExportType().String() == "*big.Int" {
 				panic(runtime.NewTypeError("Cannot convert a BigInt value to a number"))
 			}
-			
+
 			fill = parseFillValue(fillArg, runtime, size)
 		}
 
@@ -259,7 +259,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 
 		return result
 	}
-	
+
 	// 设置 Buffer.alloc 函数并配置 length 属性
 	buffer.Set("alloc", runtime.ToValue(allocFunc))
 	allocFuncObj := buffer.Get("alloc").ToObject(runtime)
@@ -378,7 +378,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 
 		return result
 	})
-	
+
 	// 设置 Buffer.allocUnsafe 函数属性
 	allocUnsafeFuncObj := buffer.Get("allocUnsafe").ToObject(runtime)
 	if allocUnsafeFuncObj != nil {
@@ -393,7 +393,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 		}
 
 		sizeArg := call.Arguments[0]
-		
+
 		// 严格的类型检查（与 Buffer.alloc 一致）
 		if goja.IsNull(sizeArg) {
 			panic(runtime.NewTypeError("The \"size\" argument must be of type number. Received null"))
@@ -401,7 +401,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 		if goja.IsUndefined(sizeArg) {
 			panic(runtime.NewTypeError("The \"size\" argument must be of type number. Received undefined"))
 		}
-		
+
 		// 检查是否为数字类型
 		if sizeArg.ExportType() != nil {
 			switch sizeArg.ExportType().Kind().String() {
@@ -417,7 +417,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 				panic(runtime.NewTypeError(fmt.Sprintf("The \"size\" argument must be of type number. Received type object")))
 			}
 		}
-		
+
 		// 获取数字值并检查特殊值
 		var size int64
 		if sizeArg.ExportType() != nil && sizeArg.ExportType().Kind().String() == "float64" {
@@ -439,13 +439,13 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 		} else {
 			size = sizeArg.ToInteger()
 		}
-		
+
 		// 范围检查 - 使用 RangeError
 		if size < 0 {
 			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
 		}
-		
-		const maxSafeInteger = 9007199254740991 // Number.MAX_SAFE_INTEGER  
+
+		const maxSafeInteger = 9007199254740991 // Number.MAX_SAFE_INTEGER
 		if size > maxSafeInteger {
 			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
 		}
@@ -480,29 +480,29 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 
 		return result
 	})
-	
+
 	// 设置 Buffer.allocUnsafeSlow 函数属性
 	allocUnsafeSlowFuncObj := buffer.Get("allocUnsafeSlow").ToObject(runtime)
 	if allocUnsafeSlowFuncObj != nil {
 		allocUnsafeSlowFuncObj.DefineDataProperty("name", runtime.ToValue("allocUnsafeSlow"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
 		allocUnsafeSlowFuncObj.DefineDataProperty("length", runtime.ToValue(1), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
 	}
-	
+
 	// 🔥 添加 buffer.constants 对象（Node.js 兼容）
 	// 参考：https://nodejs.org/api/buffer.html#bufferconstants
 	constantsObj := runtime.NewObject()
-	
+
 	// MAX_LENGTH: 单个 Buffer 实例允许的最大大小
 	// 在 32 位架构上约为 2^30 - 1 (~1GB)
 	// 在 64 位架构上约为 2^31 - 1 (~2GB) 或 Number.MAX_SAFE_INTEGER
 	const maxSafeInteger = 9007199254740991 // Number.MAX_SAFE_INTEGER
 	constantsObj.Set("MAX_LENGTH", runtime.ToValue(maxSafeInteger))
-	
+
 	// MAX_STRING_LENGTH: 单个字符串实例允许的最大长度
 	// 取决于 JS 引擎的实现，Node.js 中约为 2^29 - 24 (~536MB)
 	const maxStringLength = 536870888 // Node.js v25 的值
 	constantsObj.Set("MAX_STRING_LENGTH", runtime.ToValue(maxStringLength))
-	
+
 	buffer.Set("constants", constantsObj)
 }
 
@@ -511,14 +511,14 @@ func parseFillValue(fillArg goja.Value, runtime *goja.Runtime, targetSize int64)
 	if goja.IsNull(fillArg) || goja.IsUndefined(fillArg) {
 		return nil
 	}
-	
+
 	// 检查特殊JavaScript类型（Symbol, BigInt）
 	// 注意：goja会自动转换Symbol为字符串，所以这个检查实际上无效
 	fillStr := fillArg.String()
 	if strings.Contains(fillStr, "Symbol(") {
 		panic(runtime.NewTypeError("Cannot convert a Symbol value to a number"))
 	}
-	
+
 	// 检查BigInt格式（数字+n结尾）
 	if len(fillStr) > 1 && fillStr[len(fillStr)-1] == 'n' {
 		// 检查是否是纯数字+n的格式
@@ -533,7 +533,7 @@ func parseFillValue(fillArg goja.Value, runtime *goja.Runtime, targetSize int64)
 			panic(runtime.NewTypeError("Cannot convert a BigInt value to a number"))
 		}
 	}
-	
+
 	// 检查是否是数字
 	if fillArg.ExportType() != nil {
 		switch fillArg.ExportType().Kind().String() {
@@ -556,7 +556,7 @@ func parseFillValue(fillArg goja.Value, runtime *goja.Runtime, targetSize int64)
 			return int64(0)
 		}
 	}
-	
+
 	// 尝试作为对象 - 检查 valueOf() 方法（Node.js 兼容性）
 	obj := fillArg.ToObject(runtime)
 	if obj != nil {
@@ -575,7 +575,7 @@ func parseFillValue(fillArg goja.Value, runtime *goja.Runtime, targetSize int64)
 					if _, isSymbol := valueOfResult.(*goja.Symbol); isSymbol {
 						panic(runtime.NewTypeError("Cannot convert a Symbol value to a number"))
 					}
-					
+
 					// 只有 valueOf() 返回有效数字类型时才处理（Node.js 兼容）
 					if valueOfResult.ExportType() != nil {
 						switch valueOfResult.ExportType().Kind().String() {
@@ -594,18 +594,18 @@ func parseFillValue(fillArg goja.Value, runtime *goja.Runtime, targetSize int64)
 				}
 			}
 		}
-		
+
 		// 简化的Buffer/TypedArray检测逻辑
 		lengthVal := obj.Get("length")
 		if lengthVal != nil && !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
 			length := lengthVal.ToInteger()
-			
+
 			// 检查构造器名称来判断类型
 			constructorVal := obj.Get("constructor")
 			isArray := false
 			isBufferLike := false
 			constructorName := ""
-			
+
 			if constructorVal != nil && !goja.IsUndefined(constructorVal) {
 				constructorObj := constructorVal.ToObject(runtime)
 				if constructorObj != nil {
@@ -622,23 +622,23 @@ func parseFillValue(fillArg goja.Value, runtime *goja.Runtime, targetSize int64)
 					}
 				}
 			}
-			
+
 			// 数组当作普通对象处理
 			if isArray {
 				return int64(0)
 			}
-			
+
 			// 空的Buffer/TypedArray填充非零长度buffer时抛出错误
 			// 但填充长度为0的buffer是合法的（Node.js v25兼容）
 			if length == 0 && isBufferLike && targetSize > 0 {
 				panic(runtime.NewTypeError("The argument 'value' is invalid. Received " + fillArg.String()))
 			}
-			
+
 			// 非Buffer/TypedArray的length为0对象返回0
 			if length == 0 {
 				return int64(0)
 			}
-			
+
 			// 处理Buffer/TypedArray填充
 			if isBufferLike && length > 0 && length <= 1024*1024 {
 				// 使用runtime.ExportTo直接导出为[]byte（最可靠的方法）
@@ -647,7 +647,7 @@ func parseFillValue(fillArg goja.Value, runtime *goja.Runtime, targetSize int64)
 				if err == nil && len(bytes) > 0 {
 					return bytes
 				}
-				
+
 				// 回退方法：按元素索引读取
 				bytes = make([]byte, length)
 				for i := int64(0); i < length; i++ {
@@ -660,7 +660,7 @@ func parseFillValue(fillArg goja.Value, runtime *goja.Runtime, targetSize int64)
 			}
 		}
 	}
-	
+
 	// 默认转换为 0（兼容 Node.js 行为：对象转换为 0）
 	return int64(0)
 }
@@ -668,7 +668,7 @@ func parseFillValue(fillArg goja.Value, runtime *goja.Runtime, targetSize int64)
 // encodeString 根据编码转换字符串为字节
 func encodeString(str, encoding string, runtime *goja.Runtime) []byte {
 	encoding = strings.ToLower(encoding)
-	
+
 	switch encoding {
 	case "hex":
 		// 处理十六进制编码
