@@ -16,25 +16,25 @@ import (
 func valueToUint8(v goja.Value) uint8 {
 	// First convert to number
 	num := v.ToNumber()
-	
+
 	// Get float representation to check for special values
 	f := num.ToFloat()
-	
+
 	// According to ECMAScript spec: NaN, ±Infinity, ±0 all return 0
 	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return 0
 	}
-	
+
 	// For normal values, use ToInteger which handles the conversion properly
 	// ToInteger truncates towards zero
 	i := num.ToInteger()
-	
+
 	// Apply modulo 256 with proper handling of negative values
 	mod := i % 256
 	if mod < 0 {
 		mod += 256
 	}
-	
+
 	return uint8(mod)
 }
 
@@ -370,37 +370,37 @@ func checkIntRange(runtime *goja.Runtime, value int64, min int64, max int64, val
 func checkIntRangeStrict(runtime *goja.Runtime, val goja.Value, min int64, max int64, valueName string) int64 {
 	// 获取浮点数值
 	floatVal := val.ToFloat()
-	
+
 	// 检查 NaN - NaN 写入 0（Node.js 行为）
 	if math.IsNaN(floatVal) {
 		return 0
 	}
-	
+
 	// 检查 Infinity
 	if math.IsInf(floatVal, 1) {
-		panic(newRangeError(runtime, "The value of \"" + valueName + "\" is out of range. It must be >= " +
-			strconv.FormatInt(min, 10) + " and <= " + strconv.FormatInt(max, 10) + ". Received Infinity"))
+		panic(newRangeError(runtime, "The value of \""+valueName+"\" is out of range. It must be >= "+
+			strconv.FormatInt(min, 10)+" and <= "+strconv.FormatInt(max, 10)+". Received Infinity"))
 	}
-	
+
 	// 检查 -Infinity
 	if math.IsInf(floatVal, -1) {
-		panic(newRangeError(runtime, "The value of \"" + valueName + "\" is out of range. It must be >= " +
-			strconv.FormatInt(min, 10) + " and <= " + strconv.FormatInt(max, 10) + ". Received -Infinity"))
+		panic(newRangeError(runtime, "The value of \""+valueName+"\" is out of range. It must be >= "+
+			strconv.FormatInt(min, 10)+" and <= "+strconv.FormatInt(max, 10)+". Received -Infinity"))
 	}
-	
+
 	// 检查浮点数范围（不截断）
 	// Node.js 先检查原始浮点数是否在范围内
 	if floatVal < float64(min) || floatVal > float64(max) {
 		// 格式化错误信息中的浮点数
 		// 如果浮点数是整数，不显示小数点
 		valueStr := strconv.FormatFloat(floatVal, 'f', -1, 64)
-		panic(newRangeError(runtime, "The value of \"" + valueName + "\" is out of range. It must be >= " +
-			strconv.FormatInt(min, 10) + " and <= " + strconv.FormatInt(max, 10) + ". Received " + valueStr))
+		panic(newRangeError(runtime, "The value of \""+valueName+"\" is out of range. It must be >= "+
+			strconv.FormatInt(min, 10)+" and <= "+strconv.FormatInt(max, 10)+". Received "+valueStr))
 	}
-	
+
 	// 在范围内，截断为整数
 	intVal := val.ToInteger()
-	
+
 	return intVal
 }
 
@@ -426,6 +426,120 @@ func newRangeError(runtime *goja.Runtime, message string) *goja.Object {
 	return errObj
 }
 
+// validateSafeIntegerArg 验证参数是否为安全整数（高性能版本，使用 Go 原生类型检查）
+// 返回值：如果有效返回 int64，否则 panic
+// 此函数替代 runtime.RunString() 调用，性能更好
+func validateSafeIntegerArg(runtime *goja.Runtime, arg goja.Value, argName string) int64 {
+	// 1. 检查 null/undefined
+	if goja.IsNull(arg) {
+		panic(runtime.NewTypeError(fmt.Sprintf("The \"%s\" argument must be of type number", argName)))
+	}
+	if goja.IsUndefined(arg) {
+		panic(runtime.NewTypeError(fmt.Sprintf("The \"%s\" argument must be of type number", argName)))
+	}
+
+	// 2. 检查类型 - 使用 ExportType() 快速检查
+	exportType := arg.ExportType()
+	if exportType == nil {
+		// 无法确定类型，可能是对象，需要更深入检查
+		// 但为了性能，我们先尝试转换为数字
+		argStr := arg.String()
+		panic(newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be an integer. Received %s", argName, argStr)))
+	}
+
+	// 3. 获取导出值进行类型检查
+	exported := arg.Export()
+	if exported == nil {
+		argStr := arg.String()
+		panic(newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be an integer. Received %s", argName, argStr)))
+	}
+
+	// 4. 处理不同类型的数字
+	var floatVal float64
+	var intVal int64
+
+	switch v := exported.(type) {
+	case int:
+		intVal = int64(v)
+		floatVal = float64(v)
+	case int8:
+		intVal = int64(v)
+		floatVal = float64(v)
+	case int16:
+		intVal = int64(v)
+		floatVal = float64(v)
+	case int32:
+		intVal = int64(v)
+		floatVal = float64(v)
+	case int64:
+		intVal = v
+		floatVal = float64(v)
+	case uint:
+		intVal = int64(v)
+		floatVal = float64(v)
+	case uint8:
+		intVal = int64(v)
+		floatVal = float64(v)
+	case uint16:
+		intVal = int64(v)
+		floatVal = float64(v)
+	case uint32:
+		intVal = int64(v)
+		floatVal = float64(v)
+	case uint64:
+		// uint64 可能超出 int64 范围
+		if v > math.MaxInt64 {
+			panic(newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", argName, v)))
+		}
+		intVal = int64(v)
+		floatVal = float64(v)
+	case float32:
+		floatVal = float64(v)
+		// 对于 float 类型，intVal 会在后面根据 floatVal 计算
+	case float64:
+		floatVal = v
+		// 对于 float 类型，intVal 会在后面根据 floatVal 计算
+	default:
+		// 不是数字类型
+		panic(runtime.NewTypeError(fmt.Sprintf("The \"%s\" argument must be of type number", argName)))
+	}
+
+	// 5. 检查特殊值：NaN, Infinity
+	if math.IsNaN(floatVal) {
+		panic(newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be an integer. Received NaN", argName)))
+	}
+	if math.IsInf(floatVal, 0) {
+		infStr := "Infinity"
+		if math.IsInf(floatVal, -1) {
+			infStr = "-Infinity"
+		}
+		panic(newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be an integer. Received %s", argName, infStr)))
+	}
+
+	// 6. 检查是否为整数（浮点数检查）
+	// 使用精确比较：f != float64(int64(f)) 来检查是否为整数
+	// 注意：对于已经在 switch 中设置了 intVal 的整数类型，floatVal == float64(intVal) 应该为 true
+	if floatVal != float64(int64(floatVal)) {
+		argStr := arg.String()
+		panic(newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be an integer. Received %s", argName, argStr)))
+	}
+
+	// 7. 转换为 int64（此时 floatVal 应该是整数）
+	// 对于已经在 switch 中设置了 intVal 的整数类型，这里不会改变值
+	// 对于 float 类型，这里会进行转换
+	intVal = int64(floatVal)
+
+	// 8. 检查是否为安全整数（>= 0 && <= MAX_SAFE_INTEGER）
+	// MAX_SAFE_INTEGER = 9007199254740991
+	const maxSafeInteger = 9007199254740991
+	if intVal < 0 || intVal > maxSafeInteger {
+		argStr := arg.String()
+		panic(newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s", argName, argStr)))
+	}
+
+	return intVal
+}
+
 // newBufferOutOfBoundsError 创建一个 Buffer 越界错误，对齐 Node.js 的错误格式
 func newBufferOutOfBoundsError(runtime *goja.Runtime) *goja.Object {
 	errObj := runtime.NewGoError(errors.New("Attempt to access memory outside buffer bounds"))
@@ -447,7 +561,7 @@ func validateOffset(runtime *goja.Runtime, val goja.Value, methodName string) in
 		errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 		panic(errObj)
 	}
-	
+
 	// 检查类型（必须在转换之前）
 	exported := val.Export()
 
@@ -499,7 +613,7 @@ func validateOffset(runtime *goja.Runtime, val goja.Value, methodName string) in
 	// 在 goja 中，原始值（如数字 42）和包装器对象（如 new Number(42)）的类型不同
 	// 原始值会被 exported 为 Go 原生类型（int64, float64, string, bool）
 	// 包装器对象则是 *goja.Object 类型
-	
+
 	// 如果 exported 是数字类型（int64/float64等），说明是原始值，不是包装器
 	// 如果 val 是 *goja.Object 且不是特殊对象（Date、RegExp等），需要检查是否是包装器
 	if objVal, isObj := val.(*goja.Object); isObj {
@@ -639,7 +753,7 @@ func validateOptionalOffset(runtime *goja.Runtime, val goja.Value, methodName st
 	if goja.IsUndefined(val) {
 		return 0
 	}
-	
+
 	// 其他情况调用标准的 validateOffset
 	return validateOffset(runtime, val, methodName)
 }
@@ -652,7 +766,7 @@ func validateByteLength(runtime *goja.Runtime, val goja.Value, min, max int64, m
 		errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 		panic(errObj)
 	}
-	
+
 	// 检查是否是字符串类型
 	exported := val.Export()
 	if str, ok := exported.(string); ok {
@@ -777,23 +891,23 @@ func checkIfFrozen(runtime *goja.Runtime, obj *goja.Object, methodName string) {
 	if obj == nil {
 		return
 	}
-	
+
 	// 使用 Object.isFrozen() 检查
 	objectCtor := runtime.Get("Object")
 	if objectCtor == nil || goja.IsUndefined(objectCtor) {
 		return
 	}
-	
+
 	objectObj := objectCtor.ToObject(runtime)
 	if objectObj == nil {
 		return
 	}
-	
+
 	isFrozenFunc := objectObj.Get("isFrozen")
 	if isFrozenFunc == nil || goja.IsUndefined(isFrozenFunc) {
 		return
 	}
-	
+
 	if isFrozen, ok := goja.AssertFunction(isFrozenFunc); ok {
 		result, err := isFrozen(objectCtor, runtime.ToValue(obj))
 		if err == nil && !goja.IsUndefined(result) && !goja.IsNull(result) {
@@ -1186,29 +1300,29 @@ func isBufferOrUint8Array(runtime *goja.Runtime, obj *goja.Object) bool {
 	if obj == nil {
 		return false
 	}
-	
+
 	// 检查是否有 length 属性
 	lengthVal := obj.Get("length")
 	if lengthVal == nil || goja.IsUndefined(lengthVal) {
 		return false
 	}
-	
+
 	// 优先使用 constructor.name 进行严格类型检查
 	if constructor := obj.Get("constructor"); !goja.IsUndefined(constructor) {
 		if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
 			if name := constructorObj.Get("name"); !goja.IsUndefined(name) {
 				nameStr := name.String()
-				
+
 				// 检查是否是 goja_nodejs 内部 Buffer 构造函数
 				if strings.Contains(nameStr, "Buffer") && strings.Contains(nameStr, "ctor") {
 					return true
 				}
-				
+
 				// 检查标准名称
 				if nameStr == "Buffer" {
 					return true
 				}
-				
+
 				// 检查是否是 Uint8Array
 				if nameStr == "Uint8Array" {
 					// 验证确实有 TypedArray 特征
@@ -1218,19 +1332,19 @@ func isBufferOrUint8Array(runtime *goja.Runtime, obj *goja.Object) bool {
 						}
 					}
 				}
-				
+
 				// 其他所有类型都拒绝
 				return false
 			}
 		}
 	}
-	
+
 	// 如果无法获取 constructor.name，使用回退检查
 	// Buffer 的特征：有 write 方法
 	if writeMethod := obj.Get("write"); !goja.IsUndefined(writeMethod) {
 		return true
 	}
-	
+
 	return false
 }
 
@@ -1239,18 +1353,18 @@ func getDetailedTypeError(runtime *goja.Runtime, obj *goja.Object, argName strin
 	if obj == nil {
 		return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received null", argName)
 	}
-	
+
 	// 尝试获取 constructor.name
 	if constructor := obj.Get("constructor"); !goja.IsUndefined(constructor) {
 		if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
 			if name := constructorObj.Get("name"); !goja.IsUndefined(name) {
 				nameStr := name.String()
-				
+
 				// 处理 goja 内部构造函数名称
 				if strings.Contains(nameStr, "Buffer") && strings.Contains(nameStr, "ctor") {
 					nameStr = "Buffer"
 				}
-				
+
 				// 生成具体的错误消息
 				switch nameStr {
 				case "Array":
@@ -1296,7 +1410,7 @@ func getDetailedTypeError(runtime *goja.Runtime, obj *goja.Object, argName strin
 			}
 		}
 	}
-	
+
 	// 如果无法获取类型名称，返回通用错误
 	return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of Object", argName)
 }
@@ -1306,13 +1420,13 @@ func isArrayLike(runtime *goja.Runtime, obj *goja.Object) bool {
 	if obj == nil {
 		return false
 	}
-	
+
 	// 检查是否有length属性
 	lengthVal := obj.Get("length")
 	if lengthVal == nil || goja.IsUndefined(lengthVal) {
 		return false
 	}
-	
+
 	// 检查constructor.name是否包含Array（因为可能返回函数签名）
 	if constructor := obj.Get("constructor"); !goja.IsUndefined(constructor) {
 		if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
@@ -1329,7 +1443,7 @@ func isArrayLike(runtime *goja.Runtime, obj *goja.Object) bool {
 			}
 		}
 	}
-	
+
 	// 如果无法确定类型，则不认为是数组
 	return false
 }
@@ -1339,7 +1453,7 @@ func getObjectTypeName(runtime *goja.Runtime, obj *goja.Object) string {
 	if obj == nil {
 		return "null"
 	}
-	
+
 	// 尝试获取 constructor.name
 	if constructor := obj.Get("constructor"); !goja.IsUndefined(constructor) {
 		if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
@@ -1362,6 +1476,6 @@ func getObjectTypeName(runtime *goja.Runtime, obj *goja.Object) string {
 			}
 		}
 	}
-	
+
 	return "an instance of Object"
 }

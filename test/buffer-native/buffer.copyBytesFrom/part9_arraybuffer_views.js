@@ -82,14 +82,16 @@ test('从共享 ArrayBuffer 的第二个视图复制', () => {
   return buf2[0] === 2 && buf2.length === 10;
 });
 
-test('从重叠视图复制不互相影响', () => {
+test('从重叠视图复制数据正确且独立', () => {
   const ab = new ArrayBuffer(20);
   const view1 = new Uint8Array(ab, 0, 15);
   const view2 = new Uint8Array(ab, 5, 15);
   view1[5] = 100;
   const buf1 = Buffer.copyBytesFrom(view1);
   const buf2 = Buffer.copyBytesFrom(view2);
-  return buf1[5] === 100 && buf2[0] === 100 && buf1.buffer !== buf2.buffer;
+  // 验证数据正确复制且修改独立
+  view1[5] = 200; // 修改原数据
+  return buf1[5] === 100 && buf2[0] === 100; // Buffer不受影响
 });
 
 // 不同类型视图同一 ArrayBuffer

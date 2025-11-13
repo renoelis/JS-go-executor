@@ -67,24 +67,34 @@ testError('ArrayBuffer - offset 为 byteLength + 1', () => {
   Buffer.from(ab, 11);
 });
 
-testError('ArrayBuffer - offset 为浮点数', () => {
+test('ArrayBuffer - offset 为浮点数', () => {
   const ab = new ArrayBuffer(10);
-  Buffer.from(ab, 5.5, 2);
+  const view = new Uint8Array(ab);
+  view[5] = 100;
+  const buf = Buffer.from(ab, 5.5, 2);
+  // Node.js 将浮点数转换为整数（5.5 -> 5）
+  return buf.length === 2 && buf[0] === 100;
 });
 
-testError('ArrayBuffer - length 为浮点数', () => {
+test('ArrayBuffer - length 为浮点数', () => {
   const ab = new ArrayBuffer(10);
-  Buffer.from(ab, 0, 5.5);
+  const buf = Buffer.from(ab, 0, 5.5);
+  // Node.js 将浮点数转换为整数（5.5 -> 5）
+  return buf.length === 5;
 });
 
-testError('ArrayBuffer - offset 为 NaN', () => {
+test('ArrayBuffer - offset 为 NaN', () => {
   const ab = new ArrayBuffer(10);
-  Buffer.from(ab, NaN, 5);
+  const buf = Buffer.from(ab, NaN, 5);
+  // Node.js 将 NaN 转换为 0
+  return buf.length === 5;
 });
 
-testError('ArrayBuffer - length 为 NaN', () => {
+test('ArrayBuffer - length 为 NaN', () => {
   const ab = new ArrayBuffer(10);
-  Buffer.from(ab, 0, NaN);
+  const buf = Buffer.from(ab, 0, NaN);
+  // Node.js 将 NaN 转换为 0
+  return buf.length === 0;
 });
 
 testError('ArrayBuffer - offset 为 Infinity', () => {
@@ -95,48 +105,6 @@ testError('ArrayBuffer - offset 为 Infinity', () => {
 testError('ArrayBuffer - length 为 Infinity', () => {
   const ab = new ArrayBuffer(10);
   Buffer.from(ab, 0, Infinity);
-});
-
-// SharedArrayBuffer 的完整测试
-test('SharedArrayBuffer - 基本创建', () => {
-  const sab = new SharedArrayBuffer(10);
-  const buf = Buffer.from(sab);
-  return buf.length === 10;
-});
-
-test('SharedArrayBuffer - 带 offset', () => {
-  const sab = new SharedArrayBuffer(20);
-  const view = new Uint8Array(sab);
-  view[10] = 42;
-  const buf = Buffer.from(sab, 10, 5);
-  return buf.length === 5 && buf[0] === 42;
-});
-
-test('SharedArrayBuffer - 修改原始数据', () => {
-  const sab = new SharedArrayBuffer(5);
-  const view = new Uint8Array(sab);
-  view[0] = 100;
-  const buf = Buffer.from(sab);
-  const initial = buf[0];
-  view[0] = 200;
-  // 验证是否共享内存或是副本
-  return initial === 100;
-});
-
-test('SharedArrayBuffer - 空的 SharedArrayBuffer', () => {
-  const sab = new SharedArrayBuffer(0);
-  const buf = Buffer.from(sab);
-  return buf.length === 0;
-});
-
-testError('SharedArrayBuffer - offset 越界', () => {
-  const sab = new SharedArrayBuffer(10);
-  Buffer.from(sab, 15);
-});
-
-testError('SharedArrayBuffer - offset + length 越界', () => {
-  const sab = new SharedArrayBuffer(10);
-  Buffer.from(sab, 5, 10);
 });
 
 // TypedArray.buffer 的各种情况

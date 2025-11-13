@@ -225,7 +225,8 @@ test('Symbol.toPrimitive - 同时有 valueOf', () => {
 test('类数组 - length 为字符串 "3"', () => {
   const obj = { 0: 10, 1: 20, 2: 30, length: '3' };
   const buf = Buffer.from(obj);
-  return buf.length === 3 && buf[0] === 10;
+  // Node.js 将字符串 length 当作无效值处理
+  return buf.length === 0;
 });
 
 test('类数组 - length 为字符串 "0"', () => {
@@ -237,7 +238,8 @@ test('类数组 - length 为字符串 "0"', () => {
 test('类数组 - length 为布尔值 true (转为 1)', () => {
   const obj = { 0: 99, length: true };
   const buf = Buffer.from(obj);
-  return buf.length === 1 && buf[0] === 99;
+  // Node.js 将布尔值 length 当作无效值处理
+  return buf.length === 0;
 });
 
 test('类数组 - length 为布尔值 false (转为 0)', () => {
@@ -267,7 +269,8 @@ test('类数组 - length 为对象 (转为 NaN 再转为 0)', () => {
 test('类数组 - length 为数组 (转为字符串再转数字)', () => {
   const obj = { 0: 10, 1: 20, length: [2] };
   const buf = Buffer.from(obj);
-  return buf.length === 2;
+  // Node.js 将数组 length 当作无效值处理
+  return buf.length === 0;
 });
 
 test('类数组 - length 为空数组 (转为 0)', () => {

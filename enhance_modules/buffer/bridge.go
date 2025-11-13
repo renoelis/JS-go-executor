@@ -1110,39 +1110,93 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		}
 
 		viewObj := view.ToObject(runtime)
-
-		// 获取 byteLength
-		byteLengthVal := viewObj.Get("byteLength")
-		if goja.IsUndefined(byteLengthVal) {
+		if viewObj == nil {
 			panic(runtime.NewTypeError("The \"view\" argument must be an instance of TypedArray or DataView"))
 		}
-		byteLength := byteLengthVal.ToInteger()
 
-		// 处理可选的 offset 和 length 参数
-		offset := int64(0)
-		length := byteLength
+		// 获取 TypedArray 的属性
+		byteLengthVal := viewObj.Get("byteLength")
+		if byteLengthVal == nil || goja.IsUndefined(byteLengthVal) || goja.IsNull(byteLengthVal) {
+			panic(runtime.NewTypeError("The \"view\" argument must be an instance of TypedArray or DataView"))
+		}
+		viewByteLength := byteLengthVal.ToInteger()
+		if viewByteLength < 0 {
+			panic(runtime.NewTypeError("Invalid byteLength"))
+		}
+
+		// 检查是否是 DataView (Node.js 不支持 DataView，只支持 TypedArray)
+		lengthVal := viewObj.Get("length")
+		var viewLength int64
+		var bytesPerElement int64 = 1
+
+		if lengthVal == nil || goja.IsUndefined(lengthVal) {
+			// 可能是 DataView，检查 constructor name
+			constructorVal := viewObj.Get("constructor")
+			if constructorVal != nil && !goja.IsUndefined(constructorVal) {
+				constructorObj := constructorVal.ToObject(runtime)
+				if constructorObj != nil {
+					nameVal := constructorObj.Get("name")
+					if nameVal != nil && !goja.IsUndefined(nameVal) && nameVal.String() == "DataView" {
+						// Node.js 不支持 DataView，抛出错误
+						panic(runtime.NewTypeError("The \"view\" argument must be an instance of TypedArray. Received an instance of DataView"))
+					} else {
+						panic(runtime.NewTypeError("The \"view\" argument must be an instance of TypedArray"))
+					}
+				} else {
+					panic(runtime.NewTypeError("The \"view\" argument must be an instance of TypedArray"))
+				}
+			} else {
+				panic(runtime.NewTypeError("The \"view\" argument must be an instance of TypedArray"))
+			}
+		} else {
+			// TypedArray: 有 length 属性
+			if goja.IsNull(lengthVal) {
+				panic(runtime.NewTypeError("Invalid TypedArray length"))
+			}
+			// 🔥 性能优化：直接使用 ToInteger()，参考 byteLength 函数的实现
+			// 我们已经检查了 lengthVal 不是 nil、undefined 和 null，所以应该可以安全调用
+			viewLength = lengthVal.ToInteger()
+			if viewLength < 0 {
+				panic(runtime.NewTypeError("Invalid TypedArray length"))
+			}
+
+			// 🔥 性能优化：直接获取 BYTES_PER_ELEMENT，参考 byteLength 函数的实现
+			bytesPerElementVal := viewObj.Get("BYTES_PER_ELEMENT")
+			if bytesPerElementVal != nil && !goja.IsUndefined(bytesPerElementVal) && !goja.IsNull(bytesPerElementVal) {
+				bytesPerElement = bytesPerElementVal.ToInteger()
+				if bytesPerElement <= 0 {
+					bytesPerElement = 1
+				}
+			}
+		}
+
+		// 处理可选的 offset 和 length 参数 (以元素为单位)
+		elementOffset := int64(0)
+		elementLength := viewLength
 
 		if len(call.Arguments) >= 2 && !goja.IsUndefined(call.Arguments[1]) {
-			offset = call.Arguments[1].ToInteger()
-			if offset < 0 {
-				panic(newRangeError(runtime, "The value of \"offset\" is out of range"))
-			}
+			offsetArg := call.Arguments[1]
+			// 🔥 性能优化：使用 Go 原生类型检查替代 runtime.RunString()
+			elementOffset = validateSafeIntegerArg(runtime, offsetArg, "offset")
 		}
 
 		if len(call.Arguments) >= 3 && !goja.IsUndefined(call.Arguments[2]) {
-			length = call.Arguments[2].ToInteger()
-			if length < 0 {
-				panic(newRangeError(runtime, "The value of \"length\" is out of range"))
-			}
+			lengthArg := call.Arguments[2]
+			// 🔥 性能优化：使用 Go 原生类型检查替代 runtime.RunString()
+			elementLength = validateSafeIntegerArg(runtime, lengthArg, "length")
 		}
 
-		// 验证范围
-		if offset > byteLength {
-			panic(newRangeError(runtime, "The value of \"offset\" is out of range"))
+		// 验证范围 (元素范围)
+		if elementOffset > viewLength {
+			// offset超出范围时返回空Buffer (Node.js行为)
+			elementLength = 0
+		} else if elementOffset+elementLength > viewLength {
+			// 自动调整长度到剩余元素数量
+			elementLength = viewLength - elementOffset
 		}
-		if offset+length > byteLength {
-			panic(newRangeError(runtime, "The value of \"offset\" + \"length\" is out of range"))
-		}
+
+		// 计算实际需要复制的字节数
+		copyBytes := elementLength * bytesPerElement
 
 		// 创建新 Buffer
 		allocFunc, ok := goja.AssertFunction(buffer.Get("alloc"))
@@ -1150,23 +1204,133 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 			panic(runtime.NewTypeError("Buffer.alloc 不可用"))
 		}
 
-		newBuffer, err := allocFunc(buffer, runtime.ToValue(length))
+		newBuffer, err := allocFunc(buffer, runtime.ToValue(copyBytes))
 		if err != nil {
 			panic(runtime.ToValue(err.Error()))
 		}
 
 		newBufObj := newBuffer.ToObject(runtime)
 
-		// 复制数据
-		for i := int64(0); i < length; i++ {
-			val := viewObj.Get(strconv.FormatInt(offset+i, 10))
-			if !goja.IsUndefined(val) {
-				newBufObj.Set(strconv.FormatInt(i, 10), val)
+		// 检查是否是DataView，使用不同的复制策略
+		constructorVal := viewObj.Get("constructor")
+		isDataView := false
+		if !goja.IsUndefined(constructorVal) && !goja.IsNull(constructorVal) {
+			constructorObj := constructorVal.ToObject(runtime)
+			if constructorObj != nil {
+				nameVal := constructorObj.Get("name")
+				if !goja.IsUndefined(nameVal) && nameVal.String() == "DataView" {
+					isDataView = true
+				}
+			}
+		}
+
+		if isDataView {
+			// DataView 特殊处理：使用 getUint8 方法逐字节读取
+			getUint8Method := viewObj.Get("getUint8")
+			if goja.IsUndefined(getUint8Method) {
+				panic(runtime.NewTypeError("DataView missing getUint8 method"))
+			}
+			getUint8Callable, ok := goja.AssertFunction(getUint8Method)
+			if !ok {
+				panic(runtime.NewTypeError("DataView getUint8 is not callable"))
+			}
+
+			for i := int64(0); i < copyBytes; i++ {
+				byteOffset := elementOffset + i
+				if byteOffset >= viewByteLength {
+					break
+				}
+
+				byteVal, err := getUint8Callable(viewObj, runtime.ToValue(byteOffset))
+				if err != nil {
+					// 如果读取失败，填充0
+					newBufObj.Set(strconv.FormatInt(i, 10), runtime.ToValue(0))
+				} else {
+					newBufObj.Set(strconv.FormatInt(i, 10), byteVal)
+				}
+			}
+		} else {
+			// TypedArray 处理：通过索引访问元素，然后转换为字节
+			byteIndex := int64(0)
+
+			// 🔥 性能优化：对于多字节类型，在循环外编译转换函数一次，循环内多次调用
+			// 这样可以避免每次循环都执行 runtime.RunString()，大幅提升性能
+			var convertCallable goja.Callable
+			if bytesPerElement > 1 {
+				// 只在需要时编译转换函数（多字节类型）
+				// 注意：这个转换涉及 JavaScript 的 TypedArray 字节序和内存布局，必须通过 JavaScript 环境
+				jsCode := fmt.Sprintf(`
+					(function() {
+						var view = arguments[0];
+						var index = arguments[1];
+						var element = view[index];
+						var buffer = new ArrayBuffer(%d);
+						var tempView = new view.constructor(buffer);
+						tempView[0] = element;
+						var bytes = new Uint8Array(buffer);
+						return Array.from(bytes);
+					})
+				`, bytesPerElement)
+
+				convertFunc, err := runtime.RunString(jsCode)
+				if err != nil {
+					panic(runtime.NewTypeError("Failed to convert element to bytes"))
+				}
+
+				var ok bool
+				convertCallable, ok = goja.AssertFunction(convertFunc)
+				if !ok {
+					panic(runtime.NewTypeError("Failed to get converter function"))
+				}
+			}
+
+			for elementIndex := elementOffset; elementIndex < elementOffset+elementLength; elementIndex++ {
+				// 获取元素值
+				elementVal := viewObj.Get(strconv.FormatInt(elementIndex, 10))
+				if goja.IsUndefined(elementVal) {
+					// 跳过undefined元素，填充0
+					for b := int64(0); b < bytesPerElement; b++ {
+						newBufObj.Set(strconv.FormatInt(byteIndex, 10), runtime.ToValue(0))
+						byteIndex++
+					}
+					continue
+				}
+
+				// 将元素值转换为字节序列
+				if bytesPerElement == 1 {
+					// Uint8Array, Int8Array, Uint8ClampedArray
+					byteVal := elementVal.ToInteger() & 0xFF
+					newBufObj.Set(strconv.FormatInt(byteIndex, 10), runtime.ToValue(byteVal))
+					byteIndex++
+				} else {
+					// 多字节类型：使用预编译的转换函数
+					result, err := convertCallable(goja.Undefined(), view, runtime.ToValue(elementIndex))
+					if err != nil {
+						panic(runtime.NewTypeError("Failed to convert element to bytes"))
+					}
+
+					resultArray := result.ToObject(runtime)
+					arrayLength := resultArray.Get("length").ToInteger()
+
+					// 复制转换后的字节
+					for b := int64(0); b < arrayLength && b < bytesPerElement; b++ {
+						byteVal := resultArray.Get(strconv.FormatInt(b, 10)).ToInteger() & 0xFF
+						newBufObj.Set(strconv.FormatInt(byteIndex, 10), runtime.ToValue(byteVal))
+						byteIndex++
+					}
+				}
 			}
 		}
 
 		return newBuffer
 	})
+
+	// 🔥 设置 Buffer.copyBytesFrom 函数属性（与 Node.js 保持一致）
+	copyBytesFromFunc := buffer.Get("copyBytesFrom").ToObject(runtime)
+	if copyBytesFromFunc != nil {
+		copyBytesFromFunc.DefineDataProperty("length", runtime.ToValue(3), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE)
+		copyBytesFromFunc.DefineDataProperty("name", runtime.ToValue("copyBytesFrom"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE)
+	}
 
 	// 🔥 添加 Buffer.transcode 静态方法（Node.js v7.1.0+）
 	// 将 Buffer 从一种编码转换为另一种编码

@@ -58,7 +58,8 @@ test('HEX - 前导零', () => {
 
 test('HEX - 空白字符在开头', () => {
   const buf = Buffer.from(' 4142', 'hex');
-  return buf.length === 2;
+  // Node.js 在遇到空格时停止解析，开头的空格导致空结果
+  return buf.length === 0;
 });
 
 test('HEX - 空白字符在结尾', () => {
@@ -68,7 +69,8 @@ test('HEX - 空白字符在结尾', () => {
 
 test('HEX - 多个连续空白', () => {
   const buf = Buffer.from('41  42', 'hex');
-  return buf.length === 2;
+  // Node.js 在遇到空格时停止解析，只处理空格前的字符
+  return buf.length === 1 && buf[0] === 0x41;
 });
 
 // UTF-16LE 的详细测试
@@ -123,8 +125,8 @@ test('ASCII - 127 DEL 字符', () => {
 
 test('ASCII - 128-255 被截断为 7 位', () => {
   const buf = Buffer.from('\x80\x81\xFE\xFF', 'ascii');
-  // 应该只保留低 7 位
-  return buf[0] === 0 && buf[1] === 1 && buf[2] === 126 && buf[3] === 127;
+  // Node.js 实际上不进行 7 位截断，直接使用字符的字节值
+  return buf[0] === 128 && buf[1] === 129 && buf[2] === 254 && buf[3] === 255;
 });
 
 // Latin1 编码的完整测试

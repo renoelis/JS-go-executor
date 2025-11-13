@@ -1154,6 +1154,10 @@ func (e *JSExecutor) registerBase64Functions(runtime *goja.Runtime) {
 	// 注册全局 atob/btoa 函数 - Node.js 中这些是全局可用的
 	// goja_nodejs 中的实现只在 buffer 模块中可用，我们需要同时提供全局访问
 	buffer.RegisterBase64Functions(runtime)
+	
+	// 注册 buffer.resolveObjectURL 和 URL.createObjectURL 功能
+	buffer.RegisterResolveObjectURL(runtime)
+	buffer.SetupURLCreateObjectURL(runtime)
 }
 
 // registerTextEncoders 注册 TextEncoder 和 TextDecoder（Node.js 兼容）

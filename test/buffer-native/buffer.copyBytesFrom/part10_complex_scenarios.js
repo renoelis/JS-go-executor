@@ -18,8 +18,9 @@ test('连续多次复制同一 TypedArray', () => {
   const buf1 = Buffer.copyBytesFrom(view);
   const buf2 = Buffer.copyBytesFrom(view);
   const buf3 = Buffer.copyBytesFrom(view);
-  return buf1[0] === 10 && buf2[0] === 10 && buf3[0] === 10 &&
-         buf1.buffer !== buf2.buffer && buf2.buffer !== buf3.buffer;
+  // 验证数据正确且独立
+  buf1[0] = 11; buf2[0] = 12; buf3[0] = 13;
+  return view[0] === 10 && buf1[0] === 11 && buf2[0] === 12 && buf3[0] === 13;
 });
 
 test('复制后修改再复制', () => {

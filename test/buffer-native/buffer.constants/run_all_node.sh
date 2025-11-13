@@ -29,6 +29,8 @@ test_files=(
   "part12_precise_boundaries.js"
   "part13_type_coercion.js"
   "part14_buffer_methods.js"
+  "part15_complete_coverage.js"
+  "part16_deep_gap_analysis.js"
 )
 
 # 计数器

@@ -316,9 +316,10 @@ test('多次使用相同的参数变量', () => {
   const length = 2;
   const buf1 = Buffer.copyBytesFrom(view, offset, length);
   const buf2 = Buffer.copyBytesFrom(view, offset, length);
+  // 验证数据正确且独立
+  buf1[0] = 99; // 修改buf1不影响buf2
   return buf1.length === 2 && buf2.length === 2 &&
-         buf1[0] === 20 && buf2[0] === 20 &&
-         buf1.buffer !== buf2.buffer;
+         buf1[0] === 99 && buf2[0] === 20;
 });
 
 // 验证不会修改原参数

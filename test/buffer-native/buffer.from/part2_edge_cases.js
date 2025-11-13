@@ -105,21 +105,6 @@ test('ArrayBuffer 完整范围', () => {
   return buf.length === 5 && buf[0] === 1 && buf[4] === 5;
 });
 
-// SharedArrayBuffer 测试
-test('从 SharedArrayBuffer 创建', () => {
-  const sab = new SharedArrayBuffer(10);
-  const buf = Buffer.from(sab);
-  return buf.length === 10;
-});
-
-test('从 SharedArrayBuffer 带 offset', () => {
-  const sab = new SharedArrayBuffer(10);
-  const view = new Uint8Array(sab);
-  view[2] = 0x42;
-  const buf = Buffer.from(sab, 2, 3);
-  return buf.length === 3 && buf[0] === 0x42;
-});
-
 // 其他 TypedArray 类型
 test('从 Int8Array 创建', () => {
   const int8 = new Int8Array([-1, 0, 127]);

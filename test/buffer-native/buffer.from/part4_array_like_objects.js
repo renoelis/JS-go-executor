@@ -70,7 +70,8 @@ test('类数组对象 - length 为 NaN（转换为 0）', () => {
 test('类数组对象 - length 为字符串数字', () => {
   const arrayLike = { 0: 10, 1: 20, length: '2' };
   const buf = Buffer.from(arrayLike);
-  return buf.length === 2 && buf[0] === 10 && buf[1] === 20;
+  // Node.js 将字符串数字 length 当作无效值，转换为 0
+  return buf.length === 0;
 });
 
 test('类数组对象 - 使用字符串索引', () => {

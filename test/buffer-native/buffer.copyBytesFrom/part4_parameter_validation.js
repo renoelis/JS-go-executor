@@ -51,12 +51,13 @@ test('TypeError: 第一个参数必须是 TypedArray - 普通对象', () => {
   }
 });
 
-test('TypeError: 第一个参数必须是 TypedArray - Buffer', () => {
+test('Buffer 作为参数应该成功', () => {
   try {
-    Buffer.copyBytesFrom(Buffer.from([1, 2, 3]));
-    return false;
+    const sourceBuf = Buffer.from([1, 2, 3]);
+    const result = Buffer.copyBytesFrom(sourceBuf);
+    return result.length === 3 && result[0] === 1 && result[1] === 2 && result[2] === 3;
   } catch (e) {
-    return e.name === 'TypeError' && e.message.includes('TypedArray');
+    return false;
   }
 });
 

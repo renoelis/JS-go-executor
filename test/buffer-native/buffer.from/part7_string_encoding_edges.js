@@ -95,12 +95,14 @@ test('HEX - 三个字符（奇数）', () => {
 
 test('HEX - 包含空格被忽略', () => {
   const buf = Buffer.from('AB CD', 'hex');
-  return buf.length === 2 && buf[0] === 0xAB && buf[1] === 0xCD;
+  // Node.js 实际上在遇到空格时停止解析，只处理空格前的字符
+  return buf.length === 1 && buf[0] === 0xAB;
 });
 
 test('HEX - 包含换行符被忽略', () => {
   const buf = Buffer.from('AB\nCD', 'hex');
-  return buf.length === 2 && buf[0] === 0xAB && buf[1] === 0xCD;
+  // Node.js 实际上在遇到换行符时停止解析，只处理换行符前的字符
+  return buf.length === 1 && buf[0] === 0xAB;
 });
 
 // Base64 边界情况
@@ -177,10 +179,10 @@ test('ASCII - 0-127 范围', () => {
   return buf.length === 128;
 });
 
-test('ASCII - 超过 127 的字符被模 128', () => {
+test('ASCII - 超过 127 的字符被截断', () => {
   const buf = Buffer.from('\x80\xFF', 'ascii');
-  // ASCII 只保留低 7 位
-  return buf[0] === 0 && buf[1] === 127;
+  // Node.js 实际上不进行模 128 操作，而是直接使用字符的字节值
+  return buf[0] === 128 && buf[1] === 255;
 });
 
 // UCS2/UTF16LE 边界情况

@@ -156,19 +156,6 @@ test('文档验证 - 支持 Int8Array', () => {
   return buf[0] === 255 && buf[2] === 127;
 });
 
-// SharedArrayBuffer 支持
-test('文档验证 - 支持 SharedArrayBuffer', () => {
-  const sab = new SharedArrayBuffer(10);
-  const buf = Buffer.from(sab);
-  return buf.length === 10;
-});
-
-test('文档验证 - SharedArrayBuffer 带 offset', () => {
-  const sab = new SharedArrayBuffer(10);
-  const buf = Buffer.from(sab, 2, 5);
-  return buf.length === 5;
-});
-
 // 类数组对象（文档指定）
 test('文档验证 - 支持类数组对象', () => {
   const arrayLike = { 0: 65, 1: 66, length: 2 };

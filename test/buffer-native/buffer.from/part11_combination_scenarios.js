@@ -219,8 +219,8 @@ test('对象行为 - valueOf + length 同时存在', () => {
     }
   };
   const buf = Buffer.from(obj);
-  // 应该优先使用类数组接口
-  return buf.length === 1 && buf[0] === 65;
+  // Node.js 实际上优先使用 valueOf 返回的 Buffer
+  return buf.length === 1 && buf[0] === 66;
 });
 
 test('对象行为 - 嵌套 valueOf', () => {

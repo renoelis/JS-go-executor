@@ -31,6 +31,7 @@ tests=(
   "part14_missing_arraybuffer.js"
   "part15_missing_array_objects.js"
   "part16_missing_error_boundaries.js"
+  "part17_final_gap_analysis.js"
 )
 
 # 统计变量

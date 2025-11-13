@@ -51,12 +51,14 @@ test('带 offset 和 length 的复制也是独立的', () => {
   return buf[1] === 30;
 });
 
-// 复制后 Buffer 的内存独立性
-test('复制的 Buffer 有自己的内存', () => {
+// 复制后 Buffer 的数据独立性（注意：小Buffer可能共享pool）
+test('复制的 Buffer 数据独立', () => {
   const view = new Uint8Array([1, 2, 3]);
   const buf1 = Buffer.copyBytesFrom(view);
   const buf2 = Buffer.copyBytesFrom(view);
-  return buf1.buffer !== buf2.buffer;
+  // 修改一个不影响另一个
+  buf1[0] = 99;
+  return buf2[0] === 1;
 });
 
 test('复制的 Buffer 与原 TypedArray 内存不同', () => {
@@ -141,7 +143,8 @@ test('从共享 ArrayBuffer 的 TypedArray 复制', () => {
   view2[0] = 20;
   const buf1 = Buffer.copyBytesFrom(view1);
   const buf2 = Buffer.copyBytesFrom(view2);
-  return buf1[0] === 10 && buf2[0] === 20 && buf1.buffer !== buf2.buffer;
+  // 验证数据正确复制且独立
+  return buf1[0] === 10 && buf2[0] === 20;
 });
 
 test('从 TypedArray 的子视图复制', () => {
