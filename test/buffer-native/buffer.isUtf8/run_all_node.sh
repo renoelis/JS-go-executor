@@ -30,6 +30,9 @@ tests=(
   "part13_parameter_coercion.js"
   "part14_extreme_cases.js"
   "part15_additional_edge_cases.js"
+  "part16_function_properties.js"
+  "part17_deep_boundary_cases.js"
+  "part18_final_gap_analysis.js"
 )
 
 # 统计变量

@@ -23,6 +23,9 @@ tests=(
   "part10_additional_methods.js"
   "part11_numeric_operations.js"
   "part12_encoding_validation.js"
+  "part13_function_properties.js"
+  "part14_deep_boundary_cases.js"
+  "part15_final_gap_analysis.js"
   "test.js"
 )
 

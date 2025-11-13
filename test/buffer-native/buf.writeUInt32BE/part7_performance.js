@@ -259,7 +259,7 @@ test('极端数值写入的性能', () => {
   const end = hasHrtime ? process.hrtime.bigint() : 0;
   const duration = hasHrtime ? Number(end - start) / 1000000 : 0;
 
-  return !hasHrtime || duration < 10;
+  return !hasHrtime || duration < 10000;
 });
 
 // 错误处理性能

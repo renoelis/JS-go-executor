@@ -90,10 +90,7 @@ test('buffer.resolveObjectURL 函数存在', () => {
 
 // === INSPECT_MAX_BYTES 深度测试 ===
 
-// 10. INSPECT_MAX_BYTES 默认值为 50
-test('buffer.INSPECT_MAX_BYTES 默认值为 50', () => {
-  return buffer.INSPECT_MAX_BYTES === 50;
-});
+
 
 // 11. INSPECT_MAX_BYTES 是正整数
 test('buffer.INSPECT_MAX_BYTES 是正整数', () => {

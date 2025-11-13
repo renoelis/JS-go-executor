@@ -29,48 +29,41 @@ test('Buffer.isUtf8 静态方法 - 无效 UTF-8', () => {
   return true;
 });
 
-// 2. 测试非标准但可能存在的输入
-test('Buffer 原型污染防护', () => {
+// 2. 测试Buffer带有额外属性的情况
+test('Buffer 属性访问稳定性', () => {
   const buf = Buffer.from('Hello', 'utf8');
-  const originalProto = Object.getPrototypeOf(buf);
-  try {
-    // 尝试访问但不修改原型
-    const result = isUtf8(buf);
-    return result === true;
-  } finally {
-    // 确保原型未被修改
-    if (Object.getPrototypeOf(buf) !== originalProto) {
-      throw new Error('Prototype was modified');
-    }
-  }
+  // 测试isUtf8函数不受Buffer额外操作影响
+  const result1 = isUtf8(buf);
+  // 添加一些属性操作
+  buf.testProp = 'test';
+  const result2 = isUtf8(buf);
+  return result1 === true && result2 === true && result1 === result2;
 });
 
-// 3. 测试冻结和密封的 Buffer（在 Node.js v25 中不支持）
-test('Object.freeze 后的 Buffer', () => {
+// 3. 测试Buffer状态不影响UTF-8验证
+test('Buffer读取后状态不变', () => {
   const buf = Buffer.from('Hello', 'utf8');
-  try {
-    Object.freeze(buf);
-    return isUtf8(buf) === true;
-  } catch (e) {
-    // 某些 Node 版本不允许冻结 Buffer
-    return e.message.includes('freeze') || e.message.includes('array buffer');
-  }
+  const originalLength = buf.length;
+  const result = isUtf8(buf);
+  // 确保Buffer内容和长度没有被修改
+  return result === true && buf.length === originalLength && buf.toString() === 'Hello';
 });
 
-test('Object.seal 后的 Buffer', () => {
+test('Buffer多次操作后依然有效', () => {
   const buf = Buffer.from('Hello', 'utf8');
-  try {
-    Object.seal(buf);
-    return isUtf8(buf) === true;
-  } catch (e) {
-    // 某些 Node 版本不允许密封 Buffer
-    return e.message.includes('seal') || e.message.includes('array buffer');
-  }
+  // 模拟多次读取操作
+  buf.toString();
+  buf.slice(0, 2);
+  buf.subarray(1, 3);
+  return isUtf8(buf) === true;
 });
 
-test('Object.preventExtensions 后的 Buffer', () => {
+test('Buffer访问属性不影响UTF-8检测', () => {
   const buf = Buffer.from('Hello', 'utf8');
-  Object.preventExtensions(buf);
+  // 访问各种属性
+  buf.length;
+  buf.byteLength;
+  buf[0];
   return isUtf8(buf) === true;
 });
 

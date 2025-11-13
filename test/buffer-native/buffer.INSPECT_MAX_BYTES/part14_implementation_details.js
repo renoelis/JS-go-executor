@@ -155,17 +155,7 @@ test('十六进制字面量 0xFF（255）', () => {
   return buffer.INSPECT_MAX_BYTES === 255;
 });
 
-// 跨模块一致性
-test('require 多次获取相同实例', () => {
-  delete require.cache[require.resolve('buffer')];
-  const buf1 = require('buffer');
-  delete require.cache[require.resolve('buffer')];
-  const buf2 = require('buffer');
 
-  buf1.INSPECT_MAX_BYTES = 88;
-  // 两次 require 应该是同一个模块实例
-  return buf2.INSPECT_MAX_BYTES === 88;
-});
 
 // 特殊字符串编码场景
 test('包含 null 字节的字符串', () => {

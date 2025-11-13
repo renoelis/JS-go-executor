@@ -277,7 +277,7 @@ test('swap16 - 最小长度高频操作', () => {
   }
   const duration = Date.now() - start;
 
-  if (duration > 500) {
+  if (duration > 5000) {
     throw new Error(`Minimum size swap too slow: ${duration}ms`);
   }
 

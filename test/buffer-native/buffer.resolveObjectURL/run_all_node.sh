@@ -15,6 +15,7 @@ echo ""
 
 # 测试脚本列表
 tests=(
+  "test.js"
   "part1_basic.js"
   "part2_input_types.js"
   "part3_error_handling.js"
@@ -26,6 +27,9 @@ tests=(
   "part9_extreme_compatibility.js"
   "part10_pathname_edge_cases.js"
   "part11_real_world_scenarios.js"
+  "part12_function_properties.js"
+  "part13_deep_boundary_cases.js"
+  "part14_final_gap_analysis.js"
 )
 
 # 统计变量

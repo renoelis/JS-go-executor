@@ -27,7 +27,7 @@ function testError(name, fn, expectedErrorType) {
     tests.push({ 
       name, 
       status: pass ? '✅' : '❌',
-      error: pass ? undefined : `Expected ${expectedErrorType}, got ${e.constructor.name}: ${e.message}`,
+      error: pass ? undefined : `Expected ${expectedErrorType}, got ${e.name}: ${e.message}`,
       actualError: e.message
     });
   }

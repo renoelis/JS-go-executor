@@ -28,6 +28,9 @@ tests=(
   "part10_encoding_special.js"
   "part11_arraybuffer_typedarray.js"
   "part12_error_handling.js"
+  "part13_function_properties.js"
+  "part14_compatibility_cross_env.js"
+  "part15_final_gap_analysis.js"
 )
 
 # 统计变量
