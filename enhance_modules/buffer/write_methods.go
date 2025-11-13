@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/dop251/goja"
+	gojaBuffer "github.com/dop251/goja_nodejs/buffer"
 )
 
 // addBufferPrototypeMethods 添加 Buffer 原型方法（write, toString, slice, indexOf 等）
@@ -30,14 +31,14 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		if this == nil {
 			panic(runtime.NewTypeError("Method Buffer.prototype.write called on incompatible receiver"))
 		}
-		
+
 		// 🔥 修复：检查 this 是否是真正的 Buffer（不能是普通 Uint8Array）
 		// Node.js 的 Buffer 有特殊的内部方法（如 utf8Write），Uint8Array 没有
 		bufferProp := this.Get("buffer")
 		if bufferProp == nil || goja.IsUndefined(bufferProp) || goja.IsNull(bufferProp) {
 			panic(runtime.NewTypeError("this.utf8Write is not a function"))
 		}
-		
+
 		// 🔥 修复：进一步检查是否是真正的 Buffer（通过检查特殊方法或构造函数）
 		// 检查是否有 Buffer 特有的方法或属性
 		// 一个简单的方式是检查 constructor 名称或特定方法
@@ -51,29 +52,29 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 					// 只接受 Buffer，不接受 Uint8Array 等其他 TypedArray
 					if name != "Buffer" && name != "" {
 						// 如果明确是 Uint8Array 等，抛出错误
-						if name == "Uint8Array" || name == "Uint16Array" || name == "Uint32Array" || 
-						   name == "Int8Array" || name == "Int16Array" || name == "Int32Array" ||
-						   name == "Float32Array" || name == "Float64Array" {
+						if name == "Uint8Array" || name == "Uint16Array" || name == "Uint32Array" ||
+							name == "Int8Array" || name == "Int16Array" || name == "Int32Array" ||
+							name == "Float32Array" || name == "Float64Array" {
 							panic(runtime.NewTypeError("this.utf8Write is not a function"))
 						}
 					}
 				}
 			}
 		}
-		
+
 		if len(call.Arguments) == 0 {
 			panic(runtime.NewTypeError("字符串参数是必需的"))
 		}
 
 		// 🔥 修复：检查 Symbol 类型（Symbol 不能转换为字符串）
 		assertNotSymbol(runtime, call.Arguments[0], "Cannot convert a Symbol value to a string")
-		
+
 		// 🔥 修复：第一个参数必须是字符串类型（Node.js v25.0.0 严格检查）
 		firstArg := call.Arguments[0]
 		if goja.IsUndefined(firstArg) || goja.IsNull(firstArg) {
 			panic(runtime.NewTypeError("The \"string\" argument must be of type string. Received " + firstArg.String()))
 		}
-		
+
 		// 检查是否为字符串类型
 		firstArgType := firstArg.ExportType()
 		if firstArgType == nil || firstArgType.Kind().String() != "string" {
@@ -83,9 +84,9 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			}
 			panic(runtime.NewTypeError("The \"string\" argument must be of type string. Received type " + receivedType))
 		}
-		
+
 		str := firstArg.String()
-		
+
 		offset := int64(0)
 		// 🔥 修复：默认 length 应该是 buf.length - offset，不是字符串长度
 		// 获取buffer长度
@@ -129,18 +130,18 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 				if arg1Type != nil && arg1Type.Kind().String() == "bool" {
 					panic(runtime.NewTypeError("The \"offset\" argument must be of type number. Received type boolean"))
 				}
-				
+
 				// 🔥 修复：offset 不能是数组
 				if arg1Type != nil && (arg1Type.Kind().String() == "slice" || arg1Type.Kind().String() == "array") {
 					panic(runtime.NewTypeError("The \"offset\" argument must be of type number. Received an instance of Array"))
 				}
-				
+
 				// 🔥 修复：offset 必须是原始数字类型（不能是对象，即使对象有 valueOf）
 				// Node.js v25.0.0 不接受 { valueOf: () => 2 } 这样的对象
 				if arg1Type != nil && (arg1Type.Kind().String() == "map" || arg1Type.Kind().String() == "struct") {
 					panic(runtime.NewTypeError("The \"offset\" argument must be of type number. Received an instance of Object"))
 				}
-				
+
 				// 🔥 修复：offset 必须是整数（不能是小数）
 				offsetFloat := arg1.ToFloat()
 				if math.Floor(offsetFloat) != offsetFloat || math.IsNaN(offsetFloat) || math.IsInf(offsetFloat, 0) {
@@ -216,7 +217,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			errObj.Set("name", runtime.ToValue("RangeError"))
 			panic(errObj)
 		}
-		
+
 		// 🔥 修复：Node.js v25.0.0 行为
 		// 如果 length > bufferLength，抛出错误
 		// 如果 length > bufferLength - offset (即 maxLength)，自动截断到 maxLength
@@ -329,14 +330,14 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		if offset+maxWriteLength > bufferLength {
 			maxWriteLength = bufferLength - offset
 		}
-		
+
 		actualWriteLength := maxWriteLength
-		
+
 		// UTF-8: 检查多字节字符边界
 		if encoding == "utf8" || encoding == "utf-8" {
 			actualWriteLength = findUTF8ByteBoundary(data, maxWriteLength)
 		}
-		
+
 		// UTF-16LE: 必须是 2 字节对齐
 		if encoding == "utf16le" || encoding == "ucs2" || encoding == "ucs-2" || encoding == "utf-16le" {
 			if actualWriteLength%2 != 0 {
@@ -376,7 +377,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 	// 🔥 修复：返回共享内存视图（对齐 Node.js）
 	sliceFunc := func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
-		
+
 		// 🚀 优化：简化 this 类型检查 - Buffer/TypedArray 必有 buffer 属性
 		bufferProp := this.Get("buffer")
 		if bufferProp == nil || goja.IsUndefined(bufferProp) || goja.IsNull(bufferProp) {
@@ -416,7 +417,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		} else if start > bufferLength {
 			start = bufferLength
 		}
-		
+
 		if end > bufferLength {
 			end = bufferLength
 		}
@@ -432,7 +433,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 
 		// 🚀 优化：直接使用 buffer 属性（已在上面验证），移除永远不会执行的备用路径
 		arrayBuffer := bufferProp
-		
+
 		// 获取当前 byteOffset
 		baseByteOffset := int64(0)
 		if byteOffsetVal := this.Get("byteOffset"); byteOffsetVal != nil && !goja.IsUndefined(byteOffsetVal) {
@@ -460,39 +461,61 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 	prototype.Set("slice", sliceValue)
 
 	// 添加 inspect 方法（Node.js Buffer 特有）
+	// 使用 buffer.INSPECT_MAX_BYTES 控制显示的字节数
 	inspectFunc := func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
-		
+
 		// 获取长度
 		length := int64(0)
 		if lengthVal := this.Get("length"); !goja.IsUndefined(lengthVal) {
 			length = lengthVal.ToInteger()
 		}
-		
+
 		// 构建类似 <Buffer 68 65 6c> 的字符串
 		if length == 0 {
 			return runtime.ToValue("<Buffer >")
 		}
-		
-		var hexParts []string
-		maxShow := int64(50) // 最多显示50个字节
-		showLength := length
-		if showLength > maxShow {
-			showLength = maxShow
+
+		// 🔥 修复：通过 goja_nodejs/buffer API 直接获取 INSPECT_MAX_BYTES 值
+		// 这样可以避免 require.cache 被删除后访问到错误的模块实例
+		maxShow := gojaBuffer.GetInspectMaxBytes(runtime)
+
+		// 🔥 修复：处理 Number.MAX_VALUE 等极大值的溢出
+		// 将浮点数 maxShow 转换为实际显示的字节数（向下取整用于索引）
+		var showLength int64
+
+		// 检查是否超出 int64 最大值（避免溢出）
+		// math.MaxInt64 = 9223372036854775807
+		if maxShow > float64(math.MaxInt64) || math.IsInf(maxShow, 1) {
+			// 极大值或 +Infinity：显示全部字节
+			showLength = length
+		} else {
+			showLength = int64(math.Floor(maxShow))
+			if showLength > length {
+				showLength = length
+			}
 		}
-		
+
+		var hexParts []string
 		for i := int64(0); i < showLength; i++ {
 			val := this.Get(getIndexString(i))
 			byteVal := byte(val.ToInteger() & 0xFF)
 			hexParts = append(hexParts, fmt.Sprintf("%02x", byteVal))
 		}
-		
+
 		result := "<Buffer " + strings.Join(hexParts, " ")
-		if length > maxShow {
-			result += " ... "
+		// 🔥 修复：保留浮点精度显示剩余字节数
+		if showLength < length {
+			remaining := float64(length) - maxShow
+			// 格式化：如果是整数显示为整数，否则显示为浮点数
+			if remaining == math.Floor(remaining) {
+				result += fmt.Sprintf(" ... %d more bytes", int64(remaining))
+			} else {
+				result += fmt.Sprintf(" ... %g more byte", remaining)
+			}
 		}
 		result += ">"
-		
+
 		return runtime.ToValue(result)
 	}
 	inspectValue := runtime.ToValue(inspectFunc)
@@ -744,7 +767,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 				// 🔥 安全修复：必须复制数据，避免切片共享底层数组
 				searchData := make([]byte, len(bufferBytes)-searchStart)
 				copy(searchData, bufferBytes[searchStart:])
-				
+
 				// 🔥 修复：对于 UTF-16 编码，需要按 2 字节步长搜索
 				if isUTF16 {
 					// UTF-16 编码需要 2 字节对齐搜索
@@ -916,11 +939,11 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		default:
 			panic(runtime.NewTypeError(fmt.Sprintf("Unknown encoding: %s", encoding)))
 		}
-		
+
 		// 注意：不能在这里手动 GC！
 		// string(data) 可能引用 data 的底层内存，立即 GC 会导致段错误
 		// 让 Go 的 GC 自动管理内存
-		
+
 		return result
 	}
 	toStringValue := runtime.ToValue(toStringFunc)
@@ -1393,7 +1416,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		if goja.IsNull(call.This) || goja.IsUndefined(call.This) {
 			panic(runtime.NewTypeError("Method buffer.prototype.compare called on incompatible receiver"))
 		}
-		
+
 		this := call.This.ToObject(runtime)
 		if this == nil {
 			panic(runtime.NewTypeError("Method buffer.prototype.compare called on incompatible receiver"))
@@ -1443,7 +1466,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		if lengthVal == nil || goja.IsUndefined(lengthVal) {
 			panic(runtime.NewTypeError("The \"target\" argument must be an instance of Buffer or Uint8Array. Received an instance of Object"))
 		}
-		
+
 		// 使用严格的类型检查
 		if !isBufferOrUint8Array(runtime, target) {
 			// 获取详细的错误信息
@@ -1459,7 +1482,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		if !isBufferOrUint8Array(runtime, this) {
 			panic(runtime.NewTypeError("Method buffer.prototype.compare called on incompatible receiver"))
 		}
-		
+
 		thisLengthVal := this.Get("length")
 		if thisLengthVal == nil || goja.IsUndefined(thisLengthVal) {
 			panic(runtime.NewTypeError("Method buffer.prototype.compare called on incompatible receiver"))
@@ -1635,12 +1658,12 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			// 使用优化的索引字符串获取
 			thisIdx := sourceStart + i
 			targetIdx := targetStart + i
-			
+
 			thisIdxStr := getIndexString(thisIdx)
 			if val := this.Get(thisIdxStr); val != nil && !goja.IsUndefined(val) {
 				thisVal = val.ToInteger() & 0xFF
 			}
-			
+
 			targetIdxStr := getIndexString(targetIdx)
 			if val := target.Get(targetIdxStr); val != nil && !goja.IsUndefined(val) {
 				targetVal = val.ToInteger() & 0xFF
@@ -2950,14 +2973,14 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			if arrayBuffer, ok := exported.(goja.ArrayBuffer); ok {
 				bufferBytes := arrayBuffer.Bytes()
 				byteLen := int64(len(bufferBytes))
-				
+
 				if byteLen%2 != 0 {
 					errObj := runtime.NewGoError(fmt.Errorf("Buffer size must be a multiple of 16-bits"))
 					errObj.Set("code", runtime.ToValue("ERR_INVALID_BUFFER_SIZE"))
 					errObj.Set("name", runtime.ToValue("RangeError"))
 					panic(errObj)
 				}
-				
+
 				swapBytesInPlace(bufferBytes, 2)
 				return this
 			}
@@ -2993,7 +3016,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 				if offsetVal != nil && !goja.IsUndefined(offsetVal) {
 					byteOffset = offsetVal.ToInteger()
 				}
-				
+
 				if byteOffset >= 0 && byteOffset+actualByteLength <= int64(len(bufferBytes)) {
 					if actualByteLength != bufferLength {
 						elementSize := int(actualByteLength / bufferLength)
@@ -3030,7 +3053,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			if arrayBuffer, ok := exported.(goja.ArrayBuffer); ok {
 				bufferBytes := arrayBuffer.Bytes()
 				byteLen := int64(len(bufferBytes))
-				
+
 				// 快速长度检查
 				if byteLen%4 != 0 {
 					errObj := runtime.NewGoError(fmt.Errorf("Buffer size must be a multiple of 32-bits"))
@@ -3038,7 +3061,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 					errObj.Set("name", runtime.ToValue("RangeError"))
 					panic(errObj)
 				}
-				
+
 				// 直接交换，无需额外属性访问
 				swapBytesInPlace(bufferBytes, 4)
 				return this
@@ -3076,7 +3099,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 				if offsetVal != nil && !goja.IsUndefined(offsetVal) {
 					byteOffset = offsetVal.ToInteger()
 				}
-				
+
 				// 边界检查
 				if byteOffset >= 0 && byteOffset+actualByteLength <= int64(len(bufferBytes)) {
 					// 区分TypedArray和Buffer的swap行为
@@ -3121,14 +3144,14 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			if arrayBuffer, ok := exported.(goja.ArrayBuffer); ok {
 				bufferBytes := arrayBuffer.Bytes()
 				byteLen := int64(len(bufferBytes))
-				
+
 				if byteLen%8 != 0 {
 					errObj := runtime.NewGoError(fmt.Errorf("Buffer size must be a multiple of 64-bits"))
 					errObj.Set("code", runtime.ToValue("ERR_INVALID_BUFFER_SIZE"))
 					errObj.Set("name", runtime.ToValue("RangeError"))
 					panic(errObj)
 				}
-				
+
 				swapBytesInPlace(bufferBytes, 8)
 				return this
 			}
@@ -3164,7 +3187,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 				if offsetVal != nil && !goja.IsUndefined(offsetVal) {
 					byteOffset = offsetVal.ToInteger()
 				}
-				
+
 				if byteOffset >= 0 && byteOffset+actualByteLength <= int64(len(bufferBytes)) {
 					if actualByteLength != bufferLength {
 						elementSize := int(actualByteLength / bufferLength)
@@ -3231,13 +3254,13 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 
 		// 🔥 性能优化：无论大小，都优先尝试零拷贝快速路径
 		// 只有在无法获取底层 ArrayBuffer 时才回退到慢速路径
-		
+
 		// 检查 BYTES_PER_ELEMENT（确保只对字节数组进行字节级反转）
 		bytesPerElement := int64(1)
 		if bpeVal := this.Get("BYTES_PER_ELEMENT"); bpeVal != nil && !goja.IsUndefined(bpeVal) {
 			bytesPerElement = bpeVal.ToInteger()
 		}
-		
+
 		// 只有 BYTES_PER_ELEMENT = 1 的 TypedArray 可以使用字节级零拷贝反转
 		// 对于 Uint16Array、Int32Array 等，需要使用慢速路径（按元素反转）
 		if bytesPerElement == 1 {
@@ -3251,7 +3274,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 					return this
 				}
 			}
-			
+
 			// 路径2：尝试通过 buffer 属性获取 ArrayBuffer（TypedArray 路径）
 			if bufferVal := this.Get("buffer"); bufferVal != nil && !goja.IsUndefined(bufferVal) {
 				if arrayBuffer, ok := bufferVal.Export().(goja.ArrayBuffer); ok {
@@ -3357,7 +3380,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			}
 			return newBuf
 		}
-		
+
 		baseByteOffset := int64(0)
 		byteOffsetVal := this.Get("byteOffset")
 		if byteOffsetVal != nil && !goja.IsUndefined(byteOffsetVal) && !goja.IsNull(byteOffsetVal) {
@@ -3471,20 +3494,20 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			if ok && bytesPerElement == 1 {
 				// 只对 Uint8Array/Buffer (bytesPerElement=1) 使用快速路径
 				// 其他类型（Uint16Array 等）需要逐元素转换
-				
+
 				// 提取目标 Buffer 的底层字节
 				targetBytes, _, _, targetOk := extractTypedArrayBytes(this)
 				if targetOk {
 					// 检查是否需要处理内存重叠
 					targetAB := this.Get("buffer")
 					sourceAB := sourceArray.Get("buffer")
-					
+
 					sameBuffer := false
-					if targetAB != nil && sourceAB != nil && 
-					   !goja.IsUndefined(targetAB) && !goja.IsUndefined(sourceAB) {
+					if targetAB != nil && sourceAB != nil &&
+						!goja.IsUndefined(targetAB) && !goja.IsUndefined(sourceAB) {
 						sameBuffer = (targetAB.Export() == sourceAB.Export())
 					}
-					
+
 					if sameBuffer {
 						// 内存重叠：需要临时缓冲区（memmove 语义）
 						tmp := make([]byte, len(srcBytes))
@@ -3494,7 +3517,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 						// 无重叠：直接复制（最快路径）
 						copy(targetBytes[offset:], srcBytes)
 					}
-					
+
 					return goja.Undefined()
 				}
 			}
@@ -3544,7 +3567,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		if len(call.Arguments) == 0 {
 			panic(runtime.NewTypeError("Callback function is required"))
 		}
-		
+
 		callback, ok := goja.AssertFunction(call.Arguments[0])
 		if !ok {
 			panic(runtime.NewTypeError("Callback function is required"))
@@ -3553,13 +3576,13 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		if len(call.Arguments) > 1 {
 			thisArg = call.Arguments[1]
 		}
-		
+
 		// 获取长度
 		length := int64(0)
 		if lengthVal := this.Get("length"); !goja.IsUndefined(lengthVal) {
 			length = lengthVal.ToInteger()
 		}
-		
+
 		// 收集通过过滤的元素
 		var results []byte
 		for i := int64(0); i < length; i++ {
@@ -3574,18 +3597,18 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 				results = append(results, byte(val.ToInteger()&0xFF))
 			}
 		}
-		
+
 		// 使用 Buffer.alloc 创建新 Buffer
 		bufferConstructor := runtime.Get("Buffer")
 		allocFunc, _ := goja.AssertFunction(bufferConstructor.ToObject(runtime).Get("alloc"))
 		newBuf, _ := allocFunc(bufferConstructor, runtime.ToValue(len(results)))
 		newBufObj := newBuf.ToObject(runtime)
-		
+
 		// 填充数据
 		for i, b := range results {
 			newBufObj.Set(getIndexString(int64(i)), runtime.ToValue(b))
 		}
-		
+
 		return newBuf
 	}
 	filterValue := runtime.ToValue(filterFunc)
@@ -3598,7 +3621,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		if len(call.Arguments) == 0 {
 			panic(runtime.NewTypeError("Callback function is required"))
 		}
-		
+
 		callback, ok := goja.AssertFunction(call.Arguments[0])
 		if !ok {
 			panic(runtime.NewTypeError("Callback function is required"))
@@ -3607,19 +3630,19 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		if len(call.Arguments) > 1 {
 			thisArg = call.Arguments[1]
 		}
-		
+
 		// 获取长度
 		length := int64(0)
 		if lengthVal := this.Get("length"); !goja.IsUndefined(lengthVal) {
 			length = lengthVal.ToInteger()
 		}
-		
+
 		// 使用 Buffer.alloc 创建新 Buffer
 		bufferConstructor := runtime.Get("Buffer")
 		allocFunc, _ := goja.AssertFunction(bufferConstructor.ToObject(runtime).Get("alloc"))
 		newBuf, _ := allocFunc(bufferConstructor, runtime.ToValue(length))
 		newBufObj := newBuf.ToObject(runtime)
-		
+
 		// 映射每个元素
 		for i := int64(0); i < length; i++ {
 			val := this.Get(getIndexString(i))
@@ -3632,7 +3655,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			byteVal := byte(res.ToInteger() & 0xFF)
 			newBufObj.Set(getIndexString(i), runtime.ToValue(byteVal))
 		}
-		
+
 		return newBuf
 	}
 	mapValue := runtime.ToValue(mapFunc)
