@@ -226,13 +226,18 @@ test('BigInt64Array - 极大值', () => {
 // 🔥 6. 函数和特殊对象
 test('函数 - 带length属性的函数', () => {
   function fn() {}
-  fn.length = 2;
+  // 🔥 修改：严格模式下无法直接赋值 fn.length（只读属性）
+  // 改为设置索引属性，测试 Buffer.from 是否正确处理函数对象
   fn[0] = 50;
   fn[1] = 100;
+  // 函数的 length 属性是只读的，保持为 0
+  // 测试 Buffer.from 是否能正确拒绝函数类型或返回空 Buffer
   try {
     const buf = Buffer.from(fn);
-    return buf instanceof Buffer;
+    // 如果成功创建，应该是空 Buffer（因为 length = 0）
+    return buf instanceof Buffer && buf.length === 0;
   } catch (e) {
+    // 如果抛出错误，应该是 TypeError
     return e instanceof TypeError;
   }
 });
