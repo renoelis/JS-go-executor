@@ -35,6 +35,7 @@ tests=(
   "part16_missing_error_boundaries.js"
   "part17_final_gap_analysis.js"
   "part18_deep_edge_supplement.js"
+  "part19_ultra_deep_edge_cases.js"
 )
 
 total_tests=0

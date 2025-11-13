@@ -53,7 +53,8 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 
 		// 获取编码参数（如果有）
 		encoding := "utf8"
-		if len(call.Arguments) >= 2 && !goja.IsUndefined(call.Arguments[1]) {
+		// 🔥 修复：null 和 undefined 都应该使用默认编码
+		if len(call.Arguments) >= 2 && !goja.IsUndefined(call.Arguments[1]) && !goja.IsNull(call.Arguments[1]) {
 			encoding = call.Arguments[1].String()
 		}
 		// 🔥 修复：编码大小写不敏感
@@ -196,20 +197,36 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 				}
 			}
 
-			// 🔥 修复：先检查是否有**自定义** valueOf 方法，避免重复读取 getter
-			// 如果对象有自定义 valueOf，Node.js 会优先调用 valueOf，而不是使用 length
-			// 但不能把所有对象都交给原生处理，因为普通对象也有 valueOf（从Object.prototype继承）
-			// 只有当 valueOf 是对象**自己的属性**（hasOwnProperty）时才认为是自定义的
+			// 🔥 修复：检查 valueOf 方法（包括原型链）
+			// Node.js 行为：如果对象有 valueOf 方法，会调用它
+			// 如果返回值不是对象本身，则递归调用 Buffer.from(valueOf())
 			valueOfVal := arg0Obj.Get("valueOf")
 			if valueOfVal != nil && !goja.IsUndefined(valueOfVal) {
-				// 🔥 性能优化：使用缓存的 hasOwnProperty 函数
-				hasOwnFn := getHasOwnPropertyFunc(runtime)
-				if hasOwnFn != nil {
-					result, err := hasOwnFn(goja.Undefined(), arg0Obj, runtime.ToValue("valueOf"))
-					if err == nil && result != nil && result.ToBoolean() {
-						// 有自定义 valueOf 方法，直接交给原生处理
-						// 这样可以避免我们先读取一次元素，原生再读取一次，导致 getter 被调用两次
-						goto callOriginal
+				if fn, ok := goja.AssertFunction(valueOfVal); ok {
+					// 调用 valueOf
+					valueOfResult, err := fn(arg0Obj)
+					if err == nil && valueOfResult != nil && !goja.IsUndefined(valueOfResult) {
+						// 检查返回值是否不是对象本身
+						// TypedArray 的 valueOf 返回自己,不应该递归
+						// 只有当 valueOf 返回完全不同的对象(比如数组)时才递归
+
+						// 比较引用是否相同
+						isSameObject := valueOfResult == arg0
+						if !isSameObject {
+							// valueOf 返回了不同的对象
+							resultType := valueOfResult.ExportType()
+
+							// 如果返回的是数组(slice),则递归处理
+							if resultType != nil && resultType.Kind().String() == "slice" {
+								// 递归调用 Buffer.from
+								if fromFunc, ok := goja.AssertFunction(originalFrom); ok {
+									recursiveResult, recursiveErr := fromFunc(goja.Undefined(), valueOfResult)
+									if recursiveErr == nil {
+										return recursiveResult
+									}
+								}
+							}
+						}
 					}
 				}
 			}
@@ -280,8 +297,8 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 				// 在 64 位系统上约为 2GB (2^31 - 1)
 				const maxPracticalLength = int64(2147483647) // 2GB (0x7FFFFFFF)
 				if length > maxPracticalLength {
-					// 对齐 Node.js 的错误消息
-					panic(runtime.NewTypeError("Array buffer allocation failed"))
+					// 对齐 Node.js 的错误消息 - 应该抛出 RangeError
+					panic(newRangeError(runtime, "Array buffer allocation failed"))
 				}
 
 				// 🔥 修复：检查是否是 ArrayBuffer - 不使用 Export() 避免触发 getter
@@ -327,6 +344,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 
 				if !isArrayBuffer && !isDirectCopyTypedArray && length >= 0 {
 					// 这是一个普通数组、类数组对象或需要转换的 TypedArray，需要预处理元素
+					// 包括：普通数组、类数组对象、Float32Array、Float64Array、Int16Array 等
 					data := make([]byte, length)
 					for i := int64(0); i < length; i++ {
 						itemVal := arg0Obj.Get(fmt.Sprintf("%d", i))
