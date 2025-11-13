@@ -176,7 +176,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 				// 数字类型，继续处理
 			default:
 				// 对象等其他类型
-				panic(runtime.NewTypeError(fmt.Sprintf("The \"size\" argument must be of type number. Received type object")))
+				panic(runtime.NewTypeError(fmt.Sprintf("The \"size\" argument must be of type number. Received an instance of Object")))
 			}
 		}
 
@@ -295,7 +295,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 				// 数字类型，继续处理
 			default:
 				// 对象等其他类型
-				panic(runtime.NewTypeError(fmt.Sprintf("The \"size\" argument must be of type number. Received type object")))
+				panic(runtime.NewTypeError(fmt.Sprintf("The \"size\" argument must be of type number. Received an instance of Object")))
 			}
 		}
 
@@ -414,7 +414,7 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 				// 数字类型，继续处理
 			default:
 				// 对象等其他类型
-				panic(runtime.NewTypeError(fmt.Sprintf("The \"size\" argument must be of type number. Received type object")))
+				panic(runtime.NewTypeError(fmt.Sprintf("The \"size\" argument must be of type number. Received an instance of Object")))
 			}
 		}
 
@@ -488,7 +488,9 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 		allocUnsafeSlowFuncObj.DefineDataProperty("length", runtime.ToValue(1), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
 	}
 
-	// 🔥 添加 buffer.constants 对象（Node.js 兼容）
+	// 🔥 添加 buffer module 的 constants 对象（Node.js v25.0.0 兼容）
+	// 注意：Node.js v25.0.0 中 Buffer.constants 是 undefined
+	// 只有 require('buffer').constants 存在
 	// 参考：https://nodejs.org/api/buffer.html#bufferconstants
 	constantsObj := runtime.NewObject()
 
@@ -515,7 +517,42 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 		goja.FLAG_TRUE,  // enumerable
 	)
 
-	buffer.Set("constants", constantsObj)
+	// 🔥 修复：Node.js v25.0.0 中 Buffer.constants 应该是 undefined
+	// 不设置 buffer.Set("constants", constantsObj)
+
+	// 但是需要通过 JavaScript 将 constants 导出到 require('buffer') 模块
+	_, _ = runtime.RunString(`
+		(function() {
+			try {
+				var bufferModule = require('buffer');
+				if (bufferModule && typeof bufferModule.constants === 'undefined') {
+					// 创建 constants 对象
+					var constants = {
+						MAX_LENGTH: 9007199254740991,
+						MAX_STRING_LENGTH: 536870888
+					};
+
+					// 冻结对象以防修改
+					Object.defineProperty(constants, 'MAX_LENGTH', {
+						value: 9007199254740991,
+						writable: false,
+						enumerable: true,
+						configurable: false
+					});
+					Object.defineProperty(constants, 'MAX_STRING_LENGTH', {
+						value: 536870888,
+						writable: false,
+						enumerable: true,
+						configurable: false
+					});
+
+					bufferModule.constants = constants;
+				}
+			} catch (e) {
+				// 如果 require('buffer') 失败，静默忽略
+			}
+		})();
+	`)
 }
 
 // parseFillValue 解析填充值参数

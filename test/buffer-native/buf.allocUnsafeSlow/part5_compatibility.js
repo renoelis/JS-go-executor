@@ -27,25 +27,24 @@ test('兼容性 - 小缓冲区也使用慢策略（<4KB）', () => {
   return buf.length === 100 && buf.every(b => b === 65);
 });
 
-test('兼容性 - 零填充历史行为', () => {
-  const buf = Buffer.allocUnsafeSlow(20, 0);
-  return buf.every(b => b === 0);
+test('兼容性 - 忽略填充参数（allocUnsafeSlow不支持填充）', () => {
+  const buf = Buffer.allocUnsafeSlow(20, 0); // 填充参数被忽略
+  return buf.length === 20; // 只检查长度，不检查内容
 });
 
-test('兼容性 - 空字符串填充历史行为', () => {
+test('兼容性 - 空字符串填充参数被忽略', () => {
   const buf = Buffer.allocUnsafeSlow(10, '');
-  return buf.length === 10; // 不填充任何内容
+  return buf.length === 10; // 只验证长度，填充参数被忽略
 });
 
-test('兼容性 - 单字符填充行为', () => {
+test('兼容性 - 填充参数被忽略（不影响内容）', () => {
   const buf = Buffer.allocUnsafeSlow(100, 'X');
-  return buf.every(b => b === 88); // 'X' 的 ASCII 码
+  return buf.length === 100; // 只检查长度，内容是未初始化的
 });
 
-test('兼容性 - 多字节字符填充处理', () => {
+test('兼容性 - 多字节字符填充参数被忽略', () => {
   const buf = Buffer.allocUnsafeSlow(6, '中');
-  const str = buf.toString('utf8');
-  return str.startsWith('中') && str.length % 3 === 0;
+  return buf.length === 6; // 只验证长度
 });
 
 test('兼容性 - 不同 Node.js 版本的底层行为一致', () => {
@@ -109,13 +108,13 @@ test('特殊场景 - 多线程模式下的行为', () => {
 test('特殊场景 - 大块内存复制行为', () => {
   const source = Buffer.allocUnsafeSlow(1024 * 1024);
   source.fill('A');
-  source[0] = 'B';
-  source[1024 * 1024 - 1] = 'C';
+  source[0] = 66; // 使用数字而不是字符串 'B'
+  source[1024 * 1024 - 1] = 67; // 使用数字而不是字符串 'C'
 
   const copy = Buffer.allocUnsafeSlow(1024 * 1024);
   copy.fill('D');
-  copy[0] = 'X';
-  copy[1024 * 1024 - 1] = 'Y';
+  copy[0] = 88; // 使用数字而不是字符串 'X'
+  copy[1024 * 1024 - 1] = 89; // 使用数字而不是字符串 'Y'
 
   return source[0] === 66 && copy[0] === 88 && source[1024 * 1024 - 1] === 67 && copy[1024 * 1024 - 1] === 89;
 });
@@ -137,7 +136,7 @@ test('特殊场景 - 垃圾回收压力测试', () => {
 
 test('兼容性 - 与 Buffer.from 对比（不同策略）', () => {
   const fromBuf = Buffer.from('hello world');
-  const allocSlowBuf = Buffer.allocUnsafeSlow(11, 'hello world');
+  const allocSlowBuf = Buffer.allocUnsafeSlow(11); // 不传填充参数
 
   return fromBuf.toString() === 'hello world' &&
          allocSlowBuf.length === 11;

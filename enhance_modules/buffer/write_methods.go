@@ -2286,7 +2286,51 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 					if isArray {
 						// 普通数组转换为 0
 						fillData = []byte{0}
-					} else if lengthVal := obj.Get("length"); !goja.IsUndefined(lengthVal) && lengthVal != nil {
+					} else if bufferVal := obj.Get("buffer"); !goja.IsUndefined(bufferVal) && bufferVal != nil {
+						// 🔥 修复：DataView 使用其 buffer 属性（ArrayBuffer）
+						// DataView 没有数字索引，需要通过 buffer 访问底层数据
+						if bufferObj := bufferVal.ToObject(runtime); bufferObj != nil {
+							// 尝试从 ArrayBuffer 导出数据
+							var bytes []byte
+							err := runtime.ExportTo(bufferVal, &bytes)
+							if err == nil && bytes != nil {
+								// 检查 byteOffset 和 byteLength
+								byteOffset := int64(0)
+								byteLength := int64(len(bytes))
+
+								if offsetVal := obj.Get("byteOffset"); !goja.IsUndefined(offsetVal) {
+									byteOffset = offsetVal.ToInteger()
+								}
+								if lengthVal := obj.Get("byteLength"); !goja.IsUndefined(lengthVal) {
+									byteLength = lengthVal.ToInteger()
+								}
+
+								// 提取 DataView 的实际范围
+								if byteOffset >= 0 && byteLength > 0 && int64(len(bytes)) >= byteOffset+byteLength {
+									fillData = bytes[byteOffset : byteOffset+byteLength]
+									goto fillDataReady
+								}
+							}
+						}
+						// 如果 buffer 处理失败，继续检查 length
+						if lengthVal := obj.Get("length"); !goja.IsUndefined(lengthVal) && lengthVal != nil {
+							length := lengthVal.ToInteger()
+							if length > 0 {
+								// 继续处理 length
+							} else {
+								// length <= 0, 转换为 0
+								fillData = []byte{0}
+								goto fillDataReady
+							}
+						} else {
+							// 没有 length，转换为 0
+							fillData = []byte{0}
+							goto fillDataReady
+						}
+					}
+
+					// 处理有 length 属性的对象
+					if lengthVal := obj.Get("length"); !goja.IsUndefined(lengthVal) && lengthVal != nil {
 						length := lengthVal.ToInteger()
 						if length > 0 {
 							// 🔥 性能优化：对于 Buffer/Uint8Array，使用快速导出
