@@ -2309,19 +2309,24 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 								if byteOffset >= 0 && byteLength > 0 && int64(len(bytes)) >= byteOffset+byteLength {
 									fillData = bytes[byteOffset : byteOffset+byteLength]
 									goto fillDataReady
+								} else if byteLength == 0 {
+									// DataView 的 byteLength 为 0，应该抛出错误
+									errObj := runtime.NewTypeError(fmt.Sprintf("The argument 'value' is invalid. Received %s", value.String()))
+									errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_VALUE"))
+									panic(errObj)
 								}
 							}
 						}
 						// 如果 buffer 处理失败，继续检查 length
 						if lengthVal := obj.Get("length"); !goja.IsUndefined(lengthVal) && lengthVal != nil {
 							length := lengthVal.ToInteger()
-							if length > 0 {
-								// 继续处理 length
-							} else {
-								// length <= 0, 转换为 0
-								fillData = []byte{0}
-								goto fillDataReady
+							if length == 0 {
+								// length == 0, 应该抛出错误（与后面的逻辑一致）
+								errObj := runtime.NewTypeError(fmt.Sprintf("The argument 'value' is invalid. Received %s", value.String()))
+								errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_VALUE"))
+								panic(errObj)
 							}
+							// length > 0, 继续往下处理
 						} else {
 							// 没有 length，转换为 0
 							fillData = []byte{0}
