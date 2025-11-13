@@ -39,6 +39,17 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 
 		arg0 := call.Arguments[0]
 
+		// 🔥 修复：首先检查 Symbol 类型（必须在所有其他检查之前）
+		if _, isSymbol := arg0.(*goja.Symbol); isSymbol {
+			symStr := arg0.String()
+			panic(runtime.NewTypeError(fmt.Sprintf("The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object. Received type symbol (%s)", symStr)))
+		}
+
+		// 🔥 修复：检查函数类型
+		if _, isFunc := goja.AssertFunction(arg0); isFunc {
+			panic(runtime.NewTypeError("The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object. Received function "))
+		}
+
 		// 获取编码参数（如果有）
 		encoding := "utf8"
 		if len(call.Arguments) >= 2 && !goja.IsUndefined(call.Arguments[1]) {
@@ -188,6 +199,89 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 			lengthVal := arg0Obj.Get("length")
 			if lengthVal != nil && !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
 				length := lengthVal.ToInteger()
+
+				// 🔥 修复：检查是否有**自定义** valueOf 方法
+				// 如果对象有自定义 valueOf，Node.js 会优先调用 valueOf，而不是使用 length
+				// 但不能把所有对象都交给原生处理，因为普通对象也有 valueOf（从Object.prototype继承）
+				// 只有当 valueOf 是对象**自己的属性**（hasOwnProperty）时才认为是自定义的
+				valueOfVal := arg0Obj.Get("valueOf")
+				if valueOfVal != nil && !goja.IsUndefined(valueOfVal) {
+					// 🔥 性能优化：使用缓存的 hasOwnProperty 函数
+					hasOwnFn := getHasOwnPropertyFunc(runtime)
+					if hasOwnFn != nil {
+						result, err := hasOwnFn(goja.Undefined(), arg0Obj, runtime.ToValue("valueOf"))
+						if err == nil && result != nil && result.ToBoolean() {
+							// 有自定义 valueOf 方法，交给原生处理
+							goto callOriginal
+						}
+					}
+				}
+
+				// 🔥 修复：验证 length 必须是真正的数字类型（不是字符串、布尔值等）
+				// Node.js 会拒绝非数字类型的 length，返回空 Buffer
+
+				// 🔥 性能优化：使用缓存的 typeof 检查函数
+				typeofFn := getTypeofCheckFunc(runtime)
+				if typeofFn != nil {
+					typeResult, err := typeofFn(goja.Undefined(), lengthVal)
+					if err == nil && typeResult != nil {
+						lengthType := typeResult.String()
+						// 只接受 "number" 类型
+						if lengthType != "number" {
+							// 🔥 修复：Node.js 不抛出错误，而是返回空 Buffer
+							// 这种对象的 length 不是数字，不被视为有效的类数组对象
+							// 创建并返回空 Buffer
+							allocFunc, ok := goja.AssertFunction(buffer.Get("alloc"))
+							if ok {
+								result, err := allocFunc(buffer, runtime.ToValue(0))
+								if err == nil {
+									return result
+								}
+							}
+							// 如果alloc失败，继续到原生处理（作为回退）
+							goto callOriginal
+						}
+					}
+				}
+
+				lengthFloat := lengthVal.ToFloat()
+				lengthInt := lengthVal.ToInteger()
+
+				// 🔥 修复：检查 Infinity - Node.js 会抛出错误
+				if math.IsInf(lengthFloat, 0) {
+					panic(runtime.NewTypeError("Array buffer allocation failed"))
+				}
+
+				// 🔥 修复：检查 NaN - 返回空 Buffer
+				if math.IsNaN(lengthFloat) {
+					allocFunc, ok := goja.AssertFunction(buffer.Get("alloc"))
+					if ok {
+						result, err := allocFunc(buffer, runtime.ToValue(0))
+						if err == nil {
+							return result
+						}
+					}
+					// 如果alloc失败，继续到原生处理（作为回退）
+					goto callOriginal
+				}
+
+				length = lengthInt
+
+				// 🔥 安全检查：防止负数或过大的 length
+				if length < 0 {
+					length = 0
+				}
+
+				// 🔥 修复：实用的内存限制（2GB），防止内存耗尽
+				// 虽然 Node.js 理论上支持 MAX_SAFE_INTEGER，但实际上无法分配那么大的内存
+				// 参考：Node.js 的 buffer.constants.MAX_LENGTH 在不同平台上不同
+				// 在 64 位系统上约为 2GB (2^31 - 1)
+				const maxPracticalLength = int64(2147483647) // 2GB (0x7FFFFFFF)
+				if length > maxPracticalLength {
+					// 对齐 Node.js 的错误消息
+					panic(runtime.NewTypeError("Array buffer allocation failed"))
+				}
+
 				// 检查是否是真正的数组（不是 ArrayBuffer 或 TypedArray）
 				_, isArrayBuffer := arg0Obj.Export().(goja.ArrayBuffer)
 
@@ -232,6 +326,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		}
 
 		// 对于其他类型（Buffer、ArrayBuffer等），调用原生实现
+	callOriginal:
 		if !goja.IsUndefined(originalFrom) {
 			// 🔥 修复：检查 ArrayBuffer + offset 参数（对齐 Node.js 错误信息）
 			// 如果第一个参数是 ArrayBuffer 且有第二个参数（offset），需要先验证
@@ -244,12 +339,12 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 							bufferLen = int64(len(ab.Bytes()))
 						}
 
-						// 检查 offset 是否越界
+						// 🔥 修复：检查 offset 是否越界 - 应该抛出 RangeError 而不是 TypeError
 						if offset < 0 {
-							panic(runtime.NewTypeError(fmt.Sprintf("Start offset %d is outside the bounds of the buffer", offset)))
+							panic(newRangeError(runtime, fmt.Sprintf("Start offset %d is outside the bounds of the buffer", offset)))
 						}
 						if offset > bufferLen {
-							panic(runtime.NewTypeError(fmt.Sprintf("Start offset %d is outside the bounds of the buffer", offset)))
+							panic(newRangeError(runtime, "\"offset\" is outside of buffer bounds"))
 						}
 
 						// 如果有第三个参数（length），也需要检查
@@ -266,8 +361,9 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 									}
 								}
 							}
+							// 🔥 修复：length 超出范围应该抛出 RangeError
 							if offset+int64(length) > bufferLen {
-								panic(runtime.NewTypeError("\"length\" is outside of buffer bounds"))
+								panic(newRangeError(runtime, "\"length\" is outside of buffer bounds"))
 							}
 						}
 					}
@@ -288,6 +384,16 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 
 		panic(runtime.NewTypeError("第一个参数必须是字符串、Buffer、ArrayBuffer、Array 或类数组对象"))
 	})
+
+	// 🔥 修复：设置 Buffer.from 的 length 和 name 属性（对齐 Node.js v25.0.0）
+	if fromFunc := buffer.Get("from"); fromFunc != nil && !goja.IsUndefined(fromFunc) {
+		if fromObj := fromFunc.ToObject(runtime); fromObj != nil {
+			// 设置 length 属性为 3 (value, encodingOrOffset, length)
+			fromObj.DefineDataProperty("length", runtime.ToValue(3), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+			// 设置 name 属性为 "from"
+			fromObj.DefineDataProperty("name", runtime.ToValue("from"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+		}
+	}
 
 	// 添加 Buffer.isBuffer 静态方法（修复版 - 严格区分 Buffer 和 TypedArray）
 	buffer.Set("isBuffer", func(obj goja.Value) bool {
@@ -431,16 +537,14 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		arg := call.Arguments[0]
 
 		// 🔥 首要检查：Symbol类型检测（必须在其他处理之前）
-		// 通过执行JavaScript代码检查typeof
-		typeCheckResult, err := runtime.RunString(`(function(arg) { return typeof arg === 'symbol'; })`)
-		if err == nil {
-			if typeCheckFn, ok := goja.AssertFunction(typeCheckResult); ok {
-				result, err := typeCheckFn(goja.Undefined(), arg)
-				if err == nil && result.ToBoolean() {
-					errObj := runtime.NewTypeError("The \"string\" argument must be of type string or an instance of Buffer, TypedArray, DataView, or ArrayBuffer. Received type symbol")
-					errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
-					panic(errObj)
-				}
+		// 🔥 性能优化：使用缓存的 Symbol 检查函数
+		isSymbolFn := getIsSymbolCheckFunc(runtime)
+		if isSymbolFn != nil {
+			result, err := isSymbolFn(goja.Undefined(), arg)
+			if err == nil && result.ToBoolean() {
+				errObj := runtime.NewTypeError("The \"string\" argument must be of type string or an instance of Buffer, TypedArray, DataView, or ArrayBuffer. Received type symbol")
+				errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
+				panic(errObj)
 			}
 		}
 
