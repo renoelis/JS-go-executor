@@ -48,12 +48,9 @@ test('错误处理 - Symbol 作为 size', () => {
 });
 
 test('错误处理 - 浮点数数值', () => {
-  try {
-    Buffer.allocUnsafeSlow(10.5);
-    return false;
-  } catch (e) {
-    return e.message.includes('size') || e.message.includes('integer');
-  }
+  const buf = Buffer.allocUnsafeSlow(10.5);
+  // 浮点数会被截断为整数
+  return buf.length === 10;
 });
 
 test('错误处理 - 负数值', () => {
@@ -85,20 +82,17 @@ test('错误处理 - Infinity 值', () => {
 
 test('错误处理 - 超出数组大小限制的值', () => {
   try {
-    Buffer.allocUnsafeSlow(Number.MAX_SAFE_INTEGER);
+    Buffer.allocUnsafeSlow(Number.MAX_SAFE_INTEGER + 1);
     return false;
   } catch (e) {
-    return e.message.includes('size') || e.message.includes('range');
+    return e.message.includes('range') || e.message.includes('size');
   }
 });
 
 test('错误处理 - 无效的 encoding 字符串', () => {
-  try {
-    Buffer.allocUnsafeSlow(10, 'hello', 'invalid-encoding');
-    return false;
-  } catch (e) {
-    return e.message.includes('encoding') || e.message.includes('Unknown');
-  }
+  const buf = Buffer.allocUnsafeSlow(10, 'hello', 'invalid-encoding');
+  // allocUnsafeSlow不会使用编码参数，不会报错
+  return buf.length === 10;
 });
 
 test('错误处理 - fill 为 null', () => {
@@ -113,7 +107,8 @@ test('错误处理 - fill 为 undefined', () => {
 
 test('错误处理 - fill 长度大于 size', () => {
   const buf = Buffer.allocUnsafeSlow(3, 'hello');
-  return buf.length === 3 && buf.toString() === 'hel';
+  // allocUnsafeSlow不会填充内容
+  return buf.length === 3;
 });
 
 test('错误处理 - fill 为空的字符串', () => {
@@ -128,12 +123,14 @@ test('错误处理 - fill 为空的 Buffer', () => {
 
 test('错误处理 - fill 为负数的数字', () => {
   const buf = Buffer.allocUnsafeSlow(3, -1);
-  return buf.length === 3 && buf[0] === 255 && buf[1] === 255 && buf[2] === 255;
+  // allocUnsafeSlow不会填充内容
+  return buf.length === 3;
 });
 
 test('错误处理 - fill 为大数字', () => {
   const buf = Buffer.allocUnsafeSlow(3, 65536);
-  return buf.length === 3 && buf[0] === 0 && buf[1] === 0 && buf[2] === 0;
+  // allocUnsafeSlow不会填充内容
+  return buf.length === 3;
 });
 
 test('错误处理 - 缺少 size 参数', () => {
@@ -146,12 +143,9 @@ test('错误处理 - 缺少 size 参数', () => {
 });
 
 test('错误处理 - 参数过多（4个以上）', () => {
-  try {
-    Buffer.allocUnsafeSlow(10, 'a', 'utf8', 'extra', 'param');
-    return false;
-  } catch (e) {
-    return true;
-  }
+  const buf = Buffer.allocUnsafeSlow(10, 'a', 'utf8', 'extra', 'param');
+  // allocUnsafeSlow接受多个参数但忽略，不会报错
+  return buf.length === 10;
 });
 
 const passed = tests.filter(t => t.passed).length;

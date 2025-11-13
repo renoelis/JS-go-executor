@@ -24,6 +24,9 @@ TEST_FILES=(
   "part7_edge_cases.js"
   "part8_combinations.js"
   "part9_extreme.js"
+  "part10_function_properties.js"
+  "part11_allocation_strategies.js"
+  "part12_final_gap_analysis.js"
 )
 
 echo ""

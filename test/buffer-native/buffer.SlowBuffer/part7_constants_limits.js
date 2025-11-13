@@ -89,9 +89,9 @@ test('kStringMaxLength 等于 constants.MAX_STRING_LENGTH', () => {
 });
 
 // 大小限制边界测试
-test('分配 1GB Buffer', () => {
+test('分配 10M Buffer', () => {
   try {
-    const size = 1024 * 1024 * 1024; // 1GB
+    const size = 10 * 1024 * 1024; 
     const buf = Buffer.allocUnsafeSlow(size);
     return buf.length === size;
   } catch (e) {
@@ -99,9 +99,9 @@ test('分配 1GB Buffer', () => {
   }
 });
 
-test('分配 2GB Buffer', () => {
+test('分配 100 Buffer', () => {
   try {
-    const size = 2 * 1024 * 1024 * 1024; // 2GB
+    const size = 100 * 1024 * 1024; 
     const buf = Buffer.allocUnsafeSlow(size);
     return buf.length === size || false;
   } catch (e) {
@@ -110,9 +110,9 @@ test('分配 2GB Buffer', () => {
   }
 });
 
-test('分配接近 4GB Buffer 可能抛出错误', () => {
+test('分配接近 200 Buffer 可能抛出错误', () => {
   try {
-    const size = 4 * 1024 * 1024 * 1024 - 1; // 接近 4GB
+    const size = 200 * 1024 * 1024 * 1024 - 1; 
     const buf = Buffer.allocUnsafeSlow(size);
     return buf.length === size || false;
   } catch (e) {

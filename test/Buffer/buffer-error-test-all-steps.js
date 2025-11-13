@@ -83,12 +83,29 @@ expectError('测试 31: swap16() 奇数长度', function() { Buffer.alloc(3).swa
 expectError('测试 32: swap32() 长度不是4的倍数', function() { Buffer.alloc(5).swap32(); });
 expectError('测试 33: swap64() 长度不是8的倍数', function() { Buffer.alloc(10).swap64(); });
 
-// 缺少参数（测试 34-38）
-expectError('测试 34: writeInt8() 无值', function() { testBuf.writeInt8(); });
-expectError('测试 35: writeInt16BE() 无值', function() { testBuf.writeInt16BE(); });
-expectError('测试 36: writeInt32BE() 无值', function() { testBuf.writeInt32BE(); });
-expectError('测试 37: writeFloatBE() 无值', function() { testBuf.writeFloatBE(); });
-expectError('测试 38: writeDoubleBE() 无值', function() { testBuf.writeDoubleBE(); });
+// 缺少参数默认值（测试 34-38）
+expectNoError('测试 34: writeInt8() 无值', function() { 
+  testBuf.writeInt8(); // 使用默认值 undefined -> 0
+  if (testBuf[0] !== 0) throw new Error('应该写入默认值 0');
+});
+expectNoError('测试 35: writeInt16BE() 无值', function() { 
+  testBuf.writeInt16BE(); // 使用默认值 undefined -> 0
+  if (testBuf.readInt16BE(0) !== 0) throw new Error('应该写入默认值 0');
+});
+expectNoError('测试 36: writeInt32BE() 无值', function() { 
+  testBuf.writeInt32BE(); // 使用默认值 undefined -> 0
+  if (testBuf.readInt32BE(0) !== 0) throw new Error('应该写入默认值 0');
+});
+expectNoError('测试 37: writeFloatBE() 无值', function() { 
+  testBuf.writeFloatBE(); // 使用默认值 undefined -> NaN
+  const value = testBuf.readFloatBE(0);
+  if (!isNaN(value)) throw new Error('应该写入 NaN');
+});
+expectNoError('测试 38: writeDoubleBE() 无值', function() { 
+  testBuf.writeDoubleBE(); // 使用默认值 undefined -> NaN
+  const value = testBuf.readDoubleBE(0);
+  if (!isNaN(value)) throw new Error('应该写入 NaN');
+});
 
 // 可变长度参数（测试 39-43）
 expectError('测试 39: readIntBE(0, 7)', function() { testBuf.readIntBE(0, 7); });
@@ -152,10 +169,11 @@ try {
             passed ? '正确要求BigInt类型' : '未正确检测类型');
 }
 
-return {
+const finalResult = {
   success: results.failed === 0,
   executionMode: 'Complete Error Handling Tests',
   timestamp: new Date().toISOString(),
+  details: results.tests,
   summary: {
     total: results.passed + results.failed,
     passed: results.passed,
@@ -166,7 +184,8 @@ return {
 };
 
 
-
+console.log(finalResult);
+return finalResult;
 
 
 

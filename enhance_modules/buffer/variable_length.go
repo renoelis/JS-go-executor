@@ -2,6 +2,7 @@ package buffer
 
 import (
 	"fmt"
+	"strconv"
 	"sync"
 
 	"github.com/dop251/goja"
@@ -205,8 +206,9 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 		offset := validateOffset(runtime, call.Arguments[1], "writeIntBE")
 		byteLength := call.Arguments[2].ToInteger()
 
+		// 🔥 修复：byteLength 边界检查应该抛出 RangeError (Node.js v25.0.0 对齐)
 		if byteLength < 1 || byteLength > 6 {
-			panic(runtime.NewTypeError("RangeError: byteLength 必须在 1 到 6 之间"))
+			panic(newRangeError(runtime, "The value of \"byteLength\" is out of range. It must be >= 1 and <= 6. Received "+strconv.FormatInt(byteLength, 10)))
 		}
 
 		// 检查 value 范围（有符号）
@@ -261,8 +263,9 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 		offset := validateOffset(runtime, call.Arguments[1], "writeIntLE")
 		byteLength := call.Arguments[2].ToInteger()
 
+		// 🔥 修复：byteLength 边界检查应该抛出 RangeError (Node.js v25.0.0 对齐)
 		if byteLength < 1 || byteLength > 6 {
-			panic(runtime.NewTypeError("RangeError: byteLength 必须在 1 到 6 之间"))
+			panic(newRangeError(runtime, "The value of \"byteLength\" is out of range. It must be >= 1 and <= 6. Received "+strconv.FormatInt(byteLength, 10)))
 		}
 
 		// 检查 value 范围（有符号）
@@ -337,8 +340,9 @@ func (be *BufferEnhancer) addBufferVariableLengthMethods(runtime *goja.Runtime, 
 		valueFloat := valueArg.ToFloat()
 		value := uint64(valueArg.ToInteger())
 
+		// 🔥 修复：byteLength 边界检查应该抛出 RangeError (Node.js v25.0.0 对齐)
 		if byteLength < 1 || byteLength > 6 {
-			panic(runtime.NewTypeError("RangeError: byteLength 必须在 1 到 6 之间"))
+			panic(newRangeError(runtime, "The value of \"byteLength\" is out of range. It must be >= 1 and <= 6. Received "+strconv.FormatInt(byteLength, 10)))
 		}
 
 		// 检查 value 范围（无符号） - 先检查浮点值范围

@@ -12,7 +12,8 @@ function test(name, fn) {
 }
 
 test('极端情况 - 超长循环填充模式', () => {
-  const buf = Buffer.allocUnsafeSlow(10000, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ');
+  const buf = Buffer.allocUnsafeSlow(10000);
+  buf.fill('ABCDEFGHIJKLMNOPQRSTUVWXYZ');
   let ok = true;
   for (let i = 0; i < 10000; i++) {
     const expected = 65 + (i % 26); // ASCII A-Z
@@ -22,7 +23,8 @@ test('极端情况 - 超长循环填充模式', () => {
 });
 
 test('极端情况 - 单字节重复采样', () => {
-  const buf = Buffer.allocUnsafeSlow(50000, 85); // 字节 85
+  const buf = Buffer.allocUnsafeSlow(50000);
+  buf.fill(85); // 字节 85
   for (let i = 0; i < buf.length; i++) {
     if (buf[i] !== 85) return false;
   }
@@ -60,9 +62,9 @@ test('极端情况 - fill 深度多段覆盖性测试', () => {
   return sectionA.every(b => b === 65) && sectionB.every(b => b === 66) && sectionC.every(b => b === 67);
 });
 
-test('极端情况 - 多字节字符极端截断', () => {
+test('极端情况 - allocUnsafeSlow 忽略填充参数', () => {
   const input = '世界'; // 6 bytes in utf8
-  const buf = Buffer.allocUnsafeSlow(4, input, 'utf8');
+  const buf = Buffer.allocUnsafeSlow(4, input, 'utf8'); // 后两个参数被忽略
   return buf.length === 4;
 });
 
@@ -96,7 +98,8 @@ test('极端情况 - 尺寸跨多数量级稳定性', () => {
 
 test('极端情况 - 快速多重复制 overlay 内存稳定', () => {
   const fill = Buffer.from('XYZ');
-  const buf = Buffer.allocUnsafeSlow(9000, fill);
+  const buf = Buffer.allocUnsafeSlow(9000);
+  buf.fill(fill);
   let i = 0;
   while (i < 9000) {
     if (buf[i] !== 88 || buf[i + 1] !== 89 || buf[i + 2] !== 90) return false;
@@ -114,12 +117,14 @@ test('极端情况 - 快速迭代子视图非破坏测试', () => {
     view.fill('B');
     views.push(view);
   }
-  return views.every(v => v.length === 500 && v[0] === 66) && base[0] === 66 && base[999] === 66 && base[1000] === 66;
+  return views.every(v => v.length === 500 && v[0] === 66) && base[0] === 66 && base[499] === 66 && base[1000] === 66;
 });
 
 test('极端情况 - 超大组合参数组合稳定性', () => {
-  const buf = Buffer.allocUnsafeSlow(1024 * 1024, 'encoding-test', 'ascii');
-  return buf.length === 1024 * 1024 && buf.slice(0, 12).toString() === 'encoding-test';
+  const buf = Buffer.allocUnsafeSlow(1024 * 1024);
+  buf.fill('encoding-test', 0, buf.length, 'ascii');
+  const expected = 'encoding-tes'; // 前12字节是 "encoding-tes"
+  return buf.length === 1024 * 1024 && buf.slice(0, 12).toString() === expected;
 });
 
 test('极端情况 - long-lived buffer 视图内存依赖稳定性', () => {

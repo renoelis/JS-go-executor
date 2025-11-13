@@ -245,29 +245,51 @@ expectError(
 // 第七部分: 缺少必需参数
 // ============================================================
 
-expectError(
-  '测试 34: writeInt8() 无值参数',
-  function() { testBuf.writeInt8(); }
+expectNoError(
+  '测试 34: writeInt8() 无值参数 - 使用默认值',
+  function() { 
+    testBuf.writeInt8(); // 使用默认值 undefined -> 0
+    // 验证写入了默认值
+    if (testBuf[0] !== 0) throw new Error('应该写入默认值 0');
+  }
 );
 
-expectError(
-  '测试 35: writeInt16BE() 无值参数',
-  function() { testBuf.writeInt16BE(); }
+expectNoError(
+  '测试 35: writeInt16BE() 无值参数 - 使用默认值',
+  function() { 
+    testBuf.writeInt16BE(); // 使用默认值 undefined -> 0
+    // 验证写入了默认值
+    if (testBuf.readInt16BE(0) !== 0) throw new Error('应该写入默认值 0');
+  }
 );
 
-expectError(
-  '测试 36: writeInt32BE() 无值参数',
-  function() { testBuf.writeInt32BE(); }
+expectNoError(
+  '测试 36: writeInt32BE() 无值参数 - 使用默认值',
+  function() { 
+    testBuf.writeInt32BE(); // 使用默认值 undefined -> 0
+    // 验证写入了默认值
+    if (testBuf.readInt32BE(0) !== 0) throw new Error('应该写入默认值 0');
+  }
 );
 
-expectError(
-  '测试 37: writeFloatBE() 无值参数',
-  function() { testBuf.writeFloatBE(); }
+expectNoError(
+  '测试 37: writeFloatBE() 无值参数 - 使用默认值',
+  function() { 
+    testBuf.writeFloatBE(); // 使用默认值 undefined -> NaN
+    // 验证写入了 NaN
+    const value = testBuf.readFloatBE(0);
+    if (!isNaN(value)) throw new Error('应该写入 NaN');
+  }
 );
 
-expectError(
-  '测试 38: writeDoubleBE() 无值参数',
-  function() { testBuf.writeDoubleBE(); }
+expectNoError(
+  '测试 38: writeDoubleBE() 无值参数 - 使用默认值',
+  function() { 
+    testBuf.writeDoubleBE(); // 使用默认值 undefined -> NaN
+    // 验证写入了 NaN
+    const value = testBuf.readDoubleBE(0);
+    if (!isNaN(value)) throw new Error('应该写入 NaN');
+  }
 );
 
 // ============================================================
@@ -406,7 +428,7 @@ try {
 // 返回结果
 // ============================================================
 
-return {
+const finalResult = {
   success: results.failed === 0,
   executionMode: 'Error Handling Tests',
   timestamp: new Date().toISOString(),
@@ -424,10 +446,13 @@ return {
     '读取越界': '测试 13-24',
     '写入越界': '测试 25-30',
     '字节交换': '测试 31-33',
-    '缺少参数': '测试 34-38',
+    '缺少参数默认值': '测试 34-38',
     '可变长度参数': '测试 39-43',
     '边界情况': '测试 44-52',
     'BigInt错误': '测试 53'
   },
   note: 'Buffer 模块错误处理测试 - 53 个测试用例'
 };
+
+console.log(finalResult);
+return finalResult;

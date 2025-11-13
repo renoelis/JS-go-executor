@@ -60,7 +60,7 @@ test('类型处理 - 负数', () => {
 
 test('类型处理 - 超大数值', () => {
   try {
-    Buffer.allocUnsafeSlow(0x7fffffff + 1);
+    Buffer.allocUnsafeSlow(1e50);
     return false;
   } catch (e) {
     return e.message.includes('size') || e.message.includes('range') || e.message.includes('Invalid');
@@ -95,13 +95,21 @@ test('类型处理 - undefined 作为 size', () => {
 });
 
 test('类型处理 - boolean true', () => {
-  const buf = Buffer.allocUnsafeSlow(true);
-  return buf.length === 1 && buf instanceof Buffer;
+  try {
+    Buffer.allocUnsafeSlow(true);
+    return false;
+  } catch (e) {
+    return e.message.includes('number') && e.message.includes('boolean');
+  }
 });
 
 test('类型处理 - boolean false', () => {
-  const buf = Buffer.allocUnsafeSlow(false);
-  return buf.length === 0 && buf instanceof Buffer;
+  try {
+    Buffer.allocUnsafeSlow(false);
+    return false;
+  } catch (e) {
+    return e.message.includes('number') && e.message.includes('boolean');
+  }
 });
 
 test('类型处理 - 对象转换行为', () => {
@@ -118,7 +126,8 @@ test('类型处理 - fill 为 ArrayBuffer', () => {
   const view = new Uint8Array(ab);
   view[0] = 65; view[1] = 66; view[2] = 67;
   const buf = Buffer.allocUnsafeSlow(6, view);
-  return buf.length === 6 && buf.toString() === 'ABCABC';
+  // allocUnsafeSlow不会填充内容，只分配未初始化内存
+  return buf.length === 6;
 });
 
 test('类型处理 - fill 为 DataView', () => {
@@ -126,7 +135,8 @@ test('类型处理 - fill 为 DataView', () => {
   const dv = new DataView(ab);
   dv.setUint8(0, 65); dv.setUint8(1, 66); dv.setUint8(2, 67);
   const buf = Buffer.allocUnsafeSlow(6, dv);
-  return buf.length === 6 && buf.toString() === 'ABCABC';
+  // allocUnsafeSlow不会填充内容，只分配未初始化内存
+  return buf.length === 6;
 });
 
 test('类型处理 - encoding 为 utf8', () => {
@@ -136,17 +146,20 @@ test('类型处理 - encoding 为 utf8', () => {
 
 test('类型处理 - encoding 为 ascii', () => {
   const buf = Buffer.allocUnsafeSlow(5, 'hello', 'ascii');
-  return buf.length === 5 && buf.toString('ascii') === 'hello';
+  // allocUnsafeSlow不会填充内容，只分配未初始化内存
+  return buf.length === 5;
 });
 
 test('类型处理 - encoding 为 hex', () => {
-  const buf = Buffer.allocUnsafeSlow(6, '68656c6c6f', 'hex');
-  return buf.length === 6 && buf.toString() === 'hello';
+  const buf = Buffer.allocUnsafeSlow(4, '41424344', 'hex');
+  // allocUnsafeSlow不会填充内容，只分配未初始化内存
+  return buf.length === 4;
 });
 
 test('类型处理 - encoding 为 base64', () => {
-  const buf = Buffer.allocUnsafeSlow(5, 'aGVsbG8=', 'base64');
-  return buf.length === 5 && buf.toString() === 'hello';
+  const buf = Buffer.allocUnsafeSlow(5, 'SGVsbG8=', 'base64');
+  // allocUnsafeSlow不会填充内容，只分配未初始化内存
+  return buf.length === 5;
 });
 
 const passed = tests.filter(t => t.passed).length;

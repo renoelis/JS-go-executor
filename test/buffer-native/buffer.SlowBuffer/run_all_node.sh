@@ -33,6 +33,11 @@ tests=(
   "part16_array_methods.js"
   "part17_module_functions.js"
   "part18_documented_behaviors.js"
+  "part19_function_properties.js"
+  "part20_deep_boundary_cases.js"
+  "part21_performance_memory.js"
+  "part22_compatibility_special.js"
+  "part23_final_gap_analysis.js"
 )
 
 # 统计变量

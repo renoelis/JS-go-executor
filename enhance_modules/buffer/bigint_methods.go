@@ -586,16 +586,22 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 			value = new(big.Int).Add(value, maxUint64)
 		}
 
-		// 转换为字节数组
-		bytes := value.Bytes()
-
-		// 确保是 8 字节，前面补零
+		// 🔥 修复：手动提取 64 位大端字节序
+		// big.Int.Bytes() 会忽略尾随零，导致字节不完整
+		// 例如：0x0102030405060700 会返回 7 字节而不是 8 字节
+		// 我们需要手动提取完整的 8 字节
 		result := make([]byte, 8)
-		if len(bytes) <= 8 {
-			copy(result[8-len(bytes):], bytes)
-		} else {
-			// 理论上不应该到这里，因为已经做了范围检查
-			copy(result, bytes[len(bytes)-8:])
+
+		// 从低位到高位提取字节
+		tempValue := new(big.Int).Set(value)
+		mask := big.NewInt(0xFF)
+
+		for i := 7; i >= 0; i-- {
+			// 提取最低字节
+			byteVal := new(big.Int).And(tempValue, mask)
+			result[i] = byte(byteVal.Int64())
+			// 右移 8 位
+			tempValue.Rsh(tempValue, 8)
 		}
 
 		// 写入 buffer（大端）
@@ -695,13 +701,22 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 			panic(newRangeError(runtime, "The value of \"value\" is out of range. It must be >= 0 and <= 18446744073709551615. Received "+value.String()))
 		}
 
-		// 转换为字节数组
-		bytes := value.Bytes()
-
-		// 确保是 8 字节，前面补零
+		// 🔥 修复：手动提取 64 位大端字节序
+		// big.Int.Bytes() 会忽略尾随零，导致字节不完整
+		// 例如：0x0102030405060700 会返回 7 字节而不是 8 字节
+		// 我们需要手动提取完整的 8 字节
 		result := make([]byte, 8)
-		if len(bytes) > 0 {
-			copy(result[8-len(bytes):], bytes)
+
+		// 从低位到高位提取字节
+		tempValue := new(big.Int).Set(value)
+		mask := big.NewInt(0xFF)
+
+		for i := 7; i >= 0; i-- {
+			// 提取最低字节
+			byteVal := new(big.Int).And(tempValue, mask)
+			result[i] = byte(byteVal.Int64())
+			// 右移 8 位
+			tempValue.Rsh(tempValue, 8)
 		}
 
 		// 写入 buffer（大端）

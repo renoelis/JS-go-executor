@@ -11,35 +11,43 @@ function test(name, fn) {
   }
 }
 
-test('边缘行为 - Object 上带有小整数的 toString 行为', () => {
+test('边缘行为 - Object 不支持（严格类型检查）', () => {
   const obj = { toString: () => '123' };
-  const buf = Buffer.allocUnsafeSlow(obj);
-  return buf.length === 123;
+  try {
+    Buffer.allocUnsafeSlow(obj);
+    return false; // 应该抛出错误
+  } catch (e) {
+    return e.message.includes('type number') && e.message.includes('Object');
+  }
 });
 
-test('边缘行为 - Object 上带有浮点数的 toString 行为', () => {
+test('边缘行为 - Object 不支持（浮点数 toString）', () => {
   const obj = { toString: () => '999.0' };
-  const buf = Buffer.allocUnsafeSlow(obj);
-  return buf.length === 999;
+  try {
+    Buffer.allocUnsafeSlow(obj);
+    return false; // 应该抛出错误
+  } catch (e) {
+    return e.message.includes('type number') && e.message.includes('Object');
+  }
 });
 
-test('边缘行为 - toString 返回非数字的情况', () => {
+test('边缘行为 - 非数字对象不支持', () => {
   const obj = { toString: () => 'abc' };
   try {
     Buffer.allocUnsafeSlow(obj);
     return false;
   } catch (e) {
-    return e.message && e.message.includes('Invalid');
+    return e.message && (e.message.includes('type number') || e.message.includes('Object'));
   }
 });
 
-test('边缘行为 - fill 为带 toString 转换的对象', () => {
+test('边缘行为 - fill 参数被忽略（带 toString 转换的对象）', () => {
   const fillObject = { toString: () => 'X' };
   const buf = Buffer.allocUnsafeSlow(5, fillObject);
-  return buf.toString() === 'XXXXX';
+  return buf.length === 5; // 只检查长度，填充参数被忽略
 });
 
-test('边缘行为 - fill 为复杂嵌套 ArrayBuffer', () => {
+test('边缘行为 - fill 参数被忽略（复杂嵌套 ArrayBuffer）', () => {
   const ab = new ArrayBuffer(4);
   const view = new DataView(ab);
   view.setUint8(0, 72); // 'H'
@@ -47,12 +55,12 @@ test('边缘行为 - fill 为复杂嵌套 ArrayBuffer', () => {
   view.setUint8(2, 108); // 'l'
   view.setUint8(3, 108); // 'l'
   const buf = Buffer.allocUnsafeSlow(8, view);
-  return buf.toString() === 'HellHell';
+  return buf.length === 8; // 只检查长度，填充参数被忽略
 });
 
-test('边缘行为 - fill 长度大于 size 时严格截断', () => {
+test('边缘行为 - fill 参数被忽略（长度大于 size）', () => {
   const buf = Buffer.allocUnsafeSlow(3, 'ABCDEF');
-  return buf.toString() === 'ABC';
+  return buf.length === 3; // 只检查长度，填充参数被忽略
 });
 
 test('边缘行为 - 验证不同浮点值对大小的转换（Float）', () => {
@@ -73,24 +81,22 @@ test('边缘行为 - 验证不同浮点值对大小的转换（Float）', () => 
   });
 });
 
-test('边缘行为 - 字符串数字 extra 空格情况', () => {
+test('边缘行为 - 字符串不支持（严格类型检查）', () => {
   const tests = [
-    { input: '  100  ', expect: 100 },
-    { input: '100\n', expect: 100 },
-    { input: '\t100\t', expect: 100 },
-    { input: '   ', expect: false }  // 全空格不可行
+    '  100  ',
+    '100\n',
+    '\t100\t',
+    '   '
   ];
 
-  let ok = true;
-  tests.forEach(({ input, expect }) => {
+  return tests.every(input => {
     try {
-      const buf = Buffer.allocUnsafeSlow(input);
-      if (buf.length !== expect) ok = false;
+      Buffer.allocUnsafeSlow(input);
+      return false; // 应该抛出错误
     } catch (e) {
-      if (expect !== false) ok = false;
+      return e.message.includes('type number') && e.message.includes('string');
     }
   });
-  return ok;
 });
 
 test('边缘行为 - 继承调用链特殊处理（带 parent prototype）', () => {
@@ -106,10 +112,10 @@ test('边缘行为 - 继承调用链特殊处理（带 parent prototype）', () 
   }
 });
 
-test('边缘行为 - 填充为函数的情况（函数 toString 不返回数据本身）', () => {
+test('边缘行为 - fill 参数被忽略（填充为函数的情况）', () => {
   function fillFunc() { return 'X'; }
   const buf = Buffer.allocUnsafeSlow(5, fillFunc);
-  return buf.toString() === String(fillFunc).repeat(5).slice(0, 5);
+  return buf.length === 5; // 只检查长度，填充参数被忽略
 });
 
 test('边缘行为 - undefined vs 未传参 aligns fully', () => {
@@ -135,30 +141,29 @@ test('边缘行为 - 非常大的 Buffer 逐步测试数值稳定性', () => {
   return ok;
 });
 
-test('边缘行为 - fill 重复使用同一缓读器的循环性', () => {
+test('边缘行为 - fill 参数被忽略（重复使用同一缓读器）', () => {
   const pattern = new Uint8Array(2);
   pattern[0] = 97; // 'a'
   pattern[1] = 98; // 'b'
   const result = Buffer.allocUnsafeSlow(8, pattern);
-  return result.toString() === 'abababab';
+  return result.length === 8; // 只检查长度，填充参数被忽略
 });
 
-test('边缘行为 - ArrayBuffer memory 连续性测试', () => {
+test('边缘行为 - fill 参数被忽略（ArrayBuffer memory）', () => {
   const ab = new ArrayBuffer(8);
   const ua = new Uint8Array(ab);
   ua.set([65, 66, 67, 68, 69, 70, 71, 72]); // ABCDEFGH
   const buf = Buffer.allocUnsafeSlow(16, ua);
-  return buf.toString() === 'ABCDEFGHABCDEFGH';
+  return buf.length === 16; // 只检查长度，填充参数被忽略
 });
 
 test('边缘行为 - 多个异步 Buffer.allocUnsafeSlow 结果独立性', () => {
   // 模拟高并发环境
   const bufs = Array.from({ length: 50 }, (_, i) => {
-    return Buffer.allocUnsafeSlow(50, String.fromCharCode(65 + (i % 26)));
+    return Buffer.allocUnsafeSlow(50); // 不传填充参数
   });
 
-  const expected = bufs.map((buf, i) => String.fromCharCode(65 + (i % 26)));
-  return bufs.every((buf, i) => buf.toString() === expected[i].repeat(buf.length));
+  return bufs.every((buf, i) => buf.length === 50 && Buffer.isBuffer(buf));
 });
 
 const passed = tests.filter(t => t.passed).length;

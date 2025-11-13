@@ -17,9 +17,12 @@ echo ""
 
 # 测试文件列表
 tests=(
+  "test.js"
   "test_additional.js"
   "test_supplement.js"
-  "test.js"
+  "part1_function_properties.js"
+  "part2_deep_boundary_cases.js"
+  "part3_final_gap_analysis.js"
 )
 
 total_tests=0

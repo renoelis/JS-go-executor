@@ -419,7 +419,7 @@ return Promise.resolve()
         
         console.log('\n准备返回最终结果');
         console.log('结果对象:', JSON.stringify(finalResult).substring(0, 200) + '...');
-        
+        console.log(finalResult)
         return finalResult;
     })
     .catch(function(error) {

@@ -33,39 +33,46 @@ test('基本功能 - 分配大型缓冲区（4KB+）', () => {
 
 test('基本功能 - 三个参数调用', () => {
   const buf = Buffer.allocUnsafeSlow(10, 65, 'ascii');
-  return buf.length === 10 && buf[0] === 65;
+  // allocUnsafeSlow不会填充内容，只分配未初始化内存
+  return buf.length === 10;
 });
 
 test('基本功能 - 两个参数调用（fill）', () => {
   const buf = Buffer.allocUnsafeSlow(10, 65);
-  return buf.length === 10 && buf.every(b => b === 65);
+  // allocUnsafeSlow不会填充内容，只分配未初始化内存
+  return buf.length === 10;
 });
 
 test('基本功能 - fill 为数字 0', () => {
   const buf = Buffer.allocUnsafeSlow(10, 0);
-  return buf.length === 10 && buf.every(b => b === 0);
+  // allocUnsafeSlow不会填充内容，只分配未初始化内存
+  return buf.length === 10;
 });
 
 test('基本功能 - fill 为字符串', () => {
   const buf = Buffer.allocUnsafeSlow(5, 'hello');
-  return buf.length === 5 && buf.toString() === 'hello';
+  // allocUnsafeSlow不会填充内容，只分配未初始化内存
+  return buf.length === 5;
 });
 
 test('基本功能 - fill 为 Buffer', () => {
   const fillBuf = Buffer.from('ABC');
   const buf = Buffer.allocUnsafeSlow(9, fillBuf);
-  return buf.length === 9 && buf.toString() === 'ABCABCABC';
+  // allocUnsafeSlow不会填充内容，只分配未初始化内存
+  return buf.length === 9;
 });
 
 test('基本功能 - fill 为 Uint8Array', () => {
   const fillArr = new Uint8Array([65, 66, 67]);
   const buf = Buffer.allocUnsafeSlow(6, fillArr);
-  return buf.length === 6 && buf.toString() === 'ABCABC';
+  // allocUnsafeSlow不会填充内容，只分配未初始化内存
+  return buf.length === 6;
 });
 
 test('基本功能 - encoding 参数生效', () => {
   const buf = Buffer.allocUnsafeSlow(8, Buffer.from('hello'));
-  return buf.length === 8 && buf.toString() === 'hello';
+  // allocUnsafeSlow不会填充内容，只分配未初始化内存
+  return buf.length === 8;
 });
 
 test('基本功能 - 返回的 Buffer 可以正常修改', () => {
