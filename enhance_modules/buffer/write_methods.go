@@ -2286,6 +2286,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 					if isArray {
 						// 普通数组转换为 0
 						fillData = []byte{0}
+						goto fillDataReady
 					} else if bufferVal := obj.Get("buffer"); !goja.IsUndefined(bufferVal) && bufferVal != nil {
 						// 🔥 修复：DataView 使用其 buffer 属性（ArrayBuffer）
 						// DataView 没有数字索引，需要通过 buffer 访问底层数据
@@ -2341,7 +2342,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 							// 🔥 性能优化：对于 Buffer/Uint8Array，使用快速导出
 							// 检查是否是字节类型（bytesPerElement == 1）
 							bytesPerElement := int64(1)
-							if bpeVal := obj.Get("BYTES_PER_ELEMENT"); !goja.IsUndefined(bpeVal) {
+							if bpeVal := obj.Get("BYTES_PER_ELEMENT"); bpeVal != nil && !goja.IsUndefined(bpeVal) {
 								bytesPerElement = bpeVal.ToInteger()
 							}
 
