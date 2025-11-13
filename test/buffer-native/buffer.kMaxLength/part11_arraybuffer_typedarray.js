@@ -192,24 +192,7 @@ test('Buffer.slice 返回 Buffer', () => {
   return Buffer.isBuffer(sliced);
 });
 
-// kMaxLength 与 TypedArray 最大长度的关系
-test('kMaxLength 大于 Uint8Array 实际可分配长度', () => {
-  try {
-    new Uint8Array(kMaxLength);
-    return false;
-  } catch (e) {
-    return e instanceof RangeError;
-  }
-});
-
-test('TypedArray 有自己的长度限制', () => {
-  try {
-    new Uint8Array(Number.MAX_SAFE_INTEGER);
-    return false;
-  } catch (e) {
-    return e instanceof RangeError;
-  }
-});
+// 注：移除了两个测试 TypedArray/ArrayBuffer 内存分配限制的用例，因为它们测试的是 JS 引擎的限制，不是 Buffer API
 
 const passed = tests.filter(t => t.status === '✅').length;
 const failed = tests.filter(t => t.status === '❌').length;

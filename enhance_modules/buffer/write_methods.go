@@ -145,9 +145,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 				// 🔥 修复：offset 必须是整数（不能是小数）
 				offsetFloat := arg1.ToFloat()
 				if math.Floor(offsetFloat) != offsetFloat || math.IsNaN(offsetFloat) || math.IsInf(offsetFloat, 0) {
-					errObj := runtime.NewGoError(fmt.Errorf("The value of \"offset\" is out of range. It must be an integer. Received %v", offsetFloat))
-					errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-					errObj.Set("name", runtime.ToValue("RangeError"))
+					errObj := newRangeError(runtime, fmt.Sprintf("The value of \"offset\" is out of range. It must be an integer. Received %v", offsetFloat))
 					panic(errObj)
 				}
 				offset = int64(offsetFloat)
@@ -169,9 +167,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 						// 🔥 修复：length 必须是整数（不能是小数）
 						lengthFloat := arg2.ToFloat()
 						if math.Floor(lengthFloat) != lengthFloat || math.IsNaN(lengthFloat) || math.IsInf(lengthFloat, 0) {
-							errObj := runtime.NewGoError(fmt.Errorf("The value of \"length\" is out of range. It must be an integer. Received %v", lengthFloat))
-							errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-							errObj.Set("name", runtime.ToValue("RangeError"))
+							errObj := newRangeError(runtime, fmt.Sprintf("The value of \"length\" is out of range. It must be an integer. Received %v", lengthFloat))
 							panic(errObj)
 						}
 						length = int64(lengthFloat)
@@ -197,24 +193,18 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		// 🔥 修复：严格的边界检查（对齐 Node.js v25.0.0）
 		// offset 必须 >= 0 && <= bufferLength
 		if offset < 0 {
-			errObj := runtime.NewGoError(fmt.Errorf("The value of \"offset\" is out of range. It must be >= 0 && <= %d. Received %d", bufferLength, offset))
-			errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-			errObj.Set("name", runtime.ToValue("RangeError"))
+			errObj := newRangeError(runtime, fmt.Sprintf("The value of \"offset\" is out of range. It must be >= 0 && <= %d. Received %d", bufferLength, offset))
 			panic(errObj)
 		}
 		if offset > bufferLength {
-			errObj := runtime.NewGoError(fmt.Errorf("The value of \"offset\" is out of range. It must be >= 0 && <= %d. Received %d", bufferLength, offset))
-			errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-			errObj.Set("name", runtime.ToValue("RangeError"))
+			errObj := newRangeError(runtime, fmt.Sprintf("The value of \"offset\" is out of range. It must be >= 0 && <= %d. Received %d", bufferLength, offset))
 			panic(errObj)
 		}
 
 		// 🔥 修复：检查 length 参数（对齐 Node.js v25.0.0）
 		maxLength := bufferLength - offset
 		if length < 0 {
-			errObj := runtime.NewGoError(fmt.Errorf("The value of \"length\" is out of range. It must be >= 0 && <= %d. Received %d", bufferLength, length))
-			errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-			errObj.Set("name", runtime.ToValue("RangeError"))
+			errObj := newRangeError(runtime, fmt.Sprintf("The value of \"length\" is out of range. It must be >= 0 && <= %d. Received %d", bufferLength, length))
 			panic(errObj)
 		}
 
@@ -227,9 +217,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			// 如果第三个参数不是字符串（即不是 encoding），说明用户显式传入了 length
 			if arg2Type != nil && arg2Type.Kind().String() != "string" && !goja.IsUndefined(arg2) {
 				if length > bufferLength {
-					errObj := runtime.NewGoError(fmt.Errorf("The value of \"length\" is out of range. It must be >= 0 && <= %d. Received %d", bufferLength, length))
-					errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-					errObj.Set("name", runtime.ToValue("RangeError"))
+					errObj := newRangeError(runtime, fmt.Sprintf("The value of \"length\" is out of range. It must be >= 0 && <= %d. Received %d", bufferLength, length))
 					panic(errObj)
 				}
 			}
@@ -1116,29 +1104,21 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		// 🔥 修复：Node.js v25.0.0 严格参数验证
 		// 负数参数抛出 RangeError
 		if targetStart < 0 {
-			errObj := runtime.NewGoError(fmt.Errorf("The value of \"targetStart\" is out of range. It must be >= 0. Received %d", targetStart))
-			errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-			errObj.Set("name", runtime.ToValue("RangeError"))
+			errObj := newRangeError(runtime, fmt.Sprintf("The value of \"targetStart\" is out of range. It must be >= 0. Received %d", targetStart))
 			panic(errObj)
 		}
 		if sourceStart < 0 {
-			errObj := runtime.NewGoError(fmt.Errorf("The value of \"sourceStart\" is out of range. It must be >= 0 && <= %d. Received %d", thisLength, sourceStart))
-			errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-			errObj.Set("name", runtime.ToValue("RangeError"))
+			errObj := newRangeError(runtime, fmt.Sprintf("The value of \"sourceStart\" is out of range. It must be >= 0 && <= %d. Received %d", thisLength, sourceStart))
 			panic(errObj)
 		}
 		if sourceEnd < 0 {
-			errObj := runtime.NewGoError(fmt.Errorf("The value of \"sourceEnd\" is out of range. It must be >= 0. Received %d", sourceEnd))
-			errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-			errObj.Set("name", runtime.ToValue("RangeError"))
+			errObj := newRangeError(runtime, fmt.Sprintf("The value of \"sourceEnd\" is out of range. It must be >= 0. Received %d", sourceEnd))
 			panic(errObj)
 		}
 
 		// 🔥 修复：sourceStart 超出范围应抛出错误（Node.js v25.0.0）
 		if sourceStart > thisLength {
-			errObj := runtime.NewGoError(fmt.Errorf("The value of \"sourceStart\" is out of range. It must be >= 0 && <= %d. Received %d", thisLength, sourceStart))
-			errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-			errObj.Set("name", runtime.ToValue("RangeError"))
+			errObj := newRangeError(runtime, fmt.Sprintf("The value of \"sourceStart\" is out of range. It must be >= 0 && <= %d. Received %d", thisLength, sourceStart))
 			panic(errObj)
 		}
 
@@ -1556,32 +1536,24 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 
 			// 检查是否是 NaN
 			if val.ToFloat() != val.ToFloat() { // NaN != NaN
-				errObj := runtime.NewGoError(fmt.Errorf("The value of \"%s\" is out of range. It must be an integer. Received NaN", name))
-				errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-				errObj.Set("name", runtime.ToValue("RangeError"))
+				errObj := newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be an integer. Received NaN", name))
 				panic(errObj)
 			}
 
 			// 检查是否是 Infinity
 			floatVal := val.ToFloat()
 			if math.IsInf(floatVal, 1) {
-				errObj := runtime.NewGoError(fmt.Errorf("The value of \"%s\" is out of range. It must be an integer. Received Infinity", name))
-				errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-				errObj.Set("name", runtime.ToValue("RangeError"))
+				errObj := newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be an integer. Received Infinity", name))
 				panic(errObj)
 			}
 			if math.IsInf(floatVal, -1) {
-				errObj := runtime.NewGoError(fmt.Errorf("The value of \"%s\" is out of range. It must be an integer. Received -Infinity", name))
-				errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-				errObj.Set("name", runtime.ToValue("RangeError"))
+				errObj := newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be an integer. Received -Infinity", name))
 				panic(errObj)
 			}
 
 			// 检查是否是整数（小数会被拒绝）
 			if floatVal != math.Floor(floatVal) {
-				errObj := runtime.NewGoError(fmt.Errorf("The value of \"%s\" is out of range. It must be an integer. Received %v", name, floatVal))
-				errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-				errObj.Set("name", runtime.ToValue("RangeError"))
+				errObj := newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be an integer. Received %v", name, floatVal))
 				panic(errObj)
 			}
 
@@ -1589,15 +1561,11 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 
 			// 检查范围
 			if intVal < min {
-				errObj := runtime.NewGoError(fmt.Errorf("The value of \"%s\" is out of range. It must be >= %d && <= %d. Received %d", name, min, 9007199254740991, intVal))
-				errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-				errObj.Set("name", runtime.ToValue("RangeError"))
+				errObj := newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be >= %d && <= %d. Received %d", name, min, 9007199254740991, intVal))
 				panic(errObj)
 			}
 			if intVal > max {
-				errObj := runtime.NewGoError(fmt.Errorf("The value of \"%s\" is out of range. It must be >= %d && <= %d. Received %d", name, min, max, intVal))
-				errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-				errObj.Set("name", runtime.ToValue("RangeError"))
+				errObj := newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be >= %d && <= %d. Received %d", name, min, max, intVal))
 				panic(errObj)
 			}
 
@@ -1986,23 +1954,17 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 				if f, ok := val.(float64); ok {
 					// 检查 NaN
 					if f != f {
-						errObj := runtime.NewGoError(fmt.Errorf("The value of \"%s\" is out of range. It must be an integer. Received NaN", argName))
-						errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-						errObj.Set("name", runtime.ToValue("RangeError"))
+						errObj := newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be an integer. Received NaN", argName))
 						panic(errObj)
 					}
 					// 检查 Infinity
 					if f == math.Inf(1) || f == math.Inf(-1) {
-						errObj := runtime.NewGoError(fmt.Errorf("The value of \"%s\" is out of range. It must be an integer. Received %v", argName, f))
-						errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-						errObj.Set("name", runtime.ToValue("RangeError"))
+						errObj := newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be an integer. Received %v", argName, f))
 						panic(errObj)
 					}
 					// 检查是否为整数
 					if f != float64(int64(f)) {
-						errObj := runtime.NewGoError(fmt.Errorf("The value of \"%s\" is out of range. It must be an integer. Received %v", argName, f))
-						errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-						errObj.Set("name", runtime.ToValue("RangeError"))
+						errObj := newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be an integer. Received %v", argName, f))
 						panic(errObj)
 					}
 				}
@@ -2096,7 +2058,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			"": true, // 空字符串使用默认编码
 		}
 		if !validEncodings[encoding] && encoding != "" {
-			errObj := runtime.NewGoError(fmt.Errorf("Unknown encoding: %s", encoding))
+			errObj := newRangeError(runtime, fmt.Sprintf("Unknown encoding: %s", encoding))
 			errObj.Set("code", runtime.ToValue("ERR_UNKNOWN_ENCODING"))
 			errObj.Set("name", runtime.ToValue("TypeError"))
 			panic(errObj)
@@ -2110,23 +2072,17 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 
 		// 1. 检查 offset 是否为负数
 		if offset < 0 {
-			errObj := runtime.NewGoError(fmt.Errorf("The value of \"offset\" is out of range. It must be >= 0 && <= %d. Received %d", 9007199254740991, offset))
-			errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-			errObj.Set("name", runtime.ToValue("RangeError"))
+			errObj := newRangeError(runtime, fmt.Sprintf("The value of \"offset\" is out of range. It must be >= 0 && <= %d. Received %d", 9007199254740991, offset))
 			panic(errObj)
 		}
 
 		// 2. 检查 end 是否在有效范围内（包括负数和超出）
 		if end < 0 {
-			errObj := runtime.NewGoError(fmt.Errorf("The value of \"end\" is out of range. It must be >= 0 && <= %d. Received %d", bufferLength, end))
-			errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-			errObj.Set("name", runtime.ToValue("RangeError"))
+			errObj := newRangeError(runtime, fmt.Sprintf("The value of \"end\" is out of range. It must be >= 0 && <= %d. Received %d", bufferLength, end))
 			panic(errObj)
 		}
 		if end > bufferLength {
-			errObj := runtime.NewGoError(fmt.Errorf("The value of \"end\" is out of range. It must be >= 0 && <= %d. Received %d", bufferLength, end))
-			errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
-			errObj.Set("name", runtime.ToValue("RangeError"))
+			errObj := newRangeError(runtime, fmt.Sprintf("The value of \"end\" is out of range. It must be >= 0 && <= %d. Received %d", bufferLength, end))
 			panic(errObj)
 		}
 
@@ -2975,9 +2931,8 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 				byteLen := int64(len(bufferBytes))
 
 				if byteLen%2 != 0 {
-					errObj := runtime.NewGoError(fmt.Errorf("Buffer size must be a multiple of 16-bits"))
+					errObj := newRangeError(runtime, fmt.Sprintf("Buffer size must be a multiple of 16-bits"))
 					errObj.Set("code", runtime.ToValue("ERR_INVALID_BUFFER_SIZE"))
-					errObj.Set("name", runtime.ToValue("RangeError"))
 					panic(errObj)
 				}
 
@@ -2993,9 +2948,8 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		}
 
 		if bufferLength%2 != 0 {
-			errObj := runtime.NewGoError(fmt.Errorf("Buffer size must be a multiple of 16-bits"))
+			errObj := newRangeError(runtime, fmt.Sprintf("Buffer size must be a multiple of 16-bits"))
 			errObj.Set("code", runtime.ToValue("ERR_INVALID_BUFFER_SIZE"))
-			errObj.Set("name", runtime.ToValue("RangeError"))
 			panic(errObj)
 		}
 
@@ -3056,9 +3010,8 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 
 				// 快速长度检查
 				if byteLen%4 != 0 {
-					errObj := runtime.NewGoError(fmt.Errorf("Buffer size must be a multiple of 32-bits"))
+					errObj := newRangeError(runtime, fmt.Sprintf("Buffer size must be a multiple of 32-bits"))
 					errObj.Set("code", runtime.ToValue("ERR_INVALID_BUFFER_SIZE"))
-					errObj.Set("name", runtime.ToValue("RangeError"))
 					panic(errObj)
 				}
 
@@ -3076,9 +3029,8 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 
 		// 长度检查
 		if bufferLength%4 != 0 {
-			errObj := runtime.NewGoError(fmt.Errorf("Buffer size must be a multiple of 32-bits"))
+			errObj := newRangeError(runtime, fmt.Sprintf("Buffer size must be a multiple of 32-bits"))
 			errObj.Set("code", runtime.ToValue("ERR_INVALID_BUFFER_SIZE"))
-			errObj.Set("name", runtime.ToValue("RangeError"))
 			panic(errObj)
 		}
 
@@ -3146,9 +3098,8 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 				byteLen := int64(len(bufferBytes))
 
 				if byteLen%8 != 0 {
-					errObj := runtime.NewGoError(fmt.Errorf("Buffer size must be a multiple of 64-bits"))
+					errObj := newRangeError(runtime, fmt.Sprintf("Buffer size must be a multiple of 64-bits"))
 					errObj.Set("code", runtime.ToValue("ERR_INVALID_BUFFER_SIZE"))
-					errObj.Set("name", runtime.ToValue("RangeError"))
 					panic(errObj)
 				}
 
@@ -3164,9 +3115,8 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		}
 
 		if bufferLength%8 != 0 {
-			errObj := runtime.NewGoError(fmt.Errorf("Buffer size must be a multiple of 64-bits"))
+			errObj := newRangeError(runtime, fmt.Sprintf("Buffer size must be a multiple of 64-bits"))
 			errObj.Set("code", runtime.ToValue("ERR_INVALID_BUFFER_SIZE"))
-			errObj.Set("name", runtime.ToValue("RangeError"))
 			panic(errObj)
 		}
 

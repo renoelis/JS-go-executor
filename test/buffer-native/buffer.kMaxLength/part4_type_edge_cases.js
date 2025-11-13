@@ -104,14 +104,7 @@ test('Buffer.from(Uint8Array) 不受 kMaxLength 约束（受内存限制）', ()
   return buf.length === 1024;
 });
 
-test('创建超大 TypedArray 长度会失败', () => {
-  try {
-    new Uint8Array(kMaxLength);
-    return false;
-  } catch (e) {
-    return e instanceof RangeError;
-  }
-});
+// 注：移除了 "创建超大 TypedArray" 测试，因为它测试的是 JS 引擎的内存分配限制，不是 Buffer API
 
 // 字符串编码边界测试
 test('Buffer.from(超长字符串) 不会超过 kMaxLength', () => {

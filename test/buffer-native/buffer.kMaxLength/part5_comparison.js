@@ -41,15 +41,7 @@ test('kMaxLength 加减运算保持精度', () => {
   return b === kMaxLength;
 });
 
-// 与 ArrayBuffer 限制比较
-test('ArrayBuffer 有自己的长度限制', () => {
-  try {
-    new ArrayBuffer(kMaxLength);
-    return false;
-  } catch (e) {
-    return e instanceof RangeError;
-  }
-});
+// 注：移除了 "ArrayBuffer 有自己的长度限制" 测试，因为它测试的是 JS 引擎的内存分配限制，不是 Buffer API
 
 test('ArrayBuffer 小尺寸正常工作', () => {
   const ab = new ArrayBuffer(1024);

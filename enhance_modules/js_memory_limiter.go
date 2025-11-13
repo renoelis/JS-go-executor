@@ -75,8 +75,8 @@ func (jml *JSMemoryLimiter) RegisterLimiter(runtime *goja.Runtime) error {
 	// 辅助函数：检查大小
 	function checkSize(size, type) {
 		if (typeof size === 'number' && size > MAX_SIZE) {
-			throw new TypeError(
-				type + ' 分配内存过大：' + size + ' 元素/字节超过限制 ' + 
+			throw new RangeError(
+				type + ' 分配内存过大：' + size + ' 元素/字节超过限制 ' +
 				MAX_SIZE + ' 字节 (' + MAX_SIZE_MB + ' MB)。请减少数据大小。'
 			);
 		}
@@ -124,8 +124,8 @@ func (jml *JSMemoryLimiter) RegisterLimiter(runtime *goja.Runtime) error {
 			// 检查推送后的数组长度
 			var newLength = this.length + arguments.length;
 			if (newLength > MAX_SIZE / 8) {  // 假设每个元素至少8字节
-				throw new TypeError(
-					'Array.push 操作会导致数组长度超过限制：' + newLength + ' 元素超过 ' + 
+				throw new RangeError(
+					'Array.push 操作会导致数组长度超过限制：' + newLength + ' 元素超过 ' +
 					Math.floor(MAX_SIZE / 8) + ' 元素限制 (' + MAX_SIZE_MB + ' MB)。请减少数据大小。'
 				);
 			}
