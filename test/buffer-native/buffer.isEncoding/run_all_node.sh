@@ -31,6 +31,9 @@ tests=(
   "part14_real_scenarios.js"
   "part15_extreme_cases.js"
   "part16_nodejs_compatibility.js"
+  "part17_function_properties.js"
+  "part18_deep_edge_cases.js"
+  "part19_final_gap_analysis.js"
 )
 
 # 统计变量

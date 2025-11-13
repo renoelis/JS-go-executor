@@ -838,13 +838,39 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 	}
 
 	// 添加 Buffer.isEncoding 静态方法
-	// 🔥 修复：支持大小写混合（Node.js 行为）
-	buffer.Set("isEncoding", func(call goja.FunctionCall) goja.Value {
+	// 🔥 修复：严格类型检查，不进行隐式转换（100% 对齐 Node.js v25.0.0）
+	isEncodingFunc := func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
 			return runtime.ToValue(false)
 		}
 
-		encoding := strings.ToLower(call.Arguments[0].String())
+		arg := call.Arguments[0]
+
+		// 🔥 修复：Symbol 类型必须返回 false（不能转换为字符串）
+		if _, isSymbol := arg.(*goja.Symbol); isSymbol {
+			return runtime.ToValue(false)
+		}
+
+		// 🔥 修复：函数类型返回 false
+		if _, isFunc := goja.AssertFunction(arg); isFunc {
+			return runtime.ToValue(false)
+		}
+
+		// 🔥 修复：null 和 undefined 返回 false
+		if goja.IsNull(arg) || goja.IsUndefined(arg) {
+			return runtime.ToValue(false)
+		}
+
+		// 🔥 关键修复：只接受原始字符串类型，不接受对象（包括 String 对象包装器）
+		// Node.js 的 Buffer.isEncoding 不进行任何隐式类型转换
+		argType := arg.ExportType()
+		if argType == nil || argType.Kind().String() != "string" {
+			// 不是原始字符串类型，直接返回 false
+			return runtime.ToValue(false)
+		}
+
+		// 此时确认是原始字符串类型，才进行编码检查
+		encoding := strings.ToLower(arg.String())
 		switch encoding {
 		case "utf8", "utf-8", "hex", "base64", "base64url",
 			"ascii", "latin1", "binary",
@@ -853,7 +879,19 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		default:
 			return runtime.ToValue(false)
 		}
-	})
+	}
+
+	buffer.Set("isEncoding", isEncodingFunc)
+
+	// 🔥 修复：设置 Buffer.isEncoding 的 length 和 name 属性（对齐 Node.js v25.0.0）
+	if isEncodingObj := buffer.Get("isEncoding"); isEncodingObj != nil && !goja.IsUndefined(isEncodingObj) {
+		if isEncodingFuncObj := isEncodingObj.ToObject(runtime); isEncodingFuncObj != nil {
+			// 设置 length 属性为 1 (encoding) - 不可写、不可配置、不可枚举
+			isEncodingFuncObj.DefineDataProperty("length", runtime.ToValue(1), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE)
+			// 设置 name 属性为 "isEncoding" - 不可写、可配置、不可枚举
+			isEncodingFuncObj.DefineDataProperty("name", runtime.ToValue("isEncoding"), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_FALSE)
+		}
+	}
 
 	// 添加 Buffer.compare 静态方法
 	// 🔥 100% 对齐 Node.js v25.0.0 行为：严格参数验证
