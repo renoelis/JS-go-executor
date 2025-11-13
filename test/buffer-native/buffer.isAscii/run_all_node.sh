@@ -29,6 +29,12 @@ tests=(
   "part12_nodejs_specific.js"
   "part13_additional_methods.js"
   "part14_final_combinations.js"
+  "part15_function_properties.js"
+  "part16_typed_arrays_extended.js"
+  "part17_boundary_conditions.js"
+  "part18_performance_memory.js"
+  "part19_compatibility_special.js"
+  "part20_final_gap_analysis.js"
 )
 
 # 统计变量
