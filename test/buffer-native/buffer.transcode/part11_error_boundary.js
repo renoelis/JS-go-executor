@@ -85,34 +85,27 @@ test('高代理后跟非低代理', () => {
 });
 
 // 边界长度的 UTF-16LE
-test('UTF-16LE 1 字节（不完整，应失败）', () => {
+test('UTF-16LE 1 字节（截断处理）', () => {
   const source = Buffer.from([0x48]);
-  try {
-    transcode(source, 'utf16le', 'utf8');
-    return false;
-  } catch (e) {
-    return true;
-  }
+  // Node.js v25.0.0 会截断最后一个字节（1字节无法组成UTF-16LE字符），返回空Buffer
+  const result = transcode(source, 'utf16le', 'utf8');
+  return result.length === 0;
 });
 
-test('UTF-16LE 3 字节（不完整，应失败）', () => {
+test('UTF-16LE 3 字节（截断处理）', () => {
   const source = Buffer.from([0x48, 0x00, 0x65]);
-  try {
-    transcode(source, 'utf16le', 'utf8');
-    return false;
-  } catch (e) {
-    return true;
-  }
+  // Node.js v25.0.0 会截断最后一个字节，只转换前2个字节
+  const result = transcode(source, 'utf16le', 'utf8');
+  // 应该只转换前 2 个字节（'H'），最后一个字节被截断
+  return result.length === 1 && result[0] === 0x48; // 'H'
 });
 
-test('UTF-16LE 5 字节（不完整，应失败）', () => {
+test('UTF-16LE 5 字节（截断处理）', () => {
   const source = Buffer.from([0x48, 0x00, 0x65, 0x00, 0x6C]);
-  try {
-    transcode(source, 'utf16le', 'utf8');
-    return false;
-  } catch (e) {
-    return true;
-  }
+  // Node.js v25.0.0 会截断最后一个字节，只转换前4个字节
+  const result = transcode(source, 'utf16le', 'utf8');
+  // 应该只转换前 4 个字节（'He'），最后一个字节被截断
+  return result.length === 2 && result[0] === 0x48 && result[1] === 0x65; // 'He'
 });
 
 // TypedArray 带 byteOffset 但长度为 0
@@ -131,18 +124,25 @@ test('Uint8Array byteOffset 在缓冲区末尾', () => {
 });
 
 // frozen/sealed Buffer
+// 注意：Node.js v25.0.0 不允许 freeze/seal TypedArray (包括 Buffer)
 test('Object.freeze 的 Buffer', () => {
   const source = Buffer.from('Test', 'utf8');
-  Object.freeze(source);
-  const result = transcode(source, 'utf8', 'utf16le');
-  return result.length === 8;
+  try {
+    Object.freeze(source);
+    return false; // 应该抛出错误
+  } catch (e) {
+    return e.message.includes('Cannot freeze array buffer views');
+  }
 });
 
 test('Object.seal 的 Buffer', () => {
   const source = Buffer.from('Test', 'utf8');
-  Object.seal(source);
-  const result = transcode(source, 'utf8', 'utf16le');
-  return result.length === 8;
+  try {
+    Object.seal(source);
+    return false; // 应该抛出错误
+  } catch (e) {
+    return e.message.includes('Cannot seal array buffer views');
+  }
 });
 
 // 特殊编码组合

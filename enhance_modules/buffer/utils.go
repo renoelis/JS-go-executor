@@ -140,15 +140,16 @@ func (be *BufferEnhancer) exportBufferBytesFast(runtime *goja.Runtime, obj *goja
 			if offsetVal := obj.Get("byteOffset"); offsetVal != nil && !goja.IsUndefined(offsetVal) {
 				byteOffset = offsetVal.ToInteger()
 			}
-			byteLength := length
-			if lengthVal := obj.Get("byteLength"); lengthVal != nil && !goja.IsUndefined(lengthVal) {
-				byteLength = lengthVal.ToInteger()
-			}
+			// 🔥 修复：使用传入的 length 参数作为实际要读取的字节数
+			// length 参数来自对象的 .length 属性，代表 TypedArray 的元素个数
+			// 对于 Uint8Array，length == byteLength
+			actualLength := length
+
 			// 边界检查
 			if byteOffset < 0 || byteOffset > int64(len(allBytes)) {
 				return nil
 			}
-			end := byteOffset + byteLength
+			end := byteOffset + actualLength
 			if end > int64(len(allBytes)) {
 				end = int64(len(allBytes))
 			}
@@ -178,15 +179,14 @@ func (be *BufferEnhancer) exportBufferBytesFast(runtime *goja.Runtime, obj *goja
 					if offsetVal := obj.Get("byteOffset"); offsetVal != nil && !goja.IsUndefined(offsetVal) {
 						byteOffset = offsetVal.ToInteger()
 					}
-					byteLength := length
-					if lengthVal := obj.Get("byteLength"); lengthVal != nil && !goja.IsUndefined(lengthVal) {
-						byteLength = lengthVal.ToInteger()
-					}
+					// 🔥 修复：使用传入的 length 参数作为实际要读取的字节数
+					actualLength := length
+
 					// 边界检查
 					if byteOffset < 0 || byteOffset > int64(len(allBytes)) {
 						return nil
 					}
-					end := byteOffset + byteLength
+					end := byteOffset + actualLength
 					if end > int64(len(allBytes)) {
 						end = int64(len(allBytes))
 					}

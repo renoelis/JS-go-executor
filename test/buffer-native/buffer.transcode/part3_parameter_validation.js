@@ -126,7 +126,9 @@ test('Uint8Array 带 byteLength', () => {
   partial[0] = 0x48;
   partial[1] = 0x65;
   const result = transcode(partial, 'utf8', 'utf16le');
-  return result instanceof Buffer && result.length === 4;
+  // 注意：Uint8Array(ab, 0, 5) 创建了 5 字节的视图，包含 3 个零字节
+  // 转换为 UTF-16LE 后：5 个字符 * 2 字节 = 10 字节
+  return result instanceof Buffer && result.length === 10;
 });
 
 // Buffer 子视图

@@ -55,14 +55,12 @@ test('UTF-16LE 反向代理对（应失败）', () => {
   }
 });
 
-test('UTF-16LE 奇数字节（不完整，应失败）', () => {
+test('UTF-16LE 奇数字节（截断处理）', () => {
   const source = Buffer.from([0x48, 0x00, 0x65]); // 3 字节
-  try {
-    const result = transcode(source, 'utf16le', 'utf8');
-    return false;
-  } catch (e) {
-    return e.message.includes('Unable to transcode') || e.message.includes('INVALID_CHAR');
-  }
+  // Node.js v25.0.0 会截断最后一个字节，而不是抛出错误
+  const result = transcode(source, 'utf16le', 'utf8');
+  // 应该只转换前 2 个字节（'H'），最后一个字节被截断
+  return result.length === 1 && result[0] === 0x48; // 'H'
 });
 
 // 多种 Unicode 平面

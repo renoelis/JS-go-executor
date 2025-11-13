@@ -20,9 +20,12 @@ test('UTF-16LE 字节序验证 - A (0x41)', () => {
 });
 
 test('UTF-16LE 字节序验证 - 中文"中" (0x4E2D)', () => {
+  // 正确的测试：先转换 UTF-8 到 UTF-16LE，然后验证字节序
   const source = Buffer.from('中', 'utf8');
-  const result = transcode(source, 'utf16le', 'utf16le');
-  return result[0] === 0x2D && result[1] === 0x4E;
+  const result = transcode(source, 'utf8', 'utf16le');
+  // UTF-16LE 小端序：低字节在前，高字节在后
+  // "中" 的 Unicode 码点是 U+4E2D，UTF-16LE 应该是 [0x2D, 0x4E]
+  return result.length === 2 && result[0] === 0x2D && result[1] === 0x4E;
 });
 
 test('UTF-16LE 字节序验证 - Emoji 😀', () => {

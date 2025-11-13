@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/dop251/goja"
 )
@@ -1569,7 +1570,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 
 	// 🔥 添加 Buffer.transcode 静态方法（Node.js v7.1.0+）
 	// 将 Buffer 从一种编码转换为另一种编码
-	buffer.Set("transcode", func(call goja.FunctionCall) goja.Value {
+	transcodeFunc := func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) < 3 {
 			panic(runtime.NewTypeError("transcode requires 3 arguments"))
 		}
@@ -1581,31 +1582,80 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		}
 
 		sourceObj := source.ToObject(runtime)
+		if sourceObj == nil {
+			panic(runtime.NewTypeError("The \"source\" argument must be an instance of Buffer or Uint8Array"))
+		}
+
+		// 🔥 修复：使用 isBufferOrUint8Array 验证输入类型（对齐 Node.js 行为）
+		if !isBufferOrUint8Array(runtime, sourceObj) {
+			// 生成详细的类型错误信息
+			errMsg := getDetailedTypeError(runtime, sourceObj, "source")
+			panic(runtime.NewTypeError(errMsg))
+		}
+
+		// 🔥 修复：检查 Symbol 类型参数（对齐 Node.js v25.0.0）
+		if _, ok := call.Arguments[1].(*goja.Symbol); ok {
+			panic(runtime.NewTypeError("Cannot convert a Symbol value to a string"))
+		}
+		if _, ok := call.Arguments[2].(*goja.Symbol); ok {
+			panic(runtime.NewTypeError("Cannot convert a Symbol value to a string"))
+		}
 
 		// 获取源编码和目标编码
 		fromEncoding := strings.ToLower(call.Arguments[1].String())
 		toEncoding := strings.ToLower(call.Arguments[2].String())
 
+		// 🔥 修复：验证编码是否有效（对齐 Node.js v25.0.0）
+		validEncodings := map[string]bool{
+			"utf8": true, "utf-8": true,
+			"latin1": true, "binary": true,
+			"ascii": true,
+			"utf16le": true, "ucs2": true, "ucs-2": true, "utf-16le": true,
+		}
+		if !validEncodings[fromEncoding] {
+			// 🔥 修复：对齐 Node.js 错误格式
+			errObj := runtime.NewTypeError("Unable to transcode Buffer [U_ILLEGAL_ARGUMENT_ERROR]")
+			errObj.ToObject(runtime).Set("code", runtime.ToValue("U_ILLEGAL_ARGUMENT_ERROR"))
+			panic(errObj)
+		}
+		if !validEncodings[toEncoding] {
+			errObj := runtime.NewTypeError("Unable to transcode Buffer [U_ILLEGAL_ARGUMENT_ERROR]")
+			errObj.ToObject(runtime).Set("code", runtime.ToValue("U_ILLEGAL_ARGUMENT_ERROR"))
+			panic(errObj)
+		}
+
 		// 获取 source buffer 的长度
 		lengthVal := sourceObj.Get("length")
-		if goja.IsUndefined(lengthVal) {
+		if goja.IsUndefined(lengthVal) || goja.IsNull(lengthVal) {
 			panic(runtime.NewTypeError("The \"source\" argument must be an instance of Buffer or Uint8Array"))
 		}
 		length := lengthVal.ToInteger()
 
-		// 读取源 buffer 数据
-		sourceData := make([]byte, length)
-		for i := int64(0); i < length; i++ {
-			val := sourceObj.Get(strconv.FormatInt(i, 10))
-			if !goja.IsUndefined(val) {
-				sourceData[i] = byte(val.ToInteger() & 0xFF)
-			}
+		// 🔥 修复：使用 exportBufferBytesFast 高效读取 buffer 数据（避免逐字节访问）
+		sourceData := be.exportBufferBytesFast(runtime, sourceObj, length)
+		if sourceData == nil {
+			sourceData = make([]byte, 0)
 		}
 
 		// 将源数据转换为字符串（使用源编码）
 		str := ""
 		switch fromEncoding {
 		case "utf8", "utf-8":
+			// 🔥 严格验证：检查 UTF-8 编码的有效性（对齐 Node.js ICU 行为）
+			// 使用 Go 的 utf8.Valid() 进行基本验证
+			if !utf8.Valid(sourceData) {
+				errObj := runtime.NewTypeError("Unable to transcode Buffer [U_INVALID_CHAR_FOUND]")
+				errObj.ToObject(runtime).Set("code", runtime.ToValue("U_INVALID_CHAR_FOUND"))
+				panic(errObj)
+			}
+			// 🔥 额外验证：检查非法的 UTF-8 起始字节 (0xFE, 0xFF)
+			for _, b := range sourceData {
+				if b == 0xFE || b == 0xFF {
+					errObj := runtime.NewTypeError("Unable to transcode Buffer [U_INVALID_CHAR_FOUND]")
+					errObj.ToObject(runtime).Set("code", runtime.ToValue("U_INVALID_CHAR_FOUND"))
+					panic(errObj)
+				}
+			}
 			str = string(sourceData)
 		case "latin1", "binary":
 			// Latin1: 直接将字节转为字符
@@ -1621,8 +1671,61 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 				runes[i] = rune(b)
 			}
 			str = string(runes)
+		case "utf16le", "ucs2", "ucs-2", "utf-16le":
+			// 🔥 修复：添加 UTF-16LE/UCS2 编码支持（对齐 Node.js v25.0.0）
+			// UTF-16LE: 每2个字节表示一个字符（小端序）
+
+			// 🔥 修复：奇数字节处理（对齐 Node.js 宽松行为）
+			// Node.js 会截断最后一个字节，而不是抛出错误
+			if len(sourceData)%2 != 0 {
+				// 截断最后一个字节
+				sourceData = sourceData[:len(sourceData)-1]
+			}
+
+			runes := make([]rune, 0, len(sourceData)/2)
+			for i := 0; i < len(sourceData); i += 2 {
+				// 小端序：低字节在前
+				codeUnit := uint16(sourceData[i]) | (uint16(sourceData[i+1]) << 8)
+
+				// 🔥 严格验证：检查是否是孤立的高代理（0xD800-0xDBFF）
+				if codeUnit >= 0xD800 && codeUnit <= 0xDBFF {
+					// 高代理项，必须后面跟随低代理
+					if i+3 >= len(sourceData) {
+						// 高代理后没有足够的字节 - 抛出错误
+						errObj := runtime.NewTypeError("Unable to transcode Buffer [U_INVALID_CHAR_FOUND]")
+						errObj.ToObject(runtime).Set("code", runtime.ToValue("U_INVALID_CHAR_FOUND"))
+						panic(errObj)
+					}
+
+					lowSurrogate := uint16(sourceData[i+2]) | (uint16(sourceData[i+3]) << 8)
+					if lowSurrogate < 0xDC00 || lowSurrogate > 0xDFFF {
+						// 高代理后不是低代理 - 抛出错误
+						errObj := runtime.NewTypeError("Unable to transcode Buffer [U_INVALID_CHAR_FOUND]")
+						errObj.ToObject(runtime).Set("code", runtime.ToValue("U_INVALID_CHAR_FOUND"))
+						panic(errObj)
+					}
+
+					// 合并代理对
+					codePoint := 0x10000 + ((uint32(codeUnit) & 0x3FF) << 10) + (uint32(lowSurrogate) & 0x3FF)
+					runes = append(runes, rune(codePoint))
+					i += 2 // 跳过低代理项
+					continue
+				}
+
+				// 🔥 严格验证：检查是否是孤立的低代理（0xDC00-0xDFFF）
+				if codeUnit >= 0xDC00 && codeUnit <= 0xDFFF {
+					// 孤立的低代理（前面没有高代理）- 抛出错误
+					errObj := runtime.NewTypeError("Unable to transcode Buffer [U_INVALID_CHAR_FOUND]")
+					errObj.ToObject(runtime).Set("code", runtime.ToValue("U_INVALID_CHAR_FOUND"))
+					panic(errObj)
+				}
+
+				// 普通字符
+				runes = append(runes, rune(codeUnit))
+			}
+			str = string(runes)
 		default:
-			// 其他编码暂不支持，直接使用 UTF-8
+			// 已经在前面验证了编码，不应该到这里
 			str = string(sourceData)
 		}
 
@@ -1638,7 +1741,15 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		}
 
 		return result
-	})
+	}
+
+	// 🔥 修复：设置 transcode 函数的 name 和 length 属性（对齐 Node.js v25.0.0）
+	transcodeValue := runtime.ToValue(transcodeFunc)
+	buffer.Set("transcode", transcodeValue)
+	if transcodeObj := transcodeValue.ToObject(runtime); transcodeObj != nil {
+		transcodeObj.DefineDataProperty("name", runtime.ToValue("transcode"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+		transcodeObj.DefineDataProperty("length", runtime.ToValue(3), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+	}
 
 	// 🔥 将 transcode 函数导出到 buffer 模块
 	// 使其可以通过 require('buffer').transcode 访问
