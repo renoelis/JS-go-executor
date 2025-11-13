@@ -90,12 +90,27 @@ func RegisterResolveObjectURL(runtime *goja.Runtime) {
 		if len(call.Arguments) == 0 {
 			return goja.Undefined()
 		}
-		
+
 		arg := call.Arguments[0]
 		if goja.IsUndefined(arg) || goja.IsNull(arg) {
 			return goja.Undefined()
 		}
-		
+
+		// 检查是否为 Symbol 类型
+		if symbol, ok := arg.(*goja.Symbol); ok {
+			_ = symbol // 避免未使用变量警告
+			panic(runtime.NewTypeError("Cannot convert a Symbol value to a string"))
+		}
+
+		// 也检查对象包装的 Symbol
+		if obj, ok := arg.(*goja.Object); ok {
+			if exported := obj.Export(); exported != nil {
+				if _, ok := exported.(*goja.Symbol); ok {
+					panic(runtime.NewTypeError("Cannot convert a Symbol value to a string"))
+				}
+			}
+		}
+
 		// 转换为字符串
 		url := arg.String()
 		
