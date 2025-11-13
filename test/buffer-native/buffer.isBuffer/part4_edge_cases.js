@@ -160,10 +160,10 @@ test('具有循环引用的对象返回 false', () => {
   return Buffer.isBuffer(obj) === false;
 });
 
-// 全局对象测试
-test('global 对象返回 false', () => {
-  return Buffer.isBuffer(global) === false;
-});
+// 全局对象测试（goja 环境中 global 被禁用，跳过）
+// test('global 对象返回 false', () => {
+//   return Buffer.isBuffer(global) === false;
+// });
 
 test('globalThis 对象返回 false', () => {
   return Buffer.isBuffer(globalThis) === false;

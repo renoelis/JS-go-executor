@@ -28,6 +28,10 @@ tests=(
   "part11_missing_scenarios.js"
   "part12_advanced_methods.js"
   "part13_array_methods.js"
+  "part14_function_properties.js"
+  "part15_extreme_parameters.js"
+  "part16_performance_stress.js"
+  "part17_final_gap_analysis.js"
 )
 
 # 统计变量

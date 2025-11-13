@@ -559,6 +559,17 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		return hasReadInt8 && hasWriteInt8 && hasReadUInt8 && hasWriteUInt8 && hasCopy
 	})
 
+	// 🔥 修复：设置 Buffer.isBuffer 的 name 和 length 属性（对齐 Node.js v25.0.0）
+	if isBufferFunc := buffer.Get("isBuffer"); isBufferFunc != nil && !goja.IsUndefined(isBufferFunc) {
+		if isBufferObj := isBufferFunc.ToObject(runtime); isBufferObj != nil {
+			// DefineDataProperty 参数顺序：(name string, value Value, writable, configurable, enumerable Flag)
+			// 设置 length 属性为 1 (obj) - 不可写、不可配置、不可枚举
+			isBufferObj.DefineDataProperty("length", runtime.ToValue(1), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE)
+			// 设置 name 属性为 "isBuffer" - 不可写、可配置、不可枚举
+			isBufferObj.DefineDataProperty("name", runtime.ToValue("isBuffer"), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_FALSE)
+		}
+	}
+
 	// 添加 Buffer.allocUnsafe 静态方法
 	buffer.Set("allocUnsafe", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
