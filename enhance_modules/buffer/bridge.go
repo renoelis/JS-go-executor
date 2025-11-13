@@ -39,6 +39,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 
 		arg0 := call.Arguments[0]
 
+
 		// 🔥 修复：首先检查 Symbol 类型（必须在所有其他检查之前）
 		if _, isSymbol := arg0.(*goja.Symbol); isSymbol {
 			symStr := arg0.String()
@@ -195,27 +196,28 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 				}
 			}
 
+			// 🔥 修复：先检查是否有**自定义** valueOf 方法，避免重复读取 getter
+			// 如果对象有自定义 valueOf，Node.js 会优先调用 valueOf，而不是使用 length
+			// 但不能把所有对象都交给原生处理，因为普通对象也有 valueOf（从Object.prototype继承）
+			// 只有当 valueOf 是对象**自己的属性**（hasOwnProperty）时才认为是自定义的
+			valueOfVal := arg0Obj.Get("valueOf")
+			if valueOfVal != nil && !goja.IsUndefined(valueOfVal) {
+				// 🔥 性能优化：使用缓存的 hasOwnProperty 函数
+				hasOwnFn := getHasOwnPropertyFunc(runtime)
+				if hasOwnFn != nil {
+					result, err := hasOwnFn(goja.Undefined(), arg0Obj, runtime.ToValue("valueOf"))
+					if err == nil && result != nil && result.ToBoolean() {
+						// 有自定义 valueOf 方法，直接交给原生处理
+						// 这样可以避免我们先读取一次元素，原生再读取一次，导致 getter 被调用两次
+						goto callOriginal
+					}
+				}
+			}
+
 			// 检查是否是类数组对象（有 length 属性）
 			lengthVal := arg0Obj.Get("length")
 			if lengthVal != nil && !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
 				length := lengthVal.ToInteger()
-
-				// 🔥 修复：检查是否有**自定义** valueOf 方法
-				// 如果对象有自定义 valueOf，Node.js 会优先调用 valueOf，而不是使用 length
-				// 但不能把所有对象都交给原生处理，因为普通对象也有 valueOf（从Object.prototype继承）
-				// 只有当 valueOf 是对象**自己的属性**（hasOwnProperty）时才认为是自定义的
-				valueOfVal := arg0Obj.Get("valueOf")
-				if valueOfVal != nil && !goja.IsUndefined(valueOfVal) {
-					// 🔥 性能优化：使用缓存的 hasOwnProperty 函数
-					hasOwnFn := getHasOwnPropertyFunc(runtime)
-					if hasOwnFn != nil {
-						result, err := hasOwnFn(goja.Undefined(), arg0Obj, runtime.ToValue("valueOf"))
-						if err == nil && result != nil && result.ToBoolean() {
-							// 有自定义 valueOf 方法，交给原生处理
-							goto callOriginal
-						}
-					}
-				}
 
 				// 🔥 修复：验证 length 必须是真正的数字类型（不是字符串、布尔值等）
 				// Node.js 会拒绝非数字类型的 length，返回空 Buffer
@@ -282,27 +284,49 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 					panic(runtime.NewTypeError("Array buffer allocation failed"))
 				}
 
-				// 检查是否是真正的数组（不是 ArrayBuffer 或 TypedArray）
-				_, isArrayBuffer := arg0Obj.Export().(goja.ArrayBuffer)
+				// 🔥 修复：检查是否是 ArrayBuffer - 不使用 Export() 避免触发 getter
+				// Export() 会读取对象的所有属性，包括索引属性，从而触发 getter
+				// 改用检查 constructor.name 的方式
+				isArrayBuffer := false
+				if constructor := arg0Obj.Get("constructor"); !goja.IsUndefined(constructor) && !goja.IsNull(constructor) {
+					if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
+						if nameVal := constructorObj.Get("name"); !goja.IsUndefined(nameVal) {
+							constructorName := nameVal.String()
+							isArrayBuffer = (constructorName == "ArrayBuffer")
+						}
+					}
+				}
 
-				// 更严格的 TypedArray 检查：必须有 BYTES_PER_ELEMENT 且是数字类型
-				isTypedArray := false
+				// 🔥 修复：TypedArray 类型检查 - 区分需要逐元素转换的 TypedArray
+				// Uint8Array, Uint8ClampedArray, Buffer 可以直接复制字节
+				// Float32Array, Float64Array, Int16Array 等需要逐元素转换
+				isDirectCopyTypedArray := false // 可直接复制的 TypedArray
+				needsConversionTypedArray := false // 需要逐元素转换的 TypedArray
+
 				bytesPerElement := arg0Obj.Get("BYTES_PER_ELEMENT")
 				if bytesPerElement != nil && !goja.IsUndefined(bytesPerElement) && !goja.IsNull(bytesPerElement) {
-					// 确保 BYTES_PER_ELEMENT 是一个正整数（1, 2, 4, 8）
 					bpe := bytesPerElement.ToInteger()
-					isTypedArray = bpe > 0 && bpe <= 8
+					if bpe == 1 {
+						// BYTES_PER_ELEMENT === 1: Uint8Array, Uint8ClampedArray, Int8Array
+						// 这些可以直接复制底层字节
+						isDirectCopyTypedArray = true
+					} else if bpe > 1 && bpe <= 8 {
+						// BYTES_PER_ELEMENT > 1: Float32Array, Float64Array, Int16Array 等
+						// 这些需要逐元素读取并转换为 uint8
+						needsConversionTypedArray = true
+					}
 				}
 
 				// 额外检查：真正的数组不应该有 buffer 属性（TypedArray 特征）
 				bufferProp := arg0Obj.Get("buffer")
 				hasBufferProp := bufferProp != nil && !goja.IsUndefined(bufferProp) && !goja.IsNull(bufferProp)
-				if hasBufferProp {
-					isTypedArray = true
+				if hasBufferProp && !isDirectCopyTypedArray && !needsConversionTypedArray {
+					// 有 buffer 属性但没有 BYTES_PER_ELEMENT，可能是 Buffer 实例
+					isDirectCopyTypedArray = true
 				}
 
-				if !isArrayBuffer && !isTypedArray && length >= 0 {
-					// 这是一个普通数组或类数组对象，需要预处理元素
+				if !isArrayBuffer && !isDirectCopyTypedArray && length >= 0 {
+					// 这是一个普通数组、类数组对象或需要转换的 TypedArray，需要预处理元素
 					data := make([]byte, length)
 					for i := int64(0); i < length; i++ {
 						itemVal := arg0Obj.Get(fmt.Sprintf("%d", i))
@@ -310,17 +334,41 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 							data[i] = valueToUint8(itemVal)
 						}
 					}
-					// 使用处理后的字节数组创建 ArrayBuffer
-					ab := runtime.NewArrayBuffer(data)
-					fromFunc, ok := goja.AssertFunction(originalFrom)
-					if !ok {
-						panic(runtime.NewTypeError("Buffer.from 不是一个函数"))
+
+					// 🔥 关键修复：直接创建 Uint8Array，然后修改原型为 Buffer.prototype
+					// 这个方法完全在 Go 层面，不会调用任何可能触发 getter 的 JavaScript 函数
+
+					// 获取 Uint8Array 构造函数
+					uint8ArrayCtor := runtime.Get("Uint8Array")
+					if uint8ArrayCtor == nil || goja.IsUndefined(uint8ArrayCtor) {
+						panic(runtime.NewTypeError("Uint8Array is not available"))
 					}
-					result, err := fromFunc(goja.Undefined(), runtime.ToValue(ab))
+
+					uint8ArrayCtorFunc, ok := goja.AssertConstructor(uint8ArrayCtor)
+					if !ok {
+						panic(runtime.NewTypeError("Uint8Array is not a constructor"))
+					}
+
+					// 创建 ArrayBuffer
+					ab := runtime.NewArrayBuffer(data)
+
+					// 创建 Uint8Array(arrayBuffer)
+					uint8Array, err := uint8ArrayCtorFunc(nil, runtime.ToValue(ab))
 					if err != nil {
 						panic(err)
 					}
-					return result
+
+					// 修改原型为 Buffer.prototype
+					bufferPrototype := buffer.Get("prototype")
+					if bufferPrototype != nil && !goja.IsUndefined(bufferPrototype) {
+						uint8ArrayObj := uint8Array.ToObject(runtime)
+						if uint8ArrayObj != nil {
+							uint8ArrayObj.SetPrototype(bufferPrototype.ToObject(runtime))
+							return uint8Array
+						}
+					}
+
+					panic(runtime.NewTypeError("Failed to create Buffer from array-like object"))
 				}
 			}
 		}
@@ -330,14 +378,30 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		if !goja.IsUndefined(originalFrom) {
 			// 🔥 修复：检查 ArrayBuffer + offset 参数（对齐 Node.js 错误信息）
 			// 如果第一个参数是 ArrayBuffer 且有第二个参数（offset），需要先验证
+			// 不使用 Export() 避免可能触发 getter
 			if arg0Obj := arg0.ToObject(runtime); arg0Obj != nil {
-				if _, isArrayBuffer := arg0Obj.Export().(goja.ArrayBuffer); isArrayBuffer {
+				// 检查是否是 ArrayBuffer - 使用 constructor.name 而不是 Export()
+				isArrayBuffer := false
+				var arrayBufferBytes []byte
+				if constructor := arg0Obj.Get("constructor"); !goja.IsUndefined(constructor) && !goja.IsNull(constructor) {
+					if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
+						if nameVal := constructorObj.Get("name"); !goja.IsUndefined(nameVal) {
+							constructorName := nameVal.String()
+							if constructorName == "ArrayBuffer" {
+								isArrayBuffer = true
+								// 只有在确认是 ArrayBuffer 后才使用 Export()
+								if ab, ok := arg0Obj.Export().(goja.ArrayBuffer); ok {
+									arrayBufferBytes = ab.Bytes()
+								}
+							}
+						}
+					}
+				}
+
+				if isArrayBuffer {
 					if len(call.Arguments) >= 2 && !goja.IsUndefined(call.Arguments[1]) {
 						offset := call.Arguments[1].ToInteger()
-						bufferLen := int64(0)
-						if ab, ok := arg0Obj.Export().(goja.ArrayBuffer); ok {
-							bufferLen = int64(len(ab.Bytes()))
-						}
+						bufferLen := int64(len(arrayBufferBytes))
 
 						// 🔥 修复：检查 offset 是否越界 - 应该抛出 RangeError 而不是 TypeError
 						if offset < 0 {
