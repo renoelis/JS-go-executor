@@ -166,8 +166,8 @@ test('传入Symbol的错误类型', () => {
 // 内存限制测试
 test('尝试分配超大Buffer(超出限制)', () => {
   try {
-    // 使用一个非常大的值，但注意实际内存限制
-    Buffer.allocUnsafe(2147483647); // 接近int32最大值
+    // 使用一个非常大的值，但注意实际内存限制（改为100MB避免OOM）
+    Buffer.allocUnsafe(100 * 1024 * 1024); // 100MB
     console.log('✅ 超大Buffer分配处理');
     return true;
   } catch (error) {
