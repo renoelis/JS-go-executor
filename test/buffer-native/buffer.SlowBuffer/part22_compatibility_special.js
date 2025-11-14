@@ -125,15 +125,16 @@ test('DataView兼容性', () => {
 // 实际应用场景模拟
 test('网络数据包处理模拟', () => {
   const packet = Buffer.allocUnsafeSlow(20);
-  
+
   // 模拟协议头
   packet.writeUInt16BE(0x1234, 0); // 魔术字
   packet.writeUInt16BE(16, 2); // 数据长度
-  packet.writeUInt32BE(Date.now() & 0xFFFFFFFF, 4); // 时间戳
-  
+  // 使用 >>> 0 将结果转换为无符号 32 位整数
+  packet.writeUInt32BE(Date.now() >>> 0, 4); // 时间戳
+
   // 模拟数据
   packet.write('hello world!', 8);
-  
+
   return packet.readUInt16BE(0) === 0x1234 && packet.readUInt16BE(2) === 16;
 });
 

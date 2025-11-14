@@ -7,7 +7,7 @@ import (
 	"github.com/dop251/goja"
 )
 
-// 迭代器状态存储
+// 迭代器状态存储 - 使用私有 Symbol 替代全局 map,避免内存泄漏
 type iteratorState struct {
 	index        int64
 	bufferLength int64
@@ -16,10 +16,8 @@ type iteratorState struct {
 	iterType     string // "entries", "keys", "values"
 }
 
-var (
-	iteratorStates      = make(map[*goja.Object]*iteratorState)
-	iteratorStatesMutex sync.RWMutex
-)
+// 使用私有 Symbol 作为迭代器状态的键,避免全局 map 导致的内存泄漏
+var iteratorStateSymbol = goja.NewSymbol("[[IteratorState]]")
 
 // 索引字符串缓存（优化性能）- 扩大到 4096 覆盖更多场景
 var indexStringCache [4096]string
@@ -94,18 +92,21 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 	// 在原型上定义 next 方法（可写、不可枚举、可配置）
 	nextFunc := func(call goja.FunctionCall) goja.Value {
 		thisObj := call.This.ToObject(runtime)
-		
-		// 从状态 map 中获取迭代器状态
-		iteratorStatesMutex.RLock()
-		state, exists := iteratorStates[thisObj]
-		iteratorStatesMutex.RUnlock()
-		
-		if !exists {
+
+		// 从私有 Symbol 属性中获取迭代器状态
+		stateVal := thisObj.GetSymbol(iteratorStateSymbol)
+		if stateVal == nil || goja.IsUndefined(stateVal) {
 			panic(runtime.NewTypeError("Method Array Iterator.prototype.next called on incompatible receiver"))
 		}
-		
+
+		// 将 Go 结构体导出到 JS 对象,再从中读取字段
+		state, ok := stateVal.Export().(*iteratorState)
+		if !ok {
+			panic(runtime.NewTypeError("Invalid iterator state"))
+		}
+
 		result := runtime.NewObject()
-		
+
 		if state.index < state.bufferLength {
 			switch state.iterType {
 			case "entries":
@@ -114,7 +115,7 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 				if state.cachedBytes != nil && int64(len(state.cachedBytes)) > state.index {
 					val = runtime.ToValue(state.cachedBytes[state.index])
 				} else if state.buffer != nil {
-					// 直接获取索引位置的值，不进行类型转换
+					// 直接获取索引位置的值,不进行类型转换
 					// 这样可以正确处理 TypedArray 的不同元素类型
 					v := state.buffer.Get(getIndexString(state.index))
 					if !goja.IsUndefined(v) && !goja.IsNull(v) {
@@ -125,24 +126,24 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 				} else {
 					val = runtime.ToValue(uint8(0))
 				}
-				
+
 				valueArray := runtime.NewArray(int64(2))
 				valueArray.Set("0", runtime.ToValue(state.index))
 				valueArray.Set("1", val)
 				result.Set("value", valueArray)
-				
+
 			case "keys":
 				// 返回 index
 				result.Set("value", runtime.ToValue(state.index))
-				
+
 			case "values":
-				// 返回 value - 直接返回元素值，不进行类型转换
+				// 返回 value - 直接返回元素值,不进行类型转换
 				// 这样可以正确处理 TypedArray 的不同元素类型（Uint16Array、Float64Array 等）
 				var val goja.Value
 				if state.cachedBytes != nil && int64(len(state.cachedBytes)) > state.index {
 					val = runtime.ToValue(state.cachedBytes[state.index])
 				} else if state.buffer != nil {
-					// 直接获取索引位置的值，不进行类型转换
+					// 直接获取索引位置的值,不进行类型转换
 					v := state.buffer.Get(getIndexString(state.index))
 					if !goja.IsUndefined(v) && !goja.IsNull(v) {
 						val = v
@@ -154,14 +155,14 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 				}
 				result.Set("value", val)
 			}
-			
+
 			result.Set("done", valueFalse)
-			state.index++
+			state.index++ // 状态会自动更新,因为是指针
 		} else {
 			result.Set("value", valueUndefined)
 			result.Set("done", valueTrue)
 		}
-		
+
 		return result
 	}
 	
@@ -205,15 +206,17 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 
 		// 创建迭代器对象
 		iterator := runtime.NewObject()
-		iteratorStatesMutex.Lock()
-		iteratorStates[iterator] = &iteratorState{
+
+		// 将状态存储到迭代器对象的私有 Symbol 属性中
+		// 这样当迭代器对象被 GC 回收时,状态也会自动释放,避免内存泄漏
+		state := &iteratorState{
 			index:        0,
 			bufferLength: bufferLength,
 			cachedBytes:  cachedBytes,
 			buffer:       this,
 			iterType:     "entries",
 		}
-		iteratorStatesMutex.Unlock()
+		iterator.SetSymbol(iteratorStateSymbol, runtime.ToValue(state))
 
 		// 设置原型链
 		iterator.SetPrototype(iteratorProto)
@@ -241,15 +244,16 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 
 		// 创建迭代器对象
 		iterator := runtime.NewObject()
-		iteratorStatesMutex.Lock()
-		iteratorStates[iterator] = &iteratorState{
+
+		// 将状态存储到迭代器对象的私有 Symbol 属性中
+		state := &iteratorState{
 			index:        0,
 			bufferLength: bufferLength,
-			cachedBytes:  nil,
+			cachedBytes:  nil, // keys 不需要缓存数据
 			buffer:       this,
 			iterType:     "keys",
 		}
-		iteratorStatesMutex.Unlock()
+		iterator.SetSymbol(iteratorStateSymbol, runtime.ToValue(state))
 
 		// 设置原型链
 		iterator.SetPrototype(iteratorProto)
@@ -291,15 +295,16 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 
 		// 创建迭代器对象
 		iterator := runtime.NewObject()
-		iteratorStatesMutex.Lock()
-		iteratorStates[iterator] = &iteratorState{
+
+		// 将状态存储到迭代器对象的私有 Symbol 属性中
+		state := &iteratorState{
 			index:        0,
 			bufferLength: bufferLength,
 			cachedBytes:  cachedBytes,
 			buffer:       this,
 			iterType:     "values",
 		}
-		iteratorStatesMutex.Unlock()
+		iterator.SetSymbol(iteratorStateSymbol, runtime.ToValue(state))
 
 		// 设置原型链
 		iterator.SetPrototype(iteratorProto)
