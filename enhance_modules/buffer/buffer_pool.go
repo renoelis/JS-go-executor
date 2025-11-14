@@ -50,6 +50,10 @@ func allocLargeBuffer(size int) ([]byte, *MmapCleanup) {
 	// 创建 MmapResource 管理器（引用计数初始为 1）
 	resource := NewMmapResource(data, size)
 
+	// 🔥 延迟启动：首次使用 mmap 时启动 tracker
+	// 这避免了 init() 自动启动导致的 goroutine 泄漏
+	ensureTrackerStarted()
+
 	// 加入全局追踪器（用于泄漏检测）
 	globalMmapTracker.Track(resource)
 

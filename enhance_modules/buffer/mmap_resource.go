@@ -100,9 +100,21 @@ var globalMmapTracker = &MmapResourceTracker{
 	stopCh:          make(chan struct{}),
 }
 
-// 在包初始化时启动后台清理协程
-func init() {
-	globalMmapTracker.Start()
+// 🔥 延迟启动机制：只有在首次使用 mmap 时才启动 tracker
+// 这避免了 init() 自动启动导致的 goroutine 泄漏问题
+var trackerStartOnce sync.Once
+
+// ensureTrackerStarted 确保 tracker 已启动（线程安全，只执行一次）
+func ensureTrackerStarted() {
+	trackerStartOnce.Do(func() {
+		globalMmapTracker.Start()
+	})
+}
+
+// Shutdown 停止全局 tracker（用于测试清理）
+// 🔥 注意：此函数主要用于测试环境，生产环境通常不需要调用
+func Shutdown() {
+	globalMmapTracker.Stop()
 }
 
 // Start 启动后台清理协程
