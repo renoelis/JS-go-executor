@@ -11,11 +11,11 @@ import (
 
 // 🔥 方案1: 编码结果内存池（只池化 hex/base64 的输出，不池化输入）
 // 🔥 关键修改：使用引用计数代替 Finalizer（Finalizer 不可靠）
+// 注意：encodingBuffer 只用于编码输出缓冲区，不持有原始 Buffer 的 mmap 引用
 type encodingBuffer struct {
 	data     []byte
-	refs     atomic.Int32     // 引用计数
-	mmapRes  *MmapResource    // 关联的 mmap 资源（如果有）
-	released atomic.Bool      // 是否已释放
+	refs     atomic.Int32  // 引用计数
+	released atomic.Bool   // 是否已释放
 }
 
 // 🔥 优化版本：分级内存池（10 个池，平均浪费率 < 1%）
@@ -102,12 +102,6 @@ func putEncodingBuffer(buf *encodingBuffer) {
 
 	// 引用计数为 0，释放资源
 	if buf.released.CompareAndSwap(false, true) {
-		// 如果关联了 mmap 资源，释放它
-		if buf.mmapRes != nil {
-			buf.mmapRes.Release()
-			buf.mmapRes = nil
-		}
-
 		// 🔥 关键修复: 只归还容量正确的 buffer
 		bufCap := cap(buf.data)
 		poolIdx := selectPoolIndex(bufCap)

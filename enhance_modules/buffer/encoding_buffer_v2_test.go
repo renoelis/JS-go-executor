@@ -41,10 +41,7 @@ func putEncodingBufferV2(buf *encodingBuffer) {
 	}
 
 	if buf.released.CompareAndSwap(false, true) {
-		if buf.mmapRes != nil {
-			buf.mmapRes.Release()
-			buf.mmapRes = nil
-		}
+		// mmapRes 字段已被移除，不再需要检查
 
 		bufCap := cap(buf.data)
 		poolIdx := selectPoolIndex(bufCap)
