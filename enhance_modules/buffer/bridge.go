@@ -1195,7 +1195,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 				// 🔥 优先检查null
 				if goja.IsNull(bufObj) {
 					errMsg := fmt.Sprintf("The \"list[%d]\" argument must be an instance of Buffer or Uint8Array. Received null", i)
-					errObj := runtime.NewGoError(fmt.Errorf(errMsg))
+					errObj := runtime.NewGoError(fmt.Errorf("%s", errMsg))
 					errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 					errObj.Set("name", runtime.ToValue("TypeError"))
 					panic(errObj)
@@ -1207,7 +1207,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 				}
 				if goja.IsUndefined(bufObj) || bufferObj == nil {
 					errMsg := "Cannot read properties of undefined (reading 'length')"
-					errObj := runtime.NewGoError(fmt.Errorf(errMsg))
+					errObj := runtime.NewGoError(fmt.Errorf("%s", errMsg))
 					errObj.Set("name", runtime.ToValue("TypeError"))
 					panic(errObj)
 				}
@@ -1215,7 +1215,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 					// 🔥 修复：添加类型检查，只接受 Buffer 或 Uint8Array
 					if !isBufferOrUint8Array(runtime, bufferObj) {
 						errMsg := getDetailedTypeError(runtime, bufferObj, fmt.Sprintf("list[%d]", i))
-						errObj := runtime.NewGoError(fmt.Errorf(errMsg))
+						errObj := runtime.NewGoError(fmt.Errorf("%s", errMsg))
 						errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 						errObj.Set("name", runtime.ToValue("TypeError"))
 						panic(errObj)
@@ -1227,7 +1227,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 				} else {
 					// 如果 ToObject 失败，说明类型不正确
 					errMsg := fmt.Sprintf("The \"list[%d]\" argument must be an instance of Buffer or Uint8Array", i)
-					errObj := runtime.NewGoError(fmt.Errorf(errMsg))
+					errObj := runtime.NewGoError(fmt.Errorf("%s", errMsg))
 					errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 					errObj.Set("name", runtime.ToValue("TypeError"))
 					panic(errObj)
@@ -1241,7 +1241,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 				if goja.IsNull(bufObj) {
 					// null元素 - 类型错误
 					errMsg := fmt.Sprintf("The \"list[%d]\" argument must be an instance of Buffer or Uint8Array. Received null", i)
-					errObj := runtime.NewGoError(fmt.Errorf(errMsg))
+					errObj := runtime.NewGoError(fmt.Errorf("%s", errMsg))
 					errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 					errObj.Set("name", runtime.ToValue("TypeError"))
 					panic(errObj)
@@ -1249,7 +1249,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 				if goja.IsUndefined(bufObj) || (bufObj != nil && bufObj.Export() == nil) {
 					// 真正的undefined - 数组越界访问
 					errMsg := "Cannot read properties of undefined (reading 'length')"
-					errObj := runtime.NewGoError(fmt.Errorf(errMsg))
+					errObj := runtime.NewGoError(fmt.Errorf("%s", errMsg))
 					errObj.Set("name", runtime.ToValue("TypeError"))
 					panic(errObj)
 				}
@@ -1263,7 +1263,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 					// 🔥 修复：添加类型检查，只接受 Buffer 或 Uint8Array
 					if !isBufferOrUint8Array(runtime, bufferObj) {
 						errMsg := getDetailedTypeError(runtime, bufferObj, fmt.Sprintf("list[%d]", i))
-						errObj := runtime.NewGoError(fmt.Errorf(errMsg))
+						errObj := runtime.NewGoError(fmt.Errorf("%s", errMsg))
 						errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 						errObj.Set("name", runtime.ToValue("TypeError"))
 						panic(errObj)
@@ -1272,7 +1272,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 				} else {
 					// 如果 ToObject 失败，说明类型不正确
 					errMsg := fmt.Sprintf("The \"list[%d]\" argument must be an instance of Buffer or Uint8Array", i)
-					errObj := runtime.NewGoError(fmt.Errorf(errMsg))
+					errObj := runtime.NewGoError(fmt.Errorf("%s", errMsg))
 					errObj.Set("code", runtime.ToValue("ERR_INVALID_ARG_TYPE"))
 					errObj.Set("name", runtime.ToValue("TypeError"))
 					panic(errObj)
