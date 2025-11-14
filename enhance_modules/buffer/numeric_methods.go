@@ -9,24 +9,8 @@ import (
 	"github.com/dop251/goja"
 )
 
-// 性能优化：缓存常用的数字字符串，避免重复 FormatInt 调用
-// 扩大缓存范围到 4096，覆盖更多 Buffer 操作场景
-var offsetStrCache = make(map[int64]string, 4096)
-
-func init() {
-	// 预缓存 0-4095 的字符串表示，覆盖大部分 Buffer 索引
-	for i := int64(0); i < 4096; i++ {
-		offsetStrCache[i] = strconv.FormatInt(i, 10)
-	}
-}
-
-// fastFormatInt 快速获取整数的字符串表示，对小数字使用缓存
-func fastFormatInt(n int64) string {
-	if n >= 0 && n < 4096 {
-		return offsetStrCache[n]
-	}
-	return strconv.FormatInt(n, 10)
-}
+// 注意：fastFormatInt 已废弃，统一使用 string_cache.go 中的 getIndexString
+// 这样可以消除重复缓存，减少内存占用
 
 // getValueArgument 获取 value 参数，如果没有提供则返回 undefined
 // 这与 Node.js 行为一致：undefined 会被转换为 NaN (浮点数) 或 0 (整数)
@@ -331,8 +315,8 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 降级到兼容路径（用于普通对象/数组）
 		byte0 := runtime.ToValue((value >> 8) & 0xFF)
 		byte1 := runtime.ToValue(value & 0xFF)
-		offsetStr := fastFormatInt(offset)
-		offset1Str := fastFormatInt(offset + 1)
+		offsetStr := getIndexString(offset)
+		offset1Str := getIndexString(offset + 1)
 		this.Set(offsetStr, byte0)
 		this.Set(offset1Str, byte1)
 		return runtime.ToValue(offset + 2)
@@ -392,8 +376,8 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 降级到兼容路径（用于普通对象/数组）
 		byte0 := runtime.ToValue(value & 0xFF)
 		byte1 := runtime.ToValue((value >> 8) & 0xFF)
-		offsetStr := fastFormatInt(offset)
-		offset1Str := fastFormatInt(offset + 1)
+		offsetStr := getIndexString(offset)
+		offset1Str := getIndexString(offset + 1)
 		this.Set(offsetStr, byte0)
 		this.Set(offset1Str, byte1)
 		return runtime.ToValue(offset + 2)
@@ -459,8 +443,8 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 				// 降级到逐字节写入
 				byte0 := runtime.ToValue((value >> 8) & 0xFF)
 				byte1 := runtime.ToValue(value & 0xFF)
-				offsetStr := fastFormatInt(offset)
-				offset1Str := fastFormatInt(offset + 1)
+				offsetStr := getIndexString(offset)
+				offset1Str := getIndexString(offset + 1)
 				this.Set(offsetStr, byte0)
 				this.Set(offset1Str, byte1)
 			}
@@ -527,8 +511,8 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 				// 降级到逐字节写入
 				byte0 := runtime.ToValue(value & 0xFF)
 				byte1 := runtime.ToValue((value >> 8) & 0xFF)
-				offsetStr := fastFormatInt(offset)
-				offset1Str := fastFormatInt(offset + 1)
+				offsetStr := getIndexString(offset)
+				offset1Str := getIndexString(offset + 1)
 				this.Set(offsetStr, byte0)
 				this.Set(offset1Str, byte1)
 			}
@@ -825,10 +809,10 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		byte1 := runtime.ToValue((value >> 8) & 0xFF)
 		byte2 := runtime.ToValue((value >> 16) & 0xFF)
 		byte3 := runtime.ToValue((value >> 24) & 0xFF)
-		offsetStr := fastFormatInt(offset)
-		offset1Str := fastFormatInt(offset + 1)
-		offset2Str := fastFormatInt(offset + 2)
-		offset3Str := fastFormatInt(offset + 3)
+		offsetStr := getIndexString(offset)
+		offset1Str := getIndexString(offset + 1)
+		offset2Str := getIndexString(offset + 2)
+		offset3Str := getIndexString(offset + 3)
 		this.Set(offsetStr, byte0)
 		this.Set(offset1Str, byte1)
 		this.Set(offset2Str, byte2)

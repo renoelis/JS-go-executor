@@ -1,9 +1,6 @@
 package buffer
 
 import (
-	"strconv"
-	"sync"
-
 	"github.com/dop251/goja"
 )
 
@@ -20,24 +17,7 @@ type iteratorState struct {
 // 使用私有 Symbol 作为迭代器状态的键,避免全局 map 导致的内存泄漏
 var iteratorStateSymbol = goja.NewSymbol("[[IteratorState]]")
 
-// 索引字符串缓存（优化性能）- 扩大到 4096 覆盖更多场景
-var indexStringCache [4096]string
-var indexStringCacheOnce sync.Once
-
-func initIndexStringCache() {
-	for i := 0; i < 4096; i++ {
-		indexStringCache[i] = strconv.FormatInt(int64(i), 10)
-	}
-}
-
-// getIndexString 获取索引字符串，使用缓存优化性能
-func getIndexString(index int64) string {
-	if index >= 0 && index < 4096 {
-		indexStringCacheOnce.Do(initIndexStringCache)
-		return indexStringCache[index]
-	}
-	return strconv.FormatInt(index, 10)
-}
+// 注意：索引字符串缓存已移到 string_cache.go，统一使用 getIndexString()
 
 func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, prototype *goja.Object) {
 	// ==================================================================================
