@@ -5,15 +5,17 @@ import (
 	goruntime "runtime"
 	"sync"
 	"sync/atomic"
-	"unsafe"
 
 	"github.com/dop251/goja"
 )
 
 // 🔥 方案1: 编码结果内存池（只池化 hex/base64 的输出，不池化输入）
+// 🔥 关键修改：使用引用计数代替 Finalizer（Finalizer 不可靠）
 type encodingBuffer struct {
-	data []byte
-	refs atomic.Int32 // 引用计数
+	data     []byte
+	refs     atomic.Int32     // 引用计数
+	mmapRes  *MmapResource    // 关联的 mmap 资源（如果有）
+	released atomic.Bool      // 是否已释放
 }
 
 var (
@@ -52,8 +54,13 @@ func getEncodingBuffer(size int) *encodingBuffer {
 	default:
 		buf = largePool.Get().(*encodingBuffer)
 	}
-	
+
+	// 🔥 关键修复: 重置 released 状态
+	// 问题: encodingBuffer 从池中取出时,released 可能仍是 true (上次使用的状态)
+	// 解决: 每次从池中取出时,强制重置为 false
+	buf.released.Store(false)
 	buf.refs.Store(1)
+
 	if cap(buf.data) < size {
 		buf.data = make([]byte, size)
 	} else {
@@ -62,20 +69,34 @@ func getEncodingBuffer(size int) *encodingBuffer {
 	return buf
 }
 
-// putEncodingBuffer 归还到池
+// putEncodingBuffer 归还到池（引用计数方案）
 func putEncodingBuffer(buf *encodingBuffer) {
+	if buf.released.Load() {
+		return // 已释放，防止 double-free
+	}
+
 	if buf.refs.Add(-1) != 0 {
 		return // 还有引用，不归还
 	}
-	
-	size := cap(buf.data)
-	switch {
-	case size < 64*1024:
-		smallPool.Put(buf)
-	case size < 2*1024*1024:
-		mediumPool.Put(buf)
-	default:
-		largePool.Put(buf)
+
+	// 引用计数为 0，释放资源
+	if buf.released.CompareAndSwap(false, true) {
+		// 如果关联了 mmap 资源，释放它
+		if buf.mmapRes != nil {
+			buf.mmapRes.Release()
+			buf.mmapRes = nil
+		}
+
+		// 归还到池
+		size := cap(buf.data)
+		switch {
+		case size < 64*1024:
+			smallPool.Put(buf)
+		case size < 2*1024*1024:
+			mediumPool.Put(buf)
+		default:
+			largePool.Put(buf)
+		}
 	}
 }
 
@@ -209,21 +230,24 @@ func hexEncodeSIMD(src []byte, dst []byte) {
 	}
 }
 
-// 🔥 方案4: 带 Finalizer 的 string 创建（自动归还内存池）
-func stringWithFinalizer(buf *encodingBuffer) string {
+// 🔥 方案4: 直接返回 string（移除 Finalizer）
+// 🔥 关键修改：
+// 1. 不再使用 Finalizer（Finalizer 不可靠，高并发下会导致 mmap 泄漏）
+// 2. 立即归还 encodingBuffer 到池（在函数返回前）
+// 3. 使用 string() 转换复制数据（避免 unsafe 指针悬空）
+func stringFromEncodingBuffer(buf *encodingBuffer) string {
 	if buf == nil || len(buf.data) == 0 {
 		return ""
 	}
-	
-	// 使用 unsafe 零拷贝创建 string
-	s := unsafe.String(&buf.data[0], len(buf.data))
-	
-	// 设置 finalizer：当 string 被 GC 时，归还 buffer
-	goruntime.SetFinalizer(&s, func(sp *string) {
-		putEncodingBuffer(buf)
-	})
-	
-	return s
+
+	// 🔥 关键：使用 string() 复制数据，避免 unsafe 指针悬空
+	// 虽然会有一次内存复制，但这样更安全可靠
+	result := string(buf.data)
+
+	// 🔥 立即归还 buffer 到池（不依赖 Finalizer）
+	putEncodingBuffer(buf)
+
+	return result
 }
 
 // 🔥 终极优化版本的 toString
@@ -269,37 +293,39 @@ func (be *BufferEnhancer) toStringOptimized(runtime *goja.Runtime, this *goja.Ob
 	case "hex":
 		// Hex: 使用内存池 + SIMD 编码
 		hexBuf := getEncodingBuffer(dataLen * 2)
-		
+
 		// 🔥 直接在 JS 内存上编码到池化的 buffer
 		hexEncodeSIMD(data, hexBuf.data)
-		
-		// 🔥 零拷贝创建 string（带 finalizer 自动归还）
-		result := stringWithFinalizer(hexBuf)
+
+		// 🔥 移除 Finalizer：直接复制并归还 buffer
+		result := stringFromEncodingBuffer(hexBuf)
 		return runtime.ToValue(result)
-	
+
 	case "base64":
 		// Base64: 使用内存池
 		estimatedSize := ((dataLen + 2) / 3) * 4
 		b64Buf := getEncodingBuffer(estimatedSize)
-		
+
 		// 手动编码（避免 EncodeToString 的额外分配）
 		base64.StdEncoding.Encode(b64Buf.data, data)
 		// 计算实际长度
 		actualLen := base64.StdEncoding.EncodedLen(dataLen)
 		b64Buf.data = b64Buf.data[:actualLen]
-		
-		result := stringWithFinalizer(b64Buf)
+
+		// 🔥 移除 Finalizer：直接复制并归还 buffer
+		result := stringFromEncodingBuffer(b64Buf)
 		return runtime.ToValue(result)
-	
+
 	case "base64url":
 		estimatedSize := ((dataLen + 2) / 3) * 4
 		b64Buf := getEncodingBuffer(estimatedSize)
-		
+
 		base64.RawURLEncoding.Encode(b64Buf.data, data)
 		actualLen := base64.RawURLEncoding.EncodedLen(dataLen)
 		b64Buf.data = b64Buf.data[:actualLen]
-		
-		result := stringWithFinalizer(b64Buf)
+
+		// 🔥 移除 Finalizer：直接复制并归还 buffer
+		result := stringFromEncodingBuffer(b64Buf)
 		return runtime.ToValue(result)
 	
 	default:

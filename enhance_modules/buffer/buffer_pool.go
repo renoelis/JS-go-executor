@@ -5,30 +5,16 @@ import (
 	"syscall"
 )
 
-// MmapCleanup mmap内存清理管理器
-// 🔥 关键设计：显式生命周期管理，避免finalizer的不确定性
-type MmapCleanup struct {
-	data []byte
-	size int
-}
+// MmapCleanup mmap内存清理管理器（兼容性包装）
+// 🔥 已废弃：使用 MmapResource 替代，提供引用计数功能
+// 保留此类型仅用于向后兼容
+type MmapCleanup = MmapResource
 
-// Release 释放mmap内存
-func (m *MmapCleanup) Release() {
-	if m != nil && len(m.data) > 0 {
-		// 执行munmap清理
-		_ = syscall.Munmap(m.data)
-		m.data = nil
-		m.size = 0
-	}
-}
+// Release 的兼容性别名
+// IsValid 的兼容性别名已在 MmapResource 中实现为 IsReleased
 
-// IsValid 检查cleanup是否有效
-func (m *MmapCleanup) IsValid() bool {
-	return m != nil && len(m.data) > 0
-}
-
-// allocLargeBuffer 优化大内存分配
-// 🔥 新方案：返回data和cleanup，由ArrayBuffer层面管理生命周期
+// allocLargeBuffer 优化大内存分配（使用引用计数方案）
+// 🔥 新方案：返回 data 和 MmapResource，支持引用计数的确定性释放
 func allocLargeBuffer(size int) ([]byte, *MmapCleanup) {
 	// 🔥 关键优化：使用 mmap 分配大内存
 	//
@@ -38,13 +24,14 @@ func allocLargeBuffer(size int) ([]byte, *MmapCleanup) {
 	// 3. 物理内存在首次访问时才分配（页错误），且 OS 保证是零页
 	// 4. 这样可以将 1GB 分配从 1.5秒降低到 <10ms
 	//
-	// 🔥 新的生命周期管理：
-	// - 不使用finalizer，避免GC竞态条件
-	// - 返回MmapCleanup对象，由调用方管理
-	// - ArrayBuffer detach时显式调用cleanup.Release()
+	// 🔥 生命周期管理（引用计数方案）：
+	// - 使用引用计数代替 Finalizer（Finalizer 不可靠）
+	// - 引用计数为 0 时立即释放 mmap（不依赖 GC）
+	// - 后台协程定期检测泄漏（超过 5 分钟未释放）
+	// - ArrayBuffer detach 时调用 Release() 减少引用计数
 
 	// 使用 mmap 分配匿名内存映射
-	// MAP_ANON: 匿名映射，不关联文件  
+	// MAP_ANON: 匿名映射，不关联文件
 	// MAP_PRIVATE: 私有映射，写时复制
 	// PROT_READ | PROT_WRITE: 可读写
 	data, err := syscall.Mmap(
@@ -56,17 +43,17 @@ func allocLargeBuffer(size int) ([]byte, *MmapCleanup) {
 	)
 
 	if err != nil {
-		// mmap 失败，回退到 make()，不需要cleanup
+		// mmap 失败，回退到 make()，不需要 cleanup
 		return make([]byte, size), nil
 	}
 
-	// 创建cleanup管理器
-	cleanup := &MmapCleanup{
-		data: data,
-		size: size,
-	}
+	// 创建 MmapResource 管理器（引用计数初始为 1）
+	resource := NewMmapResource(data, size)
 
-	return data, cleanup
+	// 加入全局追踪器（用于泄漏检测）
+	globalMmapTracker.Track(resource)
+
+	return data, resource
 }
 
 
