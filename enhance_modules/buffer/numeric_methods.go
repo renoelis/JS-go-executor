@@ -165,7 +165,12 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 2, "readInt16BE")
 
-		// 读取大端16位有符号整数
+		// 🔥 性能优化：尝试使用快速路径
+		if val, err := be.fastReadUint16BE(this, offset); err == nil {
+			return runtime.ToValue(int64(int16(val)))
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		byte1 := be.getBufferByte(this, offset)
 		byte2 := be.getBufferByte(this, offset+1)
 		value := int16((uint16(byte1) << 8) | uint16(byte2))
@@ -186,7 +191,12 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 2, "readInt16LE")
 
-		// 读取小端16位有符号整数
+		// 🔥 性能优化：尝试使用快速路径
+		if val, err := be.fastReadUint16LE(this, offset); err == nil {
+			return runtime.ToValue(int64(int16(val)))
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		byte1 := be.getBufferByte(this, offset)
 		byte2 := be.getBufferByte(this, offset+1)
 		value := int16(uint16(byte1) | (uint16(byte2) << 8))
@@ -207,7 +217,12 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 2, "readUInt16BE")
 
-		// 读取大端16位无符号整数
+		// 🔥 性能优化：尝试使用快速路径
+		if val, err := be.fastReadUint16BE(this, offset); err == nil {
+			return runtime.ToValue(int64(val))
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		byte1 := be.getBufferByte(this, offset)
 		byte2 := be.getBufferByte(this, offset+1)
 		value := uint16((uint16(byte1) << 8) | uint16(byte2))
@@ -228,7 +243,12 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 2, "readUInt16LE")
 
-		// 读取小端16位无符号整数
+		// 🔥 性能优化：尝试使用快速路径
+		if val, err := be.fastReadUint16LE(this, offset); err == nil {
+			return runtime.ToValue(int64(val))
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		byte1 := be.getBufferByte(this, offset)
 		byte2 := be.getBufferByte(this, offset+1)
 		value := uint16(uint16(byte1) | (uint16(byte2) << 8))
@@ -241,10 +261,10 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 	// writeInt16BE
 	writeInt16BEFunc := func(call goja.FunctionCall) goja.Value {
 		this := safeGetBufferThis(runtime, call, "writeInt16BE")
-		
+
 		// 检查对象是否被冻结（对齐 Node.js 行为）
 		checkIfFrozen(runtime, this, "writeInt16BE")
-		
+
 		// 检查值参数
 		var value int16
 		if len(call.Arguments) < 1 || goja.IsUndefined(call.Arguments[0]) {
@@ -266,7 +286,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		if lengthVal := this.Get("length"); !goja.IsUndefined(lengthVal) {
 			bufferLength = lengthVal.ToInteger()
 		}
-		
+
 		// 检查 offset 边界（对齐 Node.js v25.0.0）
 		if offset < 0 {
 			errObj := runtime.NewGoError(fmt.Errorf("The value of \"offset\" is out of range. It must be >= 0 and <= %d. Received %d", bufferLength-2, offset))
@@ -281,15 +301,16 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 			panic(errObj)
 		}
 
-		// 写入大端16位整数 - 性能优化版
-		// 预计算字节值和索引字符串，减少重复计算
+		// 🔥 性能优化：尝试使用快速路径,失败则降级到兼容路径
+		if err := be.fastWriteUint16BE(this, offset, uint16(value)); err == nil {
+			return runtime.ToValue(offset + 2)
+		}
+
+		// 降级到兼容路径（用于普通对象/数组）
 		byte0 := runtime.ToValue((value >> 8) & 0xFF)
 		byte1 := runtime.ToValue(value & 0xFF)
-		
-		// 使用缓存减少字符串转换开销
 		offsetStr := fastFormatInt(offset)
 		offset1Str := fastFormatInt(offset + 1)
-		
 		this.Set(offsetStr, byte0)
 		this.Set(offset1Str, byte1)
 		return runtime.ToValue(offset + 2)
@@ -504,7 +525,12 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 4, "readInt32BE")
 
-		// 读取大端32位有符号整数
+		// 🔥 性能优化：尝试使用快速路径
+		if val, err := be.fastReadUint32BE(this, offset); err == nil {
+			return runtime.ToValue(int64(int32(val)))
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		byte1 := be.getBufferByte(this, offset)
 		byte2 := be.getBufferByte(this, offset+1)
 		byte3 := be.getBufferByte(this, offset+2)
@@ -527,7 +553,12 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 4, "readInt32LE")
 
-		// 读取小端32位有符号整数
+		// 🔥 性能优化：尝试使用快速路径
+		if val, err := be.fastReadUint32LE(this, offset); err == nil {
+			return runtime.ToValue(int64(int32(val)))
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		byte1 := be.getBufferByte(this, offset)
 		byte2 := be.getBufferByte(this, offset+1)
 		byte3 := be.getBufferByte(this, offset+2)
@@ -550,7 +581,12 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 4, "readUInt32BE")
 
-		// 读取大端32位无符号整数
+		// 🔥 性能优化：尝试使用快速路径
+		if val, err := be.fastReadUint32BE(this, offset); err == nil {
+			return runtime.ToValue(int64(val))
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		byte1 := be.getBufferByte(this, offset)
 		byte2 := be.getBufferByte(this, offset+1)
 		byte3 := be.getBufferByte(this, offset+2)
@@ -573,7 +609,12 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 4, "readUInt32LE")
 
-		// 读取小端32位无符号整数
+		// 🔥 性能优化：尝试使用快速路径
+		if val, err := be.fastReadUint32LE(this, offset); err == nil {
+			return runtime.ToValue(int64(val))
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		byte1 := be.getBufferByte(this, offset)
 		byte2 := be.getBufferByte(this, offset+1)
 		byte3 := be.getBufferByte(this, offset+2)
@@ -768,7 +809,12 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 4, "readFloatBE")
 
-		// 读取大端32位浮点数
+		// 🔥 性能优化：尝试使用快速路径
+		if value, err := be.fastReadFloat32BE(this, offset); err == nil {
+			return runtime.ToValue(float64(value))
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		bytes := make([]byte, 4)
 		for i := int64(0); i < 4; i++ {
 			bytes[i] = be.getBufferByte(this, offset+i)
@@ -791,7 +837,12 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 4, "readFloatLE")
 
-		// 读取小端32位浮点数
+		// 🔥 性能优化：尝试使用快速路径
+		if value, err := be.fastReadFloat32LE(this, offset); err == nil {
+			return runtime.ToValue(float64(value))
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		bytes := make([]byte, 4)
 		for i := int64(0); i < 4; i++ {
 			bytes[i] = be.getBufferByte(this, offset+i)
@@ -814,7 +865,12 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 8, "readDoubleBE")
 
-		// 读取大端64位双精度浮点数
+		// 🔥 性能优化：尝试使用快速路径
+		if value, err := be.fastReadFloat64BE(this, offset); err == nil {
+			return runtime.ToValue(value)
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		bytes := make([]byte, 8)
 		for i := int64(0); i < 8; i++ {
 			bytes[i] = be.getBufferByte(this, offset+i)
@@ -837,7 +893,12 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 8, "readDoubleLE")
 
-		// 读取小端64位双精度浮点数
+		// 🔥 性能优化：尝试使用快速路径
+		if value, err := be.fastReadFloat64LE(this, offset); err == nil {
+			return runtime.ToValue(value)
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		bytes := make([]byte, 8)
 		for i := int64(0); i < 8; i++ {
 			bytes[i] = be.getBufferByte(this, offset+i)
@@ -911,12 +972,9 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 检查边界
 		checkBounds(runtime, this, offset, 8, "writeDoubleBE")
 
-		// 写入大端64位双精度浮点数
-		bits := math.Float64bits(value)
-		bytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(bytes, bits)
-		for i := int64(0); i < 8; i++ {
-			this.Set(strconv.FormatInt(offset+i, 10), runtime.ToValue(bytes[i]))
+		// 🔥 性能优化：直接使用快速路径
+		if err := be.fastWriteFloat64BE(this, offset, value); err != nil {
+			panic(runtime.NewTypeError(fmt.Sprintf("writeDoubleBE failed: %v", err)))
 		}
 		return runtime.ToValue(offset + 8)
 	}
@@ -936,12 +994,9 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 检查边界
 		checkBounds(runtime, this, offset, 8, "writeDoubleLE")
 
-		// 写入小端64位双精度浮点数
-		bits := math.Float64bits(value)
-		bytes := make([]byte, 8)
-		binary.LittleEndian.PutUint64(bytes, bits)
-		for i := int64(0); i < 8; i++ {
-			this.Set(strconv.FormatInt(offset+i, 10), runtime.ToValue(bytes[i]))
+		// 🔥 性能优化：直接使用快速路径
+		if err := be.fastWriteFloat64LE(this, offset, value); err != nil {
+			panic(runtime.NewTypeError(fmt.Sprintf("writeDoubleLE failed: %v", err)))
 		}
 		return runtime.ToValue(offset + 8)
 	}
