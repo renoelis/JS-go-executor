@@ -598,6 +598,12 @@ func (e *JSExecutor) cleanupRuntime(runtime *goja.Runtime) {
 	runtime.Set("__finalResult", goja.Undefined())
 	runtime.Set("__finalError", goja.Undefined())
 	runtime.ClearInterrupt()
+
+	// 🔥 v2.4.4: 清理 Blob Registry，防止内存泄漏
+	// 原理：删除整个 registry，下次使用时会自动重建空 registry
+	// 收益：确保所有 Blob URL 都被释放，无论用户是否调用 revokeObjectURL
+	// 安全：Runtime 隔离确保不会影响其他 Runtime 的 Blob
+	runtime.Set("__blobRegistry__", goja.Undefined())
 }
 
 // executeWithEventLoop 使用EventLoop执行代码（异步代码）

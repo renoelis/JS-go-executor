@@ -9,14 +9,29 @@ import (
 	"github.com/dop251/goja"
 )
 
-// BlobURLRegistry 全局Blob URL注册表
+// BlobURLRegistry Runtime级别的Blob URL注册表
+// 🔥 v2.4.4: 从全局改为 Runtime 隔离，解决内存泄漏和跨 Runtime 访问问题
 type BlobURLRegistry struct {
 	mu    sync.RWMutex
 	blobs map[string]*goja.Object // URL -> Blob对象的映射
 }
 
-var globalBlobRegistry = &BlobURLRegistry{
-	blobs: make(map[string]*goja.Object),
+// getRuntimeBlobRegistry 获取当前 Runtime 的 Blob Registry
+// 如果不存在则自动创建，确保每个 Runtime 都有独立的 registry
+func getRuntimeBlobRegistry(runtime *goja.Runtime) *BlobURLRegistry {
+	registryVal := runtime.Get("__blobRegistry__")
+	if registryVal != nil && !goja.IsUndefined(registryVal) {
+		if registry, ok := registryVal.Export().(*BlobURLRegistry); ok {
+			return registry
+		}
+	}
+
+	// 首次访问，创建新的 registry
+	registry := &BlobURLRegistry{
+		blobs: make(map[string]*goja.Object),
+	}
+	runtime.Set("__blobRegistry__", registry)
+	return registry
 }
 
 // generateBlobURL 生成一个新的blob:nodedata:格式的URL
@@ -62,23 +77,24 @@ func CreateObjectURL(runtime *goja.Runtime, blob *goja.Object) (string, error) {
 	if blob == nil {
 		return "", fmt.Errorf("blob cannot be null")
 	}
-	
+
 	// 检查是否有size和type属性 (Blob的基本特征)
 	sizeVal := blob.Get("size")
 	typeVal := blob.Get("type")
 	if sizeVal == nil || typeVal == nil {
 		return "", fmt.Errorf("invalid blob object")
 	}
-	
+
 	// 生成URL
 	url, err := generateBlobURL()
 	if err != nil {
 		return "", err
 	}
-	
-	// 注册到全局注册表
-	globalBlobRegistry.RegisterBlobURL(url, blob)
-	
+
+	// 🔥 v2.4.4: 注册到当前 Runtime 的 registry（隔离）
+	registry := getRuntimeBlobRegistry(runtime)
+	registry.RegisterBlobURL(url, blob)
+
 	return url, nil
 }
 
@@ -113,18 +129,19 @@ func RegisterResolveObjectURL(runtime *goja.Runtime) {
 
 		// 转换为字符串
 		url := arg.String()
-		
+
 		// 检查URL格式
 		if !strings.HasPrefix(url, "blob:nodedata:") {
 			return goja.Undefined()
 		}
-		
-		// 从注册表中解析Blob对象
-		blob := globalBlobRegistry.ResolveBlobURL(url)
+
+		// 🔥 v2.4.4: 从当前 Runtime 的 registry 解析（隔离）
+		registry := getRuntimeBlobRegistry(runtime)
+		blob := registry.ResolveBlobURL(url)
 		if blob == nil {
 			return goja.Undefined()
 		}
-		
+
 		return blob
 	}
 	
@@ -301,14 +318,16 @@ func SetupURLCreateObjectURL(runtime *goja.Runtime) {
 	}
 	
 	urlConstructor.Set("createObjectURL", createObjectURLFunc)
-	
+
 	// 同时实现 revokeObjectURL
 	revokeObjectURLFunc := runtime.ToValue(func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) > 0 {
 			url := call.Arguments[0].String()
-			globalBlobRegistry.RevokeBlobURL(url)
+			// 🔥 v2.4.4: 从当前 Runtime 的 registry 撤销（隔离）
+			registry := getRuntimeBlobRegistry(runtime)
+			registry.RevokeBlobURL(url)
 		}
-		
+
 		return goja.Undefined()
 	})
 	
