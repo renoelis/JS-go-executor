@@ -8,12 +8,13 @@ import (
 )
 
 // 迭代器状态存储 - 使用私有 Symbol 替代全局 map,避免内存泄漏
+// 🔥 优化:移除 cachedBytes,改用按需读取,避免预分配整个 Buffer 副本
 type iteratorState struct {
 	index        int64
 	bufferLength int64
-	cachedBytes  []byte
 	buffer       *goja.Object
 	iterType     string // "entries", "keys", "values"
+	enhancer     *BufferEnhancer // 保存 BufferEnhancer 引用用于 fast path
 }
 
 // 使用私有 Symbol 作为迭代器状态的键,避免全局 map 导致的内存泄漏
@@ -111,20 +112,40 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 			switch state.iterType {
 			case "entries":
 				// 返回 [index, value]
+				// 🔥 优化:对于 Uint8Array/Buffer,使用 fast path 按需读取;对于其他 TypedArray,使用属性访问
 				var val goja.Value
-				if state.cachedBytes != nil && int64(len(state.cachedBytes)) > state.index {
-					val = runtime.ToValue(state.cachedBytes[state.index])
-				} else if state.buffer != nil {
-					// 直接获取索引位置的值,不进行类型转换
-					// 这样可以正确处理 TypedArray 的不同元素类型
+				// 检查是否为 Uint8Array/Buffer (bytesPerElement == 1)
+				isUint8 := false
+				if ctorVal := state.buffer.Get("constructor"); ctorVal != nil && !goja.IsUndefined(ctorVal) {
+					if ctorObj := ctorVal.ToObject(runtime); ctorObj != nil {
+						if nameVal := ctorObj.Get("name"); nameVal != nil && !goja.IsUndefined(nameVal) {
+							ctorName := nameVal.String()
+							isUint8 = ctorName == "Buffer" || ctorName == "Uint8Array" || ctorName == "Uint8ClampedArray"
+						}
+					}
+				}
+
+				if isUint8 && state.enhancer != nil {
+					// 尝试使用 fastReadUint8 快速读取(仅 Uint8Array/Buffer)
+					if byteVal, err := state.enhancer.fastReadUint8(state.buffer, state.index); err == nil {
+						val = runtime.ToValue(byteVal)
+					} else {
+						// 降级到属性访问
+						v := state.buffer.Get(getIndexString(state.index))
+						if !goja.IsUndefined(v) && !goja.IsNull(v) {
+							val = v
+						} else {
+							val = runtime.ToValue(uint8(0))
+						}
+					}
+				} else {
+					// 其他 TypedArray (Uint16Array, Int32Array 等) - 直接使用属性访问获取元素值
 					v := state.buffer.Get(getIndexString(state.index))
 					if !goja.IsUndefined(v) && !goja.IsNull(v) {
 						val = v
 					} else {
 						val = runtime.ToValue(uint8(0))
 					}
-				} else {
-					val = runtime.ToValue(uint8(0))
 				}
 
 				valueArray := runtime.NewArray(int64(2))
@@ -138,20 +159,40 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 
 			case "values":
 				// 返回 value - 直接返回元素值,不进行类型转换
-				// 这样可以正确处理 TypedArray 的不同元素类型（Uint16Array、Float64Array 等）
+				// 🔥 优化:对于 Uint8Array/Buffer,使用 fast path 按需读取;对于其他 TypedArray,使用属性访问
 				var val goja.Value
-				if state.cachedBytes != nil && int64(len(state.cachedBytes)) > state.index {
-					val = runtime.ToValue(state.cachedBytes[state.index])
-				} else if state.buffer != nil {
-					// 直接获取索引位置的值,不进行类型转换
+				// 检查是否为 Uint8Array/Buffer (bytesPerElement == 1)
+				isUint8 := false
+				if ctorVal := state.buffer.Get("constructor"); ctorVal != nil && !goja.IsUndefined(ctorVal) {
+					if ctorObj := ctorVal.ToObject(runtime); ctorObj != nil {
+						if nameVal := ctorObj.Get("name"); nameVal != nil && !goja.IsUndefined(nameVal) {
+							ctorName := nameVal.String()
+							isUint8 = ctorName == "Buffer" || ctorName == "Uint8Array" || ctorName == "Uint8ClampedArray"
+						}
+					}
+				}
+
+				if isUint8 && state.enhancer != nil {
+					// 尝试使用 fastReadUint8 快速读取(仅 Uint8Array/Buffer)
+					if byteVal, err := state.enhancer.fastReadUint8(state.buffer, state.index); err == nil {
+						val = runtime.ToValue(byteVal)
+					} else {
+						// 降级到属性访问
+						v := state.buffer.Get(getIndexString(state.index))
+						if !goja.IsUndefined(v) && !goja.IsNull(v) {
+							val = v
+						} else {
+							val = runtime.ToValue(uint8(0))
+						}
+					}
+				} else {
+					// 其他 TypedArray (Uint16Array, Int32Array 等) - 直接使用属性访问获取元素值
 					v := state.buffer.Get(getIndexString(state.index))
 					if !goja.IsUndefined(v) && !goja.IsNull(v) {
 						val = v
 					} else {
 						val = runtime.ToValue(uint8(0))
 					}
-				} else {
-					val = runtime.ToValue(uint8(0))
 				}
 				result.Set("value", val)
 			}
@@ -198,11 +239,6 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 			bufferLength = lengthVal.ToInteger()
 		}
 
-		// 🔥 性能优化：对于大 Buffer，预加载数据到 Go []byte
-		var cachedBytes []byte
-		if shouldUseFastPath(bufferLength) {
-			cachedBytes = be.exportBufferBytesFast(runtime, this, bufferLength)
-		}
 
 		// 创建迭代器对象
 		iterator := runtime.NewObject()
@@ -212,7 +248,7 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 		state := &iteratorState{
 			index:        0,
 			bufferLength: bufferLength,
-			cachedBytes:  cachedBytes,
+			enhancer:     be, // 保存 BufferEnhancer 引用用于 fast path
 			buffer:       this,
 			iterType:     "entries",
 		}
@@ -249,7 +285,7 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 		state := &iteratorState{
 			index:        0,
 			bufferLength: bufferLength,
-			cachedBytes:  nil, // keys 不需要缓存数据
+			enhancer:     be, // 保存 BufferEnhancer 引用用于 fast path
 			buffer:       this,
 			iterType:     "keys",
 		}
@@ -287,11 +323,6 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 			bufferLength = lengthVal.ToInteger()
 		}
 
-		// 🔥 性能优化：对于大 Buffer，预加载数据到 Go []byte
-		var cachedBytes []byte
-		if shouldUseFastPath(bufferLength) {
-			cachedBytes = be.exportBufferBytesFast(runtime, this, bufferLength)
-		}
 
 		// 创建迭代器对象
 		iterator := runtime.NewObject()
@@ -300,7 +331,7 @@ func (be *BufferEnhancer) addBufferIteratorMethods(runtime *goja.Runtime, protot
 		state := &iteratorState{
 			index:        0,
 			bufferLength: bufferLength,
-			cachedBytes:  cachedBytes,
+			enhancer:     be, // 保存 BufferEnhancer 引用用于 fast path
 			buffer:       this,
 			iterType:     "values",
 		}
