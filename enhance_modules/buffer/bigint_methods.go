@@ -10,8 +10,8 @@ import (
 )
 
 func (be *BufferEnhancer) setupBigIntSupport(runtime *goja.Runtime) {
-	// 🔥 新方案：通过 eval 创建原生 bigint 字面量
-	// 这样 BigInt(100) 返回的就是真正的 bigint 原始类型，而不是对象
+	// 🔥 优化方案:利用 goja 原生 BigInt 支持,避免 RunString 编译开销
+	// goja 内部通过 runtime.ToValue(*big.Int) 自动转换为原生 bigint 类型
 	bigIntConstructor := func(call goja.FunctionCall) goja.Value {
 		var value *big.Int
 
@@ -22,16 +22,16 @@ func (be *BufferEnhancer) setupBigIntSupport(runtime *goja.Runtime) {
 			// 尝试解析为大整数
 			value = new(big.Int)
 
-			// 🔥 支持十六进制字符串（0x 前缀）
+			// 🔥 支持十六进制字符串(0x 前缀)
 			if strings.HasPrefix(argStr, "0x") || strings.HasPrefix(argStr, "0X") {
-				// 去掉 0x 前缀，使用 base 16 解析
+				// 去掉 0x 前缀,使用 base 16 解析
 				hexStr := argStr[2:]
 				if _, ok := value.SetString(hexStr, 16); !ok {
 					// 十六进制解析失败
 					value.SetInt64(0)
 				}
 			} else if _, ok := value.SetString(argStr, 10); !ok {
-				// 十进制解析失败，尝试浮点数转换
+				// 十进制解析失败,尝试浮点数转换
 				if floatVal := arg.ToFloat(); floatVal == floatVal { // 检查 NaN
 					// 检查是否为整数
 					if floatVal != float64(int64(floatVal)) {
@@ -46,72 +46,30 @@ func (be *BufferEnhancer) setupBigIntSupport(runtime *goja.Runtime) {
 			value = big.NewInt(0)
 		}
 
-		// 🔥 新方法：通过 eval 执行 "数字n" 语法来创建原生 bigint
-		// 例如：BigInt(100) 会执行 eval("100n")，返回原生 bigint
-		valueStr := value.String()
-
-		// 安全检查：确保值是有效的数字字符串
-		if _, err := strconv.ParseInt(valueStr, 10, 64); err == nil || value.BitLen() > 63 {
-			// 构造 bigint 字面量代码
-			code := valueStr + "n"
-
-			// 尝试通过 RunString 执行，返回原生 bigint
-			result, err := runtime.RunString(code)
-			if err == nil {
-				return result
-			}
-		}
-
-		// 🔥 降级方案：如果 eval 失败，使用原来的对象方式（兼容性）
-		obj := runtime.NewObject()
-		obj.Set("__bigIntValue__", runtime.ToValue(value.String()))
-
-		// 添加 toString 方法
-		obj.Set("toString", func(call goja.FunctionCall) goja.Value {
-			obj := call.This.ToObject(runtime)
-			if val := obj.Get("__bigIntValue__"); !goja.IsUndefined(val) {
-				return val
-			}
-			return runtime.ToValue("0")
-		})
-
-		// 添加 valueOf 方法
-		obj.Set("valueOf", func(call goja.FunctionCall) goja.Value {
-			obj := call.This.ToObject(runtime)
-			if val := obj.Get("__bigIntValue__"); !goja.IsUndefined(val) {
-				valStr := val.String()
-				bigInt := new(big.Int)
-				if _, ok := bigInt.SetString(valStr, 10); ok {
-					if bigInt.IsInt64() {
-						return runtime.ToValue(bigInt.Int64())
-					}
-				}
-				return val
-			}
-			return runtime.ToValue(0)
-		})
-
-		return obj
+		// 🔥 优化方案:直接使用 goja 原生 BigInt 类型(零开销)
+		// runtime.ToValue(*big.Int) 会自动转换为 *valueBigInt
+		// 避免 RunString 的编译开销(词法分析→语法分析→字节码编译→执行)
+		return runtime.ToValue(value)
 	}
 
 	// 将 BigInt 暴露到全局
 	runtime.Set("BigInt", bigIntConstructor)
 
-	// 🔥 重要：为 BigInt 添加 prototype，确保 qs 等库能访问 BigInt.prototype.valueOf
-	// Go 函数对象默认没有 prototype，需要手动添加
+	// 🔥 重要:为 BigInt 添加 prototype,确保 qs 等库能访问 BigInt.prototype.valueOf
+	// Go 函数对象默认没有 prototype,需要手动添加
 	bigIntObj := runtime.Get("BigInt")
 	if obj, ok := bigIntObj.(*goja.Object); ok {
 		prototype := runtime.NewObject()
 
-		// 添加 valueOf 方法（qs 库需要检查这个方法是否存在）
+		// 添加 valueOf 方法(qs 库需要检查这个方法是否存在)
 		valueOfFunc := func(call goja.FunctionCall) goja.Value {
-			// 如果是对象，尝试获取其值
+			// 如果是对象,尝试获取其值
 			if thisObj, ok := call.This.(*goja.Object); ok {
 				if val := thisObj.Get("__bigIntValue__"); !goja.IsUndefined(val) {
 					return val
 				}
 			}
-			// 否则返回 this 本身（对于原生 bigint）
+			// 否则返回 this 本身(对于原生 bigint)
 			return call.This
 		}
 		valueOfValue := runtime.ToValue(valueOfFunc)
@@ -154,27 +112,19 @@ func (be *BufferEnhancer) setupBigIntSupport(runtime *goja.Runtime) {
 				panic(runtime.NewTypeError("Cannot convert value to BigInt"))
 			}
 
-			// 创建掩码：2^bits - 1
+			// 创建掩码:2^bits - 1
 			modulus := new(big.Int).Lsh(big.NewInt(1), uint(bits))
 			// 计算 value mod 2^bits
 			result := new(big.Int).Mod(bigIntVal, modulus)
 
-			// 处理符号位：如果结果 >= 2^(bits-1)，则减去 2^bits（转为负数）
+			// 处理符号位:如果结果 >= 2^(bits-1),则减去 2^bits(转为负数)
 			signBit := new(big.Int).Lsh(big.NewInt(1), uint(bits-1))
 			if result.Cmp(signBit) >= 0 {
 				result.Sub(result, modulus)
 			}
 
-			// 返回原生 bigint
-			resultStr := result.String()
-			code := resultStr + "n"
-			res, err := runtime.RunString(code)
-			if err == nil {
-				return res
-			}
-
-			// 降级方案
-			return runtime.ToValue(result.String())
+			// 🔥 优化:直接返回原生 bigint,避免 RunString
+			return runtime.ToValue(result)
 		}
 		asIntNValue := runtime.ToValue(asIntNFunc)
 		setFunctionNameAndLength(runtime, asIntNValue, "asIntN", 2)
@@ -201,21 +151,13 @@ func (be *BufferEnhancer) setupBigIntSupport(runtime *goja.Runtime) {
 				panic(runtime.NewTypeError("Cannot convert value to BigInt"))
 			}
 
-			// 创建掩码：2^bits - 1
+			// 创建掩码:2^bits - 1
 			modulus := new(big.Int).Lsh(big.NewInt(1), uint(bits))
-			// 计算 value mod 2^bits（无符号）
+			// 计算 value mod 2^bits(无符号)
 			result := new(big.Int).Mod(bigIntVal, modulus)
 
-			// 返回原生 bigint
-			resultStr := result.String()
-			code := resultStr + "n"
-			res, err := runtime.RunString(code)
-			if err == nil {
-				return res
-			}
-
-			// 降级方案
-			return runtime.ToValue(result.String())
+			// 🔥 优化:直接返回原生 bigint,避免 RunString
+			return runtime.ToValue(result)
 		}
 		asUintNValue := runtime.ToValue(asUintNFunc)
 		setFunctionNameAndLength(runtime, asUintNValue, "asUintN", 2)
@@ -225,70 +167,26 @@ func (be *BufferEnhancer) setupBigIntSupport(runtime *goja.Runtime) {
 
 // addBigIntReadWriteMethods 添加 BigInt 读写方法
 func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, prototype *goja.Object) {
-	// 🔥 辅助函数：创建 BigInt 对象（改进版：返回原生 bigint）
+	// 🔥 辅助函数:创建 BigInt 对象(优化版:直接使用原生 bigint)
 	createBigInt := func(value *big.Int) goja.Value {
-		valueStr := value.String()
-
-		// 🔥 新方法：通过 eval 执行 "数字n" 语法来创建原生 bigint
-		// 这样 Buffer.readBigInt64BE() 等方法返回的也是原生 bigint
-		code := valueStr + "n"
-
-		// 尝试通过 RunString 执行，返回原生 bigint
-		result, err := runtime.RunString(code)
-		if err == nil {
-			return result
-		}
-
-		// 🔥 降级方案：如果 eval 失败，使用对象方式（兼容性）
-		bigInt := runtime.NewObject()
-		bigInt.Set("__bigIntValue__", runtime.ToValue(valueStr))
-		bigInt.Set("toString", func(call goja.FunctionCall) goja.Value {
-			obj := call.This.ToObject(runtime)
-			if val := obj.Get("__bigIntValue__"); !goja.IsUndefined(val) {
-				return val
-			}
-			return runtime.ToValue("0")
-		})
-		bigInt.Set("valueOf", func(call goja.FunctionCall) goja.Value {
-			obj := call.This.ToObject(runtime)
-			if val := obj.Get("__bigIntValue__"); !goja.IsUndefined(val) {
-				valStr := val.String()
-				bi := new(big.Int)
-				if _, ok := bi.SetString(valStr, 10); ok {
-					if bi.IsInt64() {
-						return runtime.ToValue(bi.Int64())
-					}
-				}
-				return val
-			}
-			return runtime.ToValue(0)
-		})
-		return bigInt
+		// 🔥 优化:直接返回原生 bigint,避免 RunString 编译开销
+		return runtime.ToValue(value)
 	}
 
-	// 辅助函数：从 goja.Value 获取 big.Int（改进版：支持原生 bigint）
+	// 辅助函数:从 goja.Value 获取 big.Int(优化版:安全判型)
 	getBigIntValue := func(value goja.Value) *big.Int {
-		// 特殊处理：Symbol 检查必须最先进行
-		// 通过在 runtime 中执行 typeof 检查
-		typeofCheck := runtime.Set("__checkTypeOf__", value)
-		if typeofCheck == nil {
-			typeofResult, err := runtime.RunString("typeof __checkTypeOf__")
-			if err == nil && typeofResult != nil {
-				typeStr := typeofResult.String()
-				if typeStr == "symbol" {
-					runtime.Set("__checkTypeOf__", goja.Undefined())
-					panic(runtime.NewTypeError("Cannot convert a Symbol value to a number"))
-				}
-			}
-			runtime.Set("__checkTypeOf__", goja.Undefined())
+		// 🔥 优化:使用类型断言代替 RunString + typeof
+		// 1. 优先检查 Symbol(必须最先,因为会抛出 TypeError)
+		if _, ok := value.(*goja.Symbol); ok {
+			panic(runtime.NewTypeError("Cannot convert a Symbol value to a number"))
 		}
 
-		// 检查是否为 undefined 或 null
+		// 2. 检查是否为 undefined 或 null
 		if goja.IsUndefined(value) || goja.IsNull(value) {
 			panic(runtime.NewTypeError("无法将 undefined 或 null 转换为 BigInt"))
 		}
 
-		// 🔥 优先检查是否为原生 bigint（通过 Export 导出）
+		// 🔥 优先检查是否为原生 bigint(通过 Export 导出)
 		// goja 原生 bigint 会导出为 *big.Int
 		exported := value.Export()
 		if exported != nil {
@@ -310,11 +208,11 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 			}
 		}
 
-		// 尝试获取 BigInt 对象（兼容旧的对象方式）
+		// 尝试获取 BigInt 对象(兼容旧的对象方式)
 		// 添加 defer recover 防止 ToObject 或其他操作导致崩溃
 		defer func() {
 			if r := recover(); r != nil {
-				// 发生错误时，重新抛出或抛出通用类型错误
+				// 发生错误时,重新抛出或抛出通用类型错误
 				// 但要确保 Symbol/Boolean 的错误能够传递
 				if err, ok := r.(*goja.Object); ok {
 					if msg := err.Get("message"); msg != nil && !goja.IsUndefined(msg) {
@@ -326,7 +224,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 						}
 					}
 				}
-				// 检查是否是 TypeError，且消息匹配
+				// 检查是否是 TypeError,且消息匹配
 				if typeErr, ok := r.(error); ok {
 					errMsg := typeErr.Error()
 					if errMsg == "Cannot convert a Symbol value to a number" ||
@@ -341,7 +239,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 
 		obj := value.ToObject(runtime)
 		if obj != nil {
-			// 检查特定对象类型，这些类型应该抛出 "Cannot mix BigInt and other types" 错误
+			// 检查特定对象类型,这些类型应该抛出 "Cannot mix BigInt and other types" 错误
 			if ctorProp := obj.Get("constructor"); ctorProp != nil && !goja.IsUndefined(ctorProp) {
 				if ctorObj := ctorProp.ToObject(runtime); ctorObj != nil {
 					if nameProp := ctorObj.Get("name"); nameProp != nil && !goja.IsUndefined(nameProp) {
@@ -378,7 +276,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 			}
 		}
 
-		// 如果不是 BigInt 对象，抛出类型错误（Node.js 行为）
+		// 如果不是 BigInt 对象,抛出类型错误(Node.js 行为)
 		panic(runtime.NewTypeError("\"value\" 参数必须是 bigint 类型"))
 	}
 
@@ -393,7 +291,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 8, "readBigInt64BE")
 
-		// 读取 8 个字节（大端）
+		// 读取 8 个字节(大端)
 		bytes := make([]byte, 8)
 		for i := 0; i < 8; i++ {
 			val := this.Get(strconv.FormatInt(offset+int64(i), 10))
@@ -404,12 +302,12 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 			}
 		}
 
-		// 转换为 big.Int（有符号）
+		// 转换为 big.Int(有符号)
 		value := new(big.Int).SetBytes(bytes)
 
-		// 处理负数（二进制补码）
+		// 处理负数(二进制补码)
 		if bytes[0]&0x80 != 0 {
-			// 负数：减去 2^64
+			// 负数:减去 2^64
 			maxUint64 := new(big.Int).Lsh(big.NewInt(1), 64)
 			value.Sub(value, maxUint64)
 		}
@@ -434,7 +332,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 8, "readBigInt64LE")
 
-		// 读取 8 个字节（小端）
+		// 读取 8 个字节(小端)
 		bytes := make([]byte, 8)
 		for i := 0; i < 8; i++ {
 			val := this.Get(strconv.FormatInt(offset+int64(7-i), 10))
@@ -445,12 +343,12 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 			}
 		}
 
-		// 转换为 big.Int（有符号）
+		// 转换为 big.Int(有符号)
 		value := new(big.Int).SetBytes(bytes)
 
-		// 处理负数（二进制补码）
+		// 处理负数(二进制补码)
 		if bytes[0]&0x80 != 0 {
-			// 负数：减去 2^64
+			// 负数:减去 2^64
 			maxUint64 := new(big.Int).Lsh(big.NewInt(1), 64)
 			value.Sub(value, maxUint64)
 		}
@@ -475,7 +373,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 8, "readBigUInt64BE")
 
-		// 读取 8 个字节（大端）
+		// 读取 8 个字节(大端)
 		bytes := make([]byte, 8)
 		for i := 0; i < 8; i++ {
 			val := this.Get(strconv.FormatInt(offset+int64(i), 10))
@@ -486,7 +384,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 			}
 		}
 
-		// 转换为 big.Int（无符号）
+		// 转换为 big.Int(无符号)
 		value := new(big.Int).SetBytes(bytes)
 
 		return createBigInt(value)
@@ -498,7 +396,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		fnObj.DefineDataProperty("length", runtime.ToValue(0), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
 	}
 	prototype.Set("readBigUInt64BE", readBigUInt64BEValue)
-	
+
 	// 为别名创建单独的函数对象以设置正确的 name
 	readBigUint64BEFunc := func(call goja.FunctionCall) goja.Value {
 		return readBigUInt64BEFunc(call)
@@ -521,7 +419,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 8, "readBigUInt64LE")
 
-		// 读取 8 个字节（小端）
+		// 读取 8 个字节(小端)
 		bytes := make([]byte, 8)
 		for i := 0; i < 8; i++ {
 			val := this.Get(strconv.FormatInt(offset+int64(7-i), 10))
@@ -532,7 +430,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 			}
 		}
 
-		// 转换为 big.Int（无符号）
+		// 转换为 big.Int(无符号)
 		value := new(big.Int).SetBytes(bytes)
 
 		return createBigInt(value)
@@ -543,7 +441,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		fnObj.DefineDataProperty("length", runtime.ToValue(0), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
 	}
 	prototype.Set("readBigUInt64LE", readBigUInt64LEValue)
-	
+
 	// 为别名创建单独的函数对象以设置正确的 name
 	readBigUint64LEFunc := func(call goja.FunctionCall) goja.Value {
 		return readBigUInt64LEFunc(call)
@@ -573,22 +471,22 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		// 获取 BigInt 值
 		value := getBigIntValue(call.Arguments[0])
 
-		// 检查范围：-2^63 到 2^63-1
+		// 检查范围:-2^63 到 2^63-1
 		minInt64 := new(big.Int).Lsh(big.NewInt(-1), 63)
 		maxInt64 := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 63), big.NewInt(1))
 		if value.Cmp(minInt64) < 0 || value.Cmp(maxInt64) > 0 {
 			panic(newRangeError(runtime, "The value of \"value\" is out of range. It must be >= -(2 ** 63) and < 2 ** 63. Received " + value.String()))
 		}
 
-		// 处理负数（转换为二进制补码）
+		// 处理负数(转换为二进制补码)
 		if value.Sign() < 0 {
 			maxUint64 := new(big.Int).Lsh(big.NewInt(1), 64)
 			value = new(big.Int).Add(value, maxUint64)
 		}
 
-		// 🔥 修复：手动提取 64 位大端字节序
-		// big.Int.Bytes() 会忽略尾随零，导致字节不完整
-		// 例如：0x0102030405060700 会返回 7 字节而不是 8 字节
+		// 🔥 修复:手动提取 64 位大端字节序
+		// big.Int.Bytes() 会忽略尾随零,导致字节不完整
+		// 例如:0x0102030405060700 会返回 7 字节而不是 8 字节
 		// 我们需要手动提取完整的 8 字节
 		result := make([]byte, 8)
 
@@ -604,7 +502,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 			tempValue.Rsh(tempValue, 8)
 		}
 
-		// 写入 buffer（大端）
+		// 写入 buffer(大端)
 		for i := 0; i < 8; i++ {
 			this.Set(strconv.FormatInt(offset+int64(i), 10), runtime.ToValue(result[i]))
 		}
@@ -637,14 +535,14 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		// 获取 BigInt 值
 		value := getBigIntValue(call.Arguments[0])
 
-		// 检查范围：-2^63 到 2^63-1
+		// 检查范围:-2^63 到 2^63-1
 		minInt64 := new(big.Int).Lsh(big.NewInt(-1), 63)
 		maxInt64 := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 63), big.NewInt(1))
 		if value.Cmp(minInt64) < 0 || value.Cmp(maxInt64) > 0 {
 			panic(newRangeError(runtime, "The value of \"value\" is out of range. It must be >= -(2 ** 63) and < 2 ** 63. Received " + value.String()))
 		}
 
-		// 处理负数（转换为二进制补码）
+		// 处理负数(转换为二进制补码)
 		if value.Sign() < 0 {
 			maxUint64 := new(big.Int).Lsh(big.NewInt(1), 64)
 			value = new(big.Int).Add(value, maxUint64)
@@ -653,16 +551,16 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		// 转换为字节数组
 		bytes := value.Bytes()
 
-		// 确保是 8 字节，前面补零
+		// 确保是 8 字节,前面补零
 		result := make([]byte, 8)
 		if len(bytes) <= 8 {
 			copy(result[8-len(bytes):], bytes)
 		} else {
-			// 理论上不应该到这里，因为已经做了范围检查
+			// 理论上不应该到这里,因为已经做了范围检查
 			copy(result, bytes[len(bytes)-8:])
 		}
 
-		// 写入 buffer（小端）
+		// 写入 buffer(小端)
 		for i := 0; i < 8; i++ {
 			this.Set(strconv.FormatInt(offset+int64(i), 10), runtime.ToValue(result[7-i]))
 		}
@@ -695,15 +593,15 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		// 获取 BigInt 值
 		value := getBigIntValue(call.Arguments[0])
 
-		// 检查范围：0 到 2^64-1
+		// 检查范围:0 到 2^64-1
 		maxUInt64 := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 64), big.NewInt(1))
 		if value.Sign() < 0 || value.Cmp(maxUInt64) > 0 {
 			panic(newRangeError(runtime, "The value of \"value\" is out of range. It must be >= 0 and <= 18446744073709551615. Received "+value.String()))
 		}
 
-		// 🔥 修复：手动提取 64 位大端字节序
-		// big.Int.Bytes() 会忽略尾随零，导致字节不完整
-		// 例如：0x0102030405060700 会返回 7 字节而不是 8 字节
+		// 🔥 修复:手动提取 64 位大端字节序
+		// big.Int.Bytes() 会忽略尾随零,导致字节不完整
+		// 例如:0x0102030405060700 会返回 7 字节而不是 8 字节
 		// 我们需要手动提取完整的 8 字节
 		result := make([]byte, 8)
 
@@ -719,7 +617,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 			tempValue.Rsh(tempValue, 8)
 		}
 
-		// 写入 buffer（大端）
+		// 写入 buffer(大端)
 		for i := 0; i < 8; i++ {
 			this.Set(strconv.FormatInt(offset+int64(i), 10), runtime.ToValue(result[i]))
 		}
@@ -729,7 +627,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 	writeBigUInt64BEValue := runtime.ToValue(writeBigUInt64BEFunc)
 	setFunctionNameAndLength(runtime, writeBigUInt64BEValue, "writeBigUInt64BE", 1)
 	prototype.Set("writeBigUInt64BE", writeBigUInt64BEValue)
-	// 添加别名 writeBigUint64BE（小写 u），确保是同一个引用
+	// 添加别名 writeBigUint64BE(小写 u),确保是同一个引用
 	prototype.Set("writeBigUint64BE", writeBigUInt64BEValue)
 
 	// writeBigUInt64LE - 写入 64 位无符号小端整数
@@ -750,7 +648,7 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		// 获取 BigInt 值
 		value := getBigIntValue(call.Arguments[0])
 
-		// 检查范围：0 到 2^64-1
+		// 检查范围:0 到 2^64-1
 		maxUInt64 := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 64), big.NewInt(1))
 		if value.Sign() < 0 || value.Cmp(maxUInt64) > 0 {
 			panic(newRangeError(runtime, "The value of \"value\" is out of range. It must be >= 0 and <= 18446744073709551615. Received "+value.String()))
@@ -759,13 +657,13 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		// 转换为字节数组
 		bytes := value.Bytes()
 
-		// 确保是 8 字节，前面补零
+		// 确保是 8 字节,前面补零
 		result := make([]byte, 8)
 		if len(bytes) > 0 {
 			copy(result[8-len(bytes):], bytes)
 		}
 
-		// 写入 buffer（小端）
+		// 写入 buffer(小端)
 		for i := 0; i < 8; i++ {
 			this.Set(strconv.FormatInt(offset+int64(i), 10), runtime.ToValue(result[7-i]))
 		}
@@ -775,6 +673,6 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 	writeBigUInt64LEValue := runtime.ToValue(writeBigUInt64LEFunc)
 	setFunctionNameAndLength(runtime, writeBigUInt64LEValue, "writeBigUInt64LE", 1)
 	prototype.Set("writeBigUInt64LE", writeBigUInt64LEValue)
-	// 添加别名 writeBigUint64LE（小写 u），确保是同一个引用
+	// 添加别名 writeBigUint64LE(小写 u),确保是同一个引用
 	prototype.Set("writeBigUint64LE", writeBigUInt64LEValue)
 }
