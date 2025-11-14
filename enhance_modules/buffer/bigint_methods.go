@@ -1,6 +1,7 @@
 package buffer
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math/big"
 	"strconv"
@@ -291,7 +292,20 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 8, "readBigInt64BE")
 
-		// 读取 8 个字节(大端)
+		// 🔥 尝试快速路径
+		if val, err := be.fastReadUint64BE(this, offset); err == nil {
+			// 转换为 big.Int(有符号)
+			value := new(big.Int).SetUint64(val)
+			// 处理负数(二进制补码)
+			if val&0x8000000000000000 != 0 {
+				// 负数:减去 2^64
+				maxUint64 := new(big.Int).Lsh(big.NewInt(1), 64)
+				value.Sub(value, maxUint64)
+			}
+			return createBigInt(value)
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		bytes := make([]byte, 8)
 		for i := 0; i < 8; i++ {
 			val := this.Get(strconv.FormatInt(offset+int64(i), 10))
@@ -332,7 +346,20 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 8, "readBigInt64LE")
 
-		// 读取 8 个字节(小端)
+		// 🔥 尝试快速路径
+		if val, err := be.fastReadUint64LE(this, offset); err == nil {
+			// 转换为 big.Int(有符号)
+			value := new(big.Int).SetUint64(val)
+			// 处理负数(二进制补码)
+			if val&0x8000000000000000 != 0 {
+				// 负数:减去 2^64
+				maxUint64 := new(big.Int).Lsh(big.NewInt(1), 64)
+				value.Sub(value, maxUint64)
+			}
+			return createBigInt(value)
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		bytes := make([]byte, 8)
 		for i := 0; i < 8; i++ {
 			val := this.Get(strconv.FormatInt(offset+int64(7-i), 10))
@@ -373,7 +400,14 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 8, "readBigUInt64BE")
 
-		// 读取 8 个字节(大端)
+		// 🔥 尝试快速路径
+		if val, err := be.fastReadUint64BE(this, offset); err == nil {
+			// 转换为 big.Int(无符号)
+			value := new(big.Int).SetUint64(val)
+			return createBigInt(value)
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		bytes := make([]byte, 8)
 		for i := 0; i < 8; i++ {
 			val := this.Get(strconv.FormatInt(offset+int64(i), 10))
@@ -419,7 +453,14 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		// 检查边界
 		checkReadBounds(runtime, this, offset, 8, "readBigUInt64LE")
 
-		// 读取 8 个字节(小端)
+		// 🔥 尝试快速路径
+		if val, err := be.fastReadUint64LE(this, offset); err == nil {
+			// 转换为 big.Int(无符号)
+			value := new(big.Int).SetUint64(val)
+			return createBigInt(value)
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		bytes := make([]byte, 8)
 		for i := 0; i < 8; i++ {
 			val := this.Get(strconv.FormatInt(offset+int64(7-i), 10))
@@ -503,6 +544,13 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		}
 
 		// 写入 buffer(大端)
+		// 🔥 尝试快速路径:直接写入 uint64
+		val64 := binary.BigEndian.Uint64(result)
+		if err := be.fastWriteUint64BE(this, offset, val64); err == nil {
+			return runtime.ToValue(offset + 8)
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		for i := 0; i < 8; i++ {
 			this.Set(strconv.FormatInt(offset+int64(i), 10), runtime.ToValue(result[i]))
 		}
@@ -561,6 +609,13 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		}
 
 		// 写入 buffer(小端)
+		// 🔥 尝试快速路径:直接写入 uint64
+		val64 := binary.BigEndian.Uint64(result)
+		if err := be.fastWriteUint64LE(this, offset, val64); err == nil {
+			return runtime.ToValue(offset + 8)
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		for i := 0; i < 8; i++ {
 			this.Set(strconv.FormatInt(offset+int64(i), 10), runtime.ToValue(result[7-i]))
 		}
@@ -618,6 +673,13 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		}
 
 		// 写入 buffer(大端)
+		// 🔥 尝试快速路径:直接写入 uint64
+		val64 := binary.BigEndian.Uint64(result)
+		if err := be.fastWriteUint64BE(this, offset, val64); err == nil {
+			return runtime.ToValue(offset + 8)
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		for i := 0; i < 8; i++ {
 			this.Set(strconv.FormatInt(offset+int64(i), 10), runtime.ToValue(result[i]))
 		}
@@ -664,6 +726,13 @@ func (be *BufferEnhancer) addBigIntReadWriteMethods(runtime *goja.Runtime, proto
 		}
 
 		// 写入 buffer(小端)
+		// 🔥 尝试快速路径:直接写入 uint64
+		val64 := binary.BigEndian.Uint64(result)
+		if err := be.fastWriteUint64LE(this, offset, val64); err == nil {
+			return runtime.ToValue(offset + 8)
+		}
+
+		// 降级到兼容路径（用于类 Buffer 对象）
 		for i := 0; i < 8; i++ {
 			this.Set(strconv.FormatInt(offset+int64(i), 10), runtime.ToValue(result[7-i]))
 		}
