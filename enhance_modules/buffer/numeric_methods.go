@@ -42,7 +42,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		if val := this.Get(strconv.FormatInt(offset, 10)); !goja.IsUndefined(val) {
 			if byteVal := val.ToInteger(); byteVal >= 0 {
 				// 转换为有符号int8
-				result := int8(byteVal & 0xFF)
+				result := int8(byteVal & ByteMask)
 				return runtime.ToValue(int64(result))
 			}
 		}
@@ -84,7 +84,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		}
 
 		// 降级到兼容路径（用于普通对象/数组）
-		this.Set(strconv.FormatInt(offset, 10), runtime.ToValue(value&0xFF))
+		this.Set(strconv.FormatInt(offset, 10), runtime.ToValue(value&ByteMask))
 		return runtime.ToValue(offset + 1)
 	}
 	writeInt8Value := runtime.ToValue(writeInt8Func)
@@ -110,7 +110,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		// 降级到兼容路径（用于类 Buffer 对象）
 		if val := this.Get(strconv.FormatInt(offset, 10)); !goja.IsUndefined(val) {
 			if byteVal := val.ToInteger(); byteVal >= 0 {
-				return runtime.ToValue(byteVal & 0xFF)
+				return runtime.ToValue(byteVal & ByteMask)
 			}
 		}
 		panic(runtime.NewTypeError("RangeError: 偏移量超出 Buffer 边界"))
@@ -151,7 +151,7 @@ func (be *BufferEnhancer) addBufferNumericMethods(runtime *goja.Runtime, prototy
 		}
 
 		// 降级到兼容路径（用于普通对象/数组）
-		this.Set(strconv.FormatInt(offset, 10), runtime.ToValue(value&0xFF))
+		this.Set(strconv.FormatInt(offset, 10), runtime.ToValue(value&ByteMask))
 		return runtime.ToValue(offset + 1)
 	}
 	writeUInt8Value := runtime.ToValue(writeUInt8Func)

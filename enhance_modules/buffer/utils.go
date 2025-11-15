@@ -30,9 +30,9 @@ func valueToUint8(v goja.Value) uint8 {
 	i := num.ToInteger()
 
 	// Apply modulo 256 with proper handling of negative values
-	mod := i % 256
+	mod := i % (Uint8Max + 1)
 	if mod < 0 {
-		mod += 256
+		mod += (Uint8Max + 1)
 	}
 
 	return uint8(mod)
@@ -119,7 +119,7 @@ func (be *BufferEnhancer) getBufferByte(buffer *goja.Object, offset int64) uint8
 	if val == nil || goja.IsUndefined(val) || goja.IsNull(val) {
 		return 0
 	}
-	return uint8(val.ToInteger() & 0xFF)
+	return uint8(val.ToInteger() & ByteMask)
 }
 
 // exportBufferBytesFast 快速导出 Buffer/Uint8Array 数据到 Go []byte
@@ -489,7 +489,7 @@ func validateSafeIntegerArg(runtime *goja.Runtime, arg goja.Value, argName strin
 	case uint64:
 		// uint64 可能超出 int64 范围
 		if v > math.MaxInt64 {
-			panic(newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", argName, v)))
+			panic(newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be >= 0 && <= %d. Received %d", argName, MaxSafeInteger, v)))
 		}
 		intVal = int64(v)
 		floatVal = float64(v)
@@ -530,11 +530,11 @@ func validateSafeIntegerArg(runtime *goja.Runtime, arg goja.Value, argName strin
 	intVal = int64(floatVal)
 
 	// 8. 检查是否为安全整数（>= 0 && <= MAX_SAFE_INTEGER）
-	// MAX_SAFE_INTEGER = 9007199254740991
-	const maxSafeInteger = 9007199254740991
-	if intVal < 0 || intVal > maxSafeInteger {
+	// MAX_SAFE_INTEGER 使用全局常量
+// 	const maxSafeInteger = MaxSafeInteger // 已移至 constants.go
+	if intVal < 0 || intVal > MaxSafeInteger {
 		argStr := arg.String()
-		panic(newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s", argName, argStr)))
+		panic(newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be >= 0 && <= %d. Received %s", argName, MaxSafeInteger, argStr)))
 	}
 
 	return intVal

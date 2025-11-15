@@ -17,18 +17,16 @@ import (
 // 🔥 支持 mmap cleanup 管理，避免内存泄漏和崩溃
 func OptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool, size int64, fill interface{}, encoding string) (goja.Value, error) {
 	if size < 0 {
-		panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
+		panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %d", MaxSafeInteger, size)))
 	}
 
 	// Node.js 兼容的最大限制检查
-	const maxSafeInteger = 9007199254740991
-	if size > maxSafeInteger {
-		panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
+	if size > MaxSafeInteger {
+		panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %d", MaxSafeInteger, size)))
 	}
 
 	// 实际内存分配限制（防止系统内存耗尽）
-	const maxActualSize = 2 * 1024 * 1024 * 1024 // 2GB
-	if size > maxActualSize {
+	if size > MaxPracticalLength {
 		panic(newRangeError(runtime, "Array buffer allocation failed"))
 	}
 
@@ -185,17 +183,17 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 		if sizeArg.ExportType() != nil && sizeArg.ExportType().Kind().String() == "float64" {
 			f := sizeArg.ToFloat()
 			if math.IsNaN(f) {
-				panic(newRangeError(runtime, "The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received NaN"))
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received NaN", MaxSafeInteger)))
 			}
 			if math.IsInf(f, 1) {
-				panic(newRangeError(runtime, "The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received Infinity"))
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received Infinity", MaxSafeInteger)))
 			}
 			if math.IsInf(f, -1) {
-				panic(newRangeError(runtime, "The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received -Infinity"))
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received -Infinity", MaxSafeInteger)))
 			}
 			// 检查负数（包括极小的负数如-Number.MIN_VALUE）
 			if f < 0 {
-				panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %g", f)))
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %g", MaxSafeInteger, f)))
 			}
 			size = int64(f)
 		} else {
@@ -204,12 +202,11 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 
 		// 范围检查 - 使用 RangeError
 		if size < 0 {
-			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
+			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %d", MaxSafeInteger, size)))
 		}
 
-		const maxSafeInteger = 9007199254740991 // Number.MAX_SAFE_INTEGER
-		if size > maxSafeInteger {
-			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
+		if size > MaxSafeInteger {
+			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %d", MaxSafeInteger, size)))
 		}
 
 		// 检查是否有填充值
@@ -304,17 +301,17 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 		if sizeArg.ExportType() != nil && sizeArg.ExportType().Kind().String() == "float64" {
 			f := sizeArg.ToFloat()
 			if math.IsNaN(f) {
-				panic(newRangeError(runtime, "The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received NaN"))
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received NaN", MaxSafeInteger)))
 			}
 			if math.IsInf(f, 1) {
-				panic(newRangeError(runtime, "The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received Infinity"))
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received Infinity", MaxSafeInteger)))
 			}
 			if math.IsInf(f, -1) {
-				panic(newRangeError(runtime, "The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received -Infinity"))
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received -Infinity", MaxSafeInteger)))
 			}
 			// 检查负数（包括极小的负数如-Number.MIN_VALUE）
 			if f < 0 {
-				panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %g", f)))
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %g", MaxSafeInteger, f)))
 			}
 			size = int64(f)
 		} else {
@@ -323,16 +320,14 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 
 		// 范围检查 - 使用 RangeError
 		if size < 0 {
-			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
+			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %d", MaxSafeInteger, size)))
 		}
 
-		const maxSafeInteger = 9007199254740991 // Number.MAX_SAFE_INTEGER
-		if size > maxSafeInteger {
-			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
+		if size > MaxSafeInteger {
+			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %d", MaxSafeInteger, size)))
 		}
 
-		const maxSize = 2 * 1024 * 1024 * 1024 // 2GB
-		if size > maxSize {
+		if size > MaxPracticalLength {
 			panic(newRangeError(runtime, "Array buffer allocation failed"))
 		}
 
@@ -423,17 +418,17 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 		if sizeArg.ExportType() != nil && sizeArg.ExportType().Kind().String() == "float64" {
 			f := sizeArg.ToFloat()
 			if math.IsNaN(f) {
-				panic(newRangeError(runtime, "The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received NaN"))
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received NaN", MaxSafeInteger)))
 			}
 			if math.IsInf(f, 1) {
-				panic(newRangeError(runtime, "The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received Infinity"))
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received Infinity", MaxSafeInteger)))
 			}
 			if math.IsInf(f, -1) {
-				panic(newRangeError(runtime, "The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received -Infinity"))
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received -Infinity", MaxSafeInteger)))
 			}
 			// 检查负数（包括极小的负数如-Number.MIN_VALUE）
 			if f < 0 {
-				panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %g", f)))
+				panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %g", MaxSafeInteger, f)))
 			}
 			size = int64(f)
 		} else {
@@ -442,16 +437,14 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 
 		// 范围检查 - 使用 RangeError
 		if size < 0 {
-			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
+			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %d", MaxSafeInteger, size)))
 		}
 
-		const maxSafeInteger = 9007199254740991 // Number.MAX_SAFE_INTEGER
-		if size > maxSafeInteger {
-			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", size)))
+		if size > MaxSafeInteger {
+			panic(newRangeError(runtime, fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %d", MaxSafeInteger, size)))
 		}
 
-		const maxSize = 2 * 1024 * 1024 * 1024 // 2GB
-		if size > maxSize {
+		if size > MaxPracticalLength {
 			panic(newRangeError(runtime, "Array buffer allocation failed"))
 		}
 
@@ -497,10 +490,9 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 	// MAX_LENGTH: 单个 Buffer 实例允许的最大大小
 	// 在 32 位架构上约为 2^30 - 1 (~1GB)
 	// 在 64 位架构上约为 2^31 - 1 (~2GB) 或 Number.MAX_SAFE_INTEGER
-	const maxSafeInteger = 9007199254740991 // Number.MAX_SAFE_INTEGER
 	constantsObj.DefineDataProperty(
 		"MAX_LENGTH",
-		runtime.ToValue(maxSafeInteger),
+		runtime.ToValue(MaxSafeInteger),
 		goja.FLAG_FALSE, // writable
 		goja.FLAG_FALSE, // configurable
 		goja.FLAG_TRUE,  // enumerable
@@ -508,10 +500,9 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 
 	// MAX_STRING_LENGTH: 单个字符串实例允许的最大长度
 	// 取决于 JS 引擎的实现，Node.js 中约为 2^29 - 24 (~536MB)
-	const maxStringLength = 536870888 // Node.js v25 的值
 	constantsObj.DefineDataProperty(
 		"MAX_STRING_LENGTH",
-		runtime.ToValue(maxStringLength),
+		runtime.ToValue(MaxStringLength),
 		goja.FLAG_FALSE, // writable
 		goja.FLAG_FALSE, // configurable
 		goja.FLAG_TRUE,  // enumerable
@@ -528,19 +519,19 @@ func SetupOptimizedBufferAlloc(runtime *goja.Runtime, pool *BufferPool) {
 				if (bufferModule && typeof bufferModule.constants === 'undefined') {
 					// 创建 constants 对象
 					var constants = {
-						MAX_LENGTH: 9007199254740991,
-						MAX_STRING_LENGTH: 536870888
+						MAX_LENGTH: ` + strconv.FormatInt(MaxSafeInteger, 10) + `,
+						MAX_STRING_LENGTH: ` + strconv.FormatInt(MaxStringLength, 10) + `
 					};
 
 					// 冻结对象以防修改
 					Object.defineProperty(constants, 'MAX_LENGTH', {
-						value: 9007199254740991,
+						value: ` + strconv.FormatInt(MaxSafeInteger, 10) + `,
 						writable: false,
 						enumerable: true,
 						configurable: false
 					});
 					Object.defineProperty(constants, 'MAX_STRING_LENGTH', {
-						value: 536870888,
+						value: ` + strconv.FormatInt(MaxStringLength, 10) + `,
 						writable: false,
 						enumerable: true,
 						configurable: false
@@ -756,10 +747,10 @@ func encodeString(str, encoding string, runtime *goja.Runtime) []byte {
 		}
 		return decoded
 	case "ascii":
-		// ASCII 编码，超过 127 的字符截断
+		// ASCII 编码，超过 Int8Max 的字符截断
 		result := make([]byte, len(str))
 		for i, r := range str {
-			if r > 127 {
+			if r > Int8Max {
 				result[i] = byte(r & 0x7F)
 			} else {
 				result[i] = byte(r)

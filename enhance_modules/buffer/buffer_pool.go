@@ -73,7 +73,7 @@ type BufferPool struct {
 // NewBufferPool 创建新的 Buffer 池
 func NewBufferPool(poolSize int) *BufferPool {
 	if poolSize <= 0 {
-		poolSize = 8192 // 默认 8KB，与 Node.js 一致
+		poolSize = DefaultPoolSize // 默认 8KB，与 Node.js 一致
 	}
 	return &BufferPool{
 		pool:     make([]byte, poolSize),
@@ -89,10 +89,10 @@ func NewBufferPool(poolSize int) *BufferPool {
 func (bp *BufferPool) Alloc(size int) ([]byte, *MmapCleanup) {
 	// 🔥 性能优化：大 Buffer 直接分配，不使用池
 	// 这样避免大 Buffer 占用整个池，导致小 Buffer 无法使用池
-	if size > bp.poolSize/2 {
+	if size > bp.poolSize/PoolThresholdRatio {
 		// 🔥 超大 Buffer (>10MB) 使用 mmap 优化分配
 		// 返回 cleanup 对象用于显式生命周期管理
-		if size > 10*1024*1024 {
+		if size > MmapThreshold {
 			return allocLargeBuffer(size)
 		}
 		return make([]byte, size), nil
@@ -128,7 +128,7 @@ func (bp *BufferPool) AllocZeroed(size int) ([]byte, *MmapCleanup) {
 	// 因为 make() 已经零初始化了
 	// 大 Buffer (>poolSize/2) 由 Alloc() 通过 make() 或 mmap 分配
 	// mmap 返回的内存 OS 保证是零页，不需要额外初始化
-	if size <= bp.poolSize/2 {
+	if size <= bp.poolSize/PoolThresholdRatio {
 		// 零初始化（清除池中的旧数据）
 		// 使用 memclr 优化（Go 编译器会优化为 memclr）
 		for i := range data {

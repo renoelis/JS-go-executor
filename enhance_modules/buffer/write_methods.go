@@ -1561,7 +1561,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 
 			// 检查范围
 			if intVal < min {
-				errObj := newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be >= %d && <= %d. Received %d", name, min, 9007199254740991, intVal))
+				errObj := newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be >= %d && <= %d. Received %d", name, min, MaxSafeInteger, intVal))
 				panic(errObj)
 			}
 			if intVal > max {
@@ -1573,13 +1573,13 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		}
 
 		if len(call.Arguments) > 1 {
-			targetStart = validateOffset(call.Arguments[1], "targetStart", 0, 9007199254740991)
+			targetStart = validateOffset(call.Arguments[1], "targetStart", 0, MaxSafeInteger)
 		}
 		if len(call.Arguments) > 2 {
 			targetEnd = validateOffset(call.Arguments[2], "targetEnd", 0, targetLength)
 		}
 		if len(call.Arguments) > 3 {
-			sourceStart = validateOffset(call.Arguments[3], "sourceStart", 0, 9007199254740991)
+			sourceStart = validateOffset(call.Arguments[3], "sourceStart", 0, MaxSafeInteger)
 		}
 		if len(call.Arguments) > 4 {
 			sourceEnd = validateOffset(call.Arguments[4], "sourceEnd", 0, thisLength)
@@ -2072,7 +2072,7 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 
 		// 1. 检查 offset 是否为负数
 		if offset < 0 {
-			errObj := newRangeError(runtime, fmt.Sprintf("The value of \"offset\" is out of range. It must be >= 0 && <= %d. Received %d", 9007199254740991, offset))
+			errObj := newRangeError(runtime, fmt.Sprintf("The value of \"offset\" is out of range. It must be >= 0 && <= %d. Received %d", MaxSafeInteger, offset))
 			panic(errObj)
 		}
 
@@ -3440,9 +3440,9 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 					panic(newRangeError(runtime, "The value of \"offset\" is out of range. It must be an integer. Received Infinity"))
 				}
 				// 🔥 修复：检查极大值（如 Number.MAX_VALUE）
-				// Number.MAX_SAFE_INTEGER = 2^53 - 1 = 9007199254740991
+				// Number.MAX_SAFE_INTEGER = 2^53 - 1
 				// 任何超过此值的浮点数都无法安全表示为整数，直接抛出错误
-				if f > 9007199254740991 || f < -9007199254740991 {
+				if f > float64(MaxSafeInteger) || f < -float64(MaxSafeInteger) {
 					panic(newRangeError(runtime, "offset is out of bounds"))
 				}
 				offset = offsetVal.ToInteger()

@@ -95,8 +95,8 @@ type MmapResourceTracker struct {
 
 // 全局追踪器实例
 var globalMmapTracker = &MmapResourceTracker{
-	cleanupInterval: 30 * time.Second, // 每 30 秒清理一次
-	leakTimeout:     5 * time.Minute,  // 5 分钟未释放视为泄漏
+	cleanupInterval: MmapCleanupInterval * time.Second, // 每 30 秒清理一次
+	leakTimeout:     time.Duration(MmapLeakTimeout) * time.Second,  // 5 分钟未释放视为泄漏
 	stopCh:          make(chan struct{}),
 }
 
@@ -157,7 +157,7 @@ func (t *MmapResourceTracker) cleanup() {
 	}
 
 	now := time.Now()
-	toRemove := make([]*MmapResource, 0, 64) // 预分配容量
+	toRemove := make([]*MmapResource, 0, MmapCleanupBatchSize) // 预分配容量
 
 	t.resources.Range(func(key, value interface{}) bool {
 		res := key.(*MmapResource)

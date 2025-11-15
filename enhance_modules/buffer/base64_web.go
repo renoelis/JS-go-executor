@@ -42,7 +42,7 @@ func RegisterBase64Functions(runtime *goja.Runtime) {
 		// 将字符串转换为字节数组 - 每个字符作为一个字节处理（Latin-1）
 		bytes := make([]byte, 0, len(input))
 		for _, r := range input {
-			if r > 255 {
+			if r > Uint8Max {
 				// 创建 InvalidCharacterError
 				err := runtime.NewGoError(errors.New("InvalidCharacterError The string to be encoded contains characters outside of the Latin1 range."))
 				err.Set("name", runtime.ToValue("InvalidCharacterError"))

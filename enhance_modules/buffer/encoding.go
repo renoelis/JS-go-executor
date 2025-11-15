@@ -119,7 +119,7 @@ func decodeHexLenient(str string) ([]byte, error) {
 	validStr := ""
 	for i := 0; i < len(str); i++ {
 		c := str[i]
-		if hexCharToByte(c) == 255 {
+		if hexCharToByte(c) == Uint8Max {
 			// 遇到无效字符，停止解析
 			break
 		}
@@ -143,7 +143,7 @@ func decodeHexLenient(str string) ([]byte, error) {
 	for i := 0; i < len(str); i += 2 {
 		high := hexCharToByte(str[i])
 		low := hexCharToByte(str[i+1])
-		if high == 255 || low == 255 {
+		if high == Uint8Max || low == Uint8Max {
 			// 无效的 hex 字符（不应该发生，因为上面已经过滤了）
 			return nil, nil
 		}

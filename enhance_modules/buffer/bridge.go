@@ -296,8 +296,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 				// 虽然 Node.js 理论上支持 MAX_SAFE_INTEGER，但实际上无法分配那么大的内存
 				// 参考：Node.js 的 buffer.constants.MAX_LENGTH 在不同平台上不同
 				// 在 64 位系统上约为 2GB (2^31 - 1)
-				const maxPracticalLength = int64(2147483647) // 2GB (0x7FFFFFFF)
-				if length > maxPracticalLength {
+				if length > MaxPracticalLength {
 					// 对齐 Node.js 的错误消息 - 应该抛出 RangeError
 					panic(newRangeError(runtime, "Array buffer allocation failed"))
 				}
@@ -1128,7 +1127,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 			totalLength = lengthArg.ToInteger()
 			// 🔥 修复：检查负数总长度（对齐 Node.js v25.0.0）
 			if totalLength < 0 {
-				errObj := runtime.NewGoError(fmt.Errorf("The value of \"length\" is out of range. It must be >= 0 && <= 9007199254740991. Received %d", totalLength))
+				errObj := runtime.NewGoError(fmt.Errorf("The value of \"length\" is out of range. It must be >= 0 && <= %d. Received %d", MaxSafeInteger, totalLength))
 				errObj.Set("code", runtime.ToValue("ERR_OUT_OF_RANGE"))
 				errObj.Set("name", runtime.ToValue("RangeError"))
 				panic(errObj)
@@ -1330,8 +1329,8 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 
 	// 🔥 P1 修复：添加 Buffer.poolSize 属性 (Node.js v18+)
 	// poolSize 控制预分配的内部 Buffer 池的大小（字节）
-	// 默认值：8192 (8KB)
-	buffer.Set("poolSize", runtime.ToValue(8192))
+	// 默认值：DefaultPoolSize (8KB)
+	buffer.Set("poolSize", runtime.ToValue(DefaultPoolSize))
 
 	// 🔥 添加 Buffer.copyBytesFrom 静态方法（Node.js v17+）
 	// 创建一个新 Buffer，包含 view 的副本
@@ -2107,7 +2106,7 @@ func calculateHexLength(str string) int {
 	// 检查字符串是否包含非ASCII字符（如中文、emoji）
 	hasNonASCII := false
 	for _, r := range str {
-		if r > 127 {
+		if r > Int8Max {
 			hasNonASCII = true
 			break
 		}
