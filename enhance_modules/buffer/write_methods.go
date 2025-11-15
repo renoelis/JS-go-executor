@@ -1809,15 +1809,18 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 				case "hex":
 					// 🔥 修复：Node.js v25.0.0 hex 处理逻辑
 					// 只使用有效的 hex 字符，遇到无效字符时截断
-					validHex := ""
+					// 优化：使用 strings.Builder 替代字符串拼接，避免 O(n²) 复杂度
+					var validHexBuilder strings.Builder
+					validHexBuilder.Grow(len(fillStr))
 					for _, r := range fillStr {
 						if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
-							validHex += string(r)
+							validHexBuilder.WriteRune(r)
 						} else {
 							// 遇到无效字符，停止
 							break
 						}
 					}
+					validHex := validHexBuilder.String()
 
 					if validHex == "" {
 						// 没有有效的 hex 字符，抛出异常

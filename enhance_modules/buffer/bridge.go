@@ -2053,14 +2053,16 @@ func calculateHexLength(str string) int {
 	// Node.js的Buffer.byteLength对hex的处理逻辑：
 	// 1. 移除空白字符（空格、制表符、换行符）
 	// 2. 按总长度除以2计算（向下取整）
-	cleanStr := ""
+	// 优化：使用 strings.Builder 替代字符串拼接，避免 O(n²) 复杂度
+	var cleanStr strings.Builder
+	cleanStr.Grow(len(str))
 	for _, r := range str {
 		// 只移除空白字符，保留其他所有字符（包括无效的hex字符）
 		if r != ' ' && r != '\t' && r != '\n' && r != '\r' {
-			cleanStr += string(r)
+			cleanStr.WriteRune(r)
 		}
 	}
 
 	// 按总长度计算，每2个字符对应1个字节
-	return len(cleanStr) / 2
+	return len(cleanStr.String()) / 2
 }

@@ -118,17 +118,19 @@ func decodeBase64URLLenient(str string) ([]byte, error) {
 func decodeHexLenient(str string) ([]byte, error) {
 	// 🔥 修复：遇到无效字符时停止解析（Node.js v25 行为）
 	// 不是忽略空格，而是遇到空格就停止
-	validStr := ""
+	// 优化：使用 strings.Builder 替代字符串拼接，避免 O(n²) 复杂度
+	var validStr strings.Builder
+	validStr.Grow(len(str))
 	for i := 0; i < len(str); i++ {
 		c := str[i]
 		if hexCharToByte(c) == Uint8Max {
 			// 遇到无效字符，停止解析
 			break
 		}
-		validStr += string(c)
+		validStr.WriteByte(c)
 	}
 
-	str = validStr
+	str = validStr.String()
 
 	// 如果长度为奇数，去掉最后一个字符
 	if len(str)%2 != 0 {
