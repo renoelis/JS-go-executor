@@ -40,7 +40,6 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 
 		arg0 := call.Arguments[0]
 
-
 		// 🔥 修复：首先检查 Symbol 类型（必须在所有其他检查之前）
 		if _, isSymbol := arg0.(*goja.Symbol); isSymbol {
 			symStr := arg0.String()
@@ -317,7 +316,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 				// 🔥 修复：TypedArray 类型检查 - 区分需要逐元素转换的 TypedArray
 				// Uint8Array, Uint8ClampedArray, Buffer 可以直接复制字节
 				// Float32Array, Float64Array, Int16Array 等需要逐元素转换
-				isDirectCopyTypedArray := false // 可直接复制的 TypedArray
+				isDirectCopyTypedArray := false    // 可直接复制的 TypedArray
 				needsConversionTypedArray := false // 需要逐元素转换的 TypedArray
 
 				bytesPerElement := arg0Obj.Get("BYTES_PER_ELEMENT")
@@ -904,38 +903,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		}
 
 		// 验证 buf1
-		buf1Arg := call.Arguments[0]
-		if goja.IsNull(buf1Arg) {
-			panic(runtime.NewTypeError("The \"buf1\" argument must be an instance of Buffer or Uint8Array. Received null"))
-		}
-		if goja.IsUndefined(buf1Arg) {
-			panic(runtime.NewTypeError("The \"buf1\" argument must be an instance of Buffer or Uint8Array. Received undefined"))
-		}
-
-		// 先检查 buf1 是否是基本类型
-		exportedVal1 := buf1Arg.Export()
-		if exportedVal1 == nil {
-			panic(runtime.NewTypeError("The \"buf1\" argument must be an instance of Buffer or Uint8Array. Received null"))
-		}
-		switch v := exportedVal1.(type) {
-		case string:
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"buf1\" argument must be an instance of Buffer or Uint8Array. Received type string ('%s')", v)))
-		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"buf1\" argument must be an instance of Buffer or Uint8Array. Received type number (%v)", v)))
-		case bool:
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"buf1\" argument must be an instance of Buffer or Uint8Array. Received type boolean (%v)", v)))
-		}
-
-		buf1 := buf1Arg.ToObject(runtime)
-		if buf1 == nil {
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"buf1\" argument must be an instance of Buffer or Uint8Array. Received %v", buf1Arg.String())))
-		}
-
-		// 使用严格的类型检查
-		if !isBufferOrUint8Array(runtime, buf1) {
-			errorMsg := getDetailedTypeError(runtime, buf1, "buf1")
-			panic(runtime.NewTypeError(errorMsg))
-		}
+		buf1 := validateBufferOrUint8ArrayArg(runtime, call.Arguments[0], "buf1")
 
 		buf1LengthVal := buf1.Get("length")
 		if buf1LengthVal == nil || goja.IsUndefined(buf1LengthVal) {
@@ -943,38 +911,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		}
 
 		// 验证 buf2
-		buf2Arg := call.Arguments[1]
-		if goja.IsNull(buf2Arg) {
-			panic(runtime.NewTypeError("The \"buf2\" argument must be an instance of Buffer or Uint8Array. Received null"))
-		}
-		if goja.IsUndefined(buf2Arg) {
-			panic(runtime.NewTypeError("The \"buf2\" argument must be an instance of Buffer or Uint8Array. Received undefined"))
-		}
-
-		// 先检查 buf2 是否是基本类型
-		exportedVal2 := buf2Arg.Export()
-		if exportedVal2 == nil {
-			panic(runtime.NewTypeError("The \"buf2\" argument must be an instance of Buffer or Uint8Array. Received null"))
-		}
-		switch v := exportedVal2.(type) {
-		case string:
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"buf2\" argument must be an instance of Buffer or Uint8Array. Received type string ('%s')", v)))
-		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"buf2\" argument must be an instance of Buffer or Uint8Array. Received type number (%v)", v)))
-		case bool:
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"buf2\" argument must be an instance of Buffer or Uint8Array. Received type boolean (%v)", v)))
-		}
-
-		buf2 := buf2Arg.ToObject(runtime)
-		if buf2 == nil {
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"buf2\" argument must be an instance of Buffer or Uint8Array. Received %v", buf2Arg.String())))
-		}
-
-		// 使用严格的类型检查
-		if !isBufferOrUint8Array(runtime, buf2) {
-			errorMsg := getDetailedTypeError(runtime, buf2, "buf2")
-			panic(runtime.NewTypeError(errorMsg))
-		}
+		buf2 := validateBufferOrUint8ArrayArg(runtime, call.Arguments[1], "buf2")
 
 		buf2LengthVal := buf2.Get("length")
 		if buf2LengthVal == nil || goja.IsUndefined(buf2LengthVal) {
@@ -1608,7 +1545,7 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		validEncodings := map[string]bool{
 			"utf8": true, "utf-8": true,
 			"latin1": true, "binary": true,
-			"ascii": true,
+			"ascii":   true,
 			"utf16le": true, "ucs2": true, "ucs-2": true, "utf-16le": true,
 		}
 		if !validEncodings[fromEncoding] {

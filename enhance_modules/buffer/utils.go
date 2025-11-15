@@ -531,7 +531,7 @@ func validateSafeIntegerArg(runtime *goja.Runtime, arg goja.Value, argName strin
 
 	// 8. 检查是否为安全整数（>= 0 && <= MAX_SAFE_INTEGER）
 	// MAX_SAFE_INTEGER 使用全局常量
-// 	const maxSafeInteger = MaxSafeInteger // 已移至 constants.go
+	// 	const maxSafeInteger = MaxSafeInteger // 已移至 constants.go
 	if intVal < 0 || intVal > MaxSafeInteger {
 		argStr := arg.String()
 		panic(newRangeError(runtime, fmt.Sprintf("The value of \"%s\" is out of range. It must be >= 0 && <= %d. Received %s", argName, MaxSafeInteger, argStr)))
@@ -1413,6 +1413,45 @@ func getDetailedTypeError(runtime *goja.Runtime, obj *goja.Object, argName strin
 
 	// 如果无法获取类型名称，返回通用错误
 	return fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received an instance of Object", argName)
+}
+
+func validateBufferOrUint8ArrayArg(runtime *goja.Runtime, arg goja.Value, argName string) *goja.Object {
+	if goja.IsNull(arg) {
+		panic(runtime.NewTypeError(fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received null", argName)))
+	}
+	if goja.IsUndefined(arg) {
+		panic(runtime.NewTypeError(fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received undefined", argName)))
+	}
+
+	exported := arg.Export()
+	if exported == nil {
+		panic(runtime.NewTypeError(fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received null", argName)))
+	}
+
+	switch v := exported.(type) {
+	case string:
+		panic(runtime.NewTypeError(fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received type string ('%s')", argName, v)))
+	case int, int8, int16, int32, int64:
+		panic(runtime.NewTypeError(fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received type number (%v)", argName, v)))
+	case uint, uint8, uint16, uint32, uint64:
+		panic(runtime.NewTypeError(fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received type number (%v)", argName, v)))
+	case float32, float64:
+		panic(runtime.NewTypeError(fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received type number (%v)", argName, v)))
+	case bool:
+		panic(runtime.NewTypeError(fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received type boolean (%v)", argName, v)))
+	}
+
+	obj := arg.ToObject(runtime)
+	if obj == nil {
+		panic(runtime.NewTypeError(fmt.Sprintf("The \"%s\" argument must be an instance of Buffer or Uint8Array. Received %v", argName, arg.String())))
+	}
+
+	if !isBufferOrUint8Array(runtime, obj) {
+		errorMsg := getDetailedTypeError(runtime, obj, argName)
+		panic(runtime.NewTypeError(errorMsg))
+	}
+
+	return obj
 }
 
 // isArrayLike 检查对象是否类似数组（有length属性且为数组类型）

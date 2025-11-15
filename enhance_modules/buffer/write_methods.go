@@ -1406,52 +1406,13 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		}
 
 		// 验证 target 参数类型
-		targetArg := call.Arguments[0]
-		if goja.IsNull(targetArg) {
-			panic(runtime.NewTypeError("The \"target\" argument must be an instance of Buffer or Uint8Array. Received null"))
-		}
-		if goja.IsUndefined(targetArg) {
-			panic(runtime.NewTypeError("The \"target\" argument must be an instance of Buffer or Uint8Array. Received undefined"))
-		}
-
-		// 先检查是否是基本类型，避免 ToObject 导致 nil
-		exportedVal := targetArg.Export()
-		if exportedVal == nil {
-			panic(runtime.NewTypeError("The \"target\" argument must be an instance of Buffer or Uint8Array. Received null"))
-		}
-
-		// 根据类型生成对应的错误消息
-		switch v := exportedVal.(type) {
-		case string:
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"target\" argument must be an instance of Buffer or Uint8Array. Received type string ('%s')", v)))
-		case int, int8, int16, int32, int64:
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"target\" argument must be an instance of Buffer or Uint8Array. Received type number (%v)", v)))
-		case uint, uint8, uint16, uint32, uint64:
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"target\" argument must be an instance of Buffer or Uint8Array. Received type number (%v)", v)))
-		case float32, float64:
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"target\" argument must be an instance of Buffer or Uint8Array. Received type number (%v)", v)))
-		case bool:
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"target\" argument must be an instance of Buffer or Uint8Array. Received type boolean (%v)", v)))
-		}
-
-		// 转换为对象
-		target := targetArg.ToObject(runtime)
-		if target == nil {
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"target\" argument must be an instance of Buffer or Uint8Array. Received %v", targetArg.String())))
-		}
+		target := validateBufferOrUint8ArrayArg(runtime, call.Arguments[0], "target")
 
 		// 🔥 Node.js v25.0.0 严格类型检查：只接受 Buffer 和 Uint8Array
 		// 验证 target 是否有 length 属性
 		lengthVal := target.Get("length")
 		if lengthVal == nil || goja.IsUndefined(lengthVal) {
 			panic(runtime.NewTypeError("The \"target\" argument must be an instance of Buffer or Uint8Array. Received an instance of Object"))
-		}
-
-		// 使用严格的类型检查
-		if !isBufferOrUint8Array(runtime, target) {
-			// 获取详细的错误信息
-			errorMsg := getDetailedTypeError(runtime, target, "target")
-			panic(runtime.NewTypeError(errorMsg))
 		}
 
 		// 获取两个buffer的长度
@@ -1661,165 +1622,22 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 	// 添加 equals 方法
 	equalsFunc := func(call goja.FunctionCall) goja.Value {
 		this := call.This.ToObject(runtime)
-		if this == nil {
+		if this == nil || !isBufferOrUint8Array(runtime, this) {
 			panic(runtime.NewTypeError("Method get TypedArray.prototype.equals called on incompatible receiver"))
 		}
-
-		// 🔥 验证 this 是否是 Buffer 或 Uint8Array 实例
-		// 检查 this 是否有 length 属性
 		thisLengthVal := this.Get("length")
 		if thisLengthVal == nil || goja.IsUndefined(thisLengthVal) {
-			panic(runtime.NewTypeError("Method get TypedArray.prototype.equals called on incompatible receiver"))
-		}
-
-		// 检查 this 是否是 Buffer 实例
-		isThisBuffer := false
-		bufferConstructor := runtime.Get("Buffer")
-		if !goja.IsUndefined(bufferConstructor) {
-			if bufferCtor := bufferConstructor.ToObject(runtime); bufferCtor != nil {
-				if prototype := bufferCtor.Get("prototype"); !goja.IsUndefined(prototype) {
-					if protoObj := prototype.ToObject(runtime); protoObj != nil {
-						objProto := this.Prototype()
-						if objProto != nil && objProto == protoObj {
-							isThisBuffer = true
-						}
-					}
-				}
-			}
-		}
-
-		// 检查 this 是否是 Uint8Array 实例
-		isThisUint8Array := false
-		if constructor := this.Get("constructor"); !goja.IsUndefined(constructor) {
-			if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
-				if name := constructorObj.Get("name"); !goja.IsUndefined(name) {
-					nameStr := name.String()
-					if nameStr == "Uint8Array" {
-						if bytesPerElement := this.Get("BYTES_PER_ELEMENT"); !goja.IsUndefined(bytesPerElement) {
-							isThisUint8Array = true
-						}
-					}
-				}
-			}
-		}
-
-		// 如果 this 既不是 Buffer 也不是 Uint8Array，抛出错误
-		if !isThisBuffer && !isThisUint8Array {
 			panic(runtime.NewTypeError("Method get TypedArray.prototype.equals called on incompatible receiver"))
 		}
 
 		if len(call.Arguments) == 0 {
 			panic(runtime.NewTypeError("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received undefined"))
 		}
-
-		// 🔥 复用 compare 方法的类型验证逻辑
-		otherBufferArg := call.Arguments[0]
-		if goja.IsNull(otherBufferArg) {
-			panic(runtime.NewTypeError("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received null"))
-		}
-		if goja.IsUndefined(otherBufferArg) {
-			panic(runtime.NewTypeError("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received undefined"))
-		}
-
-		// 先检查是否是基本类型
-		exportedVal := otherBufferArg.Export()
-		if exportedVal == nil {
-			panic(runtime.NewTypeError("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received null"))
-		}
-
-		// 根据类型生成对应的错误消息
-		switch v := exportedVal.(type) {
-		case string:
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received type string ('%s')", v)))
-		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received type number (%v)", v)))
-		case bool:
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received type boolean (%v)", v)))
-		}
-
-		// 转换为对象
-		target := otherBufferArg.ToObject(runtime)
-		if target == nil {
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received %v", otherBufferArg.String())))
-		}
-
-		// 检查 constructor.name 以快速排除常见的非 Buffer 类型
-		if constructor := target.Get("constructor"); !goja.IsUndefined(constructor) {
-			if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
-				if name := constructorObj.Get("name"); !goja.IsUndefined(name) {
-					nameStr := name.String()
-					switch nameStr {
-					case "Array":
-						panic(runtime.NewTypeError("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received an instance of Array"))
-					case "Function":
-						panic(runtime.NewTypeError("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received function "))
-					case "RegExp":
-						panic(runtime.NewTypeError("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received an instance of RegExp"))
-					case "Date":
-						panic(runtime.NewTypeError("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received an instance of Date"))
-					case "DataView":
-						panic(runtime.NewTypeError("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received an instance of DataView"))
-					case "Int8Array", "Uint16Array", "Int16Array", "Uint32Array", "Int32Array", "Float32Array", "Float64Array", "Uint8ClampedArray", "BigInt64Array", "BigUint64Array":
-						// 这些 TypedArray 类型不被 equals 接受，只接受 Uint8Array
-						panic(runtime.NewTypeError("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received an instance of " + nameStr))
-					}
-				}
-			}
-		}
-
-		// 验证是否有 length 属性
+		// 🔥 统一使用 validateBufferOrUint8ArrayArg 做参数验证
+		target := validateBufferOrUint8ArrayArg(runtime, call.Arguments[0], "otherBuffer")
 		lengthVal := target.Get("length")
 		if lengthVal == nil || goja.IsUndefined(lengthVal) {
 			panic(runtime.NewTypeError("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received an instance of Object"))
-		}
-
-		// 🔥 严格类型检查：确保是真正的 Buffer 或 Uint8Array 实例
-		// 检查是否是 Buffer 实例（通过原型链）
-		isBufferInstance := false
-		if !goja.IsUndefined(bufferConstructor) {
-			if bufferCtor := bufferConstructor.ToObject(runtime); bufferCtor != nil {
-				if prototype := bufferCtor.Get("prototype"); !goja.IsUndefined(prototype) {
-					if protoObj := prototype.ToObject(runtime); protoObj != nil {
-						objProto := target.Prototype()
-						if objProto != nil && objProto == protoObj {
-							isBufferInstance = true
-						}
-					}
-				}
-			}
-		}
-
-		// 检查是否是 Uint8Array 实例
-		isUint8Array := false
-		if constructor := target.Get("constructor"); !goja.IsUndefined(constructor) {
-			if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
-				if name := constructorObj.Get("name"); !goja.IsUndefined(name) {
-					nameStr := name.String()
-					if nameStr == "Uint8Array" {
-						// 进一步验证：检查是否有 BYTES_PER_ELEMENT 属性
-						if bytesPerElement := target.Get("BYTES_PER_ELEMENT"); !goja.IsUndefined(bytesPerElement) {
-							isUint8Array = true
-						}
-					}
-				}
-			}
-		}
-
-		// 如果既不是 Buffer 也不是 Uint8Array，抛出错误
-		if !isBufferInstance && !isUint8Array {
-			// 检查 constructor.name 以提供更详细的错误信息
-			constructorName := "Object"
-			if constructor := target.Get("constructor"); !goja.IsUndefined(constructor) {
-				if constructorObj := constructor.ToObject(runtime); constructorObj != nil {
-					if name := constructorObj.Get("name"); !goja.IsUndefined(name) {
-						constructorName = name.String()
-					}
-				}
-			}
-			if constructorName == "Object" {
-				panic(runtime.NewTypeError("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received an instance of Object"))
-			}
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received an instance of %s", constructorName)))
 		}
 
 		// 获取两个buffer的长度
