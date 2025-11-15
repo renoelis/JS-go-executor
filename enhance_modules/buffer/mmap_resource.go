@@ -89,14 +89,14 @@ type MmapResourceTracker struct {
 	running         atomic.Bool
 
 	// 🔥 新增：快速计数器（避免频繁遍历 sync.Map）
-	activeCount atomic.Int64 // 当前活跃的资源数量
+	activeCount   atomic.Int64 // 当前活跃的资源数量
 	releasedCount atomic.Int64 // 累计释放的资源数量
 }
 
 // 全局追踪器实例
 var globalMmapTracker = &MmapResourceTracker{
-	cleanupInterval: MmapCleanupInterval * time.Second, // 每 30 秒清理一次
-	leakTimeout:     time.Duration(MmapLeakTimeout) * time.Second,  // 5 分钟未释放视为泄漏
+	cleanupInterval: time.Duration(MmapCleanupInterval) * time.Second, // 每 30 秒清理一次
+	leakTimeout:     time.Duration(MmapLeakTimeout) * time.Second,     // 5 分钟未释放视为泄漏
 	stopCh:          make(chan struct{}),
 }
 
