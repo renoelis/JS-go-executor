@@ -19,6 +19,9 @@ type MmapResource struct {
 	released atomic.Bool  // 是否已释放（防止 double-free）
 }
 
+// mmapUnmap 封装底层 munmap 调用，便于测试中覆盖
+var mmapUnmap = syscall.Munmap
+
 // NewMmapResource 创建新的 mmap 资源
 func NewMmapResource(data []byte, size int) *MmapResource {
 	res := &MmapResource{
@@ -32,10 +35,21 @@ func NewMmapResource(data []byte, size int) *MmapResource {
 // AddRef 增加引用计数
 // 用于创建新的引用（如 Buffer.slice）
 func (m *MmapResource) AddRef() {
-	if m.released.Load() {
-		return // 已释放，不允许增加引用
+	for {
+		if m.released.Load() {
+			return // 已释放，不允许增加引用
+		}
+
+		current := m.refCount.Load()
+		if current <= 0 {
+			// 已释放或正在释放，拒绝新增引用
+			return
+		}
+
+		if m.refCount.CompareAndSwap(current, current+1) {
+			return
+		}
 	}
-	m.refCount.Add(1)
 }
 
 // Release 减少引用计数，计数为 0 时释放 mmap 内存
@@ -48,20 +62,29 @@ func (m *MmapResource) Release() {
 		return // 已释放，防止 double-free
 	}
 
-	newCount := m.refCount.Add(-1)
-	if newCount == 0 {
-		// 引用计数为 0，立即释放
-		if m.released.CompareAndSwap(false, true) {
-			if len(m.data) > 0 {
-				// 立即调用 munmap 释放内存映射
-				_ = syscall.Munmap(m.data)
-				m.data = nil
-			}
+	for {
+		current := m.refCount.Load()
+		if current <= 0 {
+			// 检测 double-free（不应该发生）
+			// 在生产环境应该记录日志而不是 panic
+			// log.Printf("ERROR: MmapResource double-free detected, size=%d", m.size)
+			return
 		}
-	} else if newCount < 0 {
-		// 检测 double-free（不应该发生）
-		// 在生产环境应该记录日志而不是 panic
-		// log.Printf("ERROR: MmapResource double-free detected, size=%d", m.size)
+
+		// 成功将计数减一
+		if m.refCount.CompareAndSwap(current, current-1) {
+			// current == 1 表示这是最后一个引用
+			if current == 1 {
+				if m.released.CompareAndSwap(false, true) {
+					if len(m.data) > 0 {
+						// 立即调用 munmap 释放内存映射
+						_ = mmapUnmap(m.data)
+						m.data = nil
+					}
+				}
+			}
+			return
+		}
 	}
 }
 

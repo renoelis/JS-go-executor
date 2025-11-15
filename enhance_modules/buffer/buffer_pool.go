@@ -60,7 +60,6 @@ func allocLargeBuffer(size int) ([]byte, *MmapCleanup) {
 	return data, resource
 }
 
-
 // BufferPool Buffer 内存池，用于优化小 Buffer 的分配性能
 // 模拟 Node.js 的 Buffer.poolSize 机制
 type BufferPool struct {
@@ -87,6 +86,11 @@ func NewBufferPool(poolSize int) *BufferPool {
 // 否则从池中切片分配
 // 🔥 返回值：(data []byte, cleanup *MmapCleanup)
 func (bp *BufferPool) Alloc(size int) ([]byte, *MmapCleanup) {
+	// 防御性检查：size 不应为负数
+	if size < 0 {
+		panic("buffer pool: negative size")
+	}
+
 	// 🔥 性能优化：大 Buffer 直接分配，不使用池
 	// 这样避免大 Buffer 占用整个池，导致小 Buffer 无法使用池
 	if size > bp.poolSize/PoolThresholdRatio {
@@ -101,8 +105,14 @@ func (bp *BufferPool) Alloc(size int) ([]byte, *MmapCleanup) {
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
 
-	// 检查池中剩余空间是否足够
-	if bp.offset+size > len(bp.pool) {
+	// 防御性检查：确保 offset 在合法范围内
+	if bp.offset < 0 || bp.offset > len(bp.pool) {
+		panic("buffer pool: offset out of range")
+	}
+
+	// 使用剩余空间计算避免整数加法溢出
+	remaining := len(bp.pool) - bp.offset
+	if size > remaining {
 		// 池空间不足，重新分配新池
 		// 注意：旧池中未使用的空间会被 GC 回收
 		bp.pool = make([]byte, bp.poolSize)
