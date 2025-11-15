@@ -29,6 +29,59 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 	// typedArrayCreate 中已经添加了对 Buffer.alloc 的支持，足以处理 Uint8Array.prototype.slice 等场景
 	// be.wrapBufferConstructor(runtime, buffer)
 
+	// 使用独立的辅助函数配置 Buffer.from 静态方法
+	be.setupBufferFrom(runtime, buffer)
+
+	// 使用独立的辅助函数配置 Buffer.isBuffer 静态方法
+	be.setupBufferIsBuffer(runtime, buffer)
+
+	// 使用独立的辅助函数配置 Buffer.allocUnsafe 静态方法
+	be.setupBufferAllocUnsafe(runtime, buffer)
+
+	// 使用独立的辅助函数配置 Buffer.allocUnsafeSlow 静态方法
+	be.setupBufferAllocUnsafeSlow(runtime, buffer)
+
+	// 使用独立的辅助函数配置 Buffer.byteLength 静态方法
+	be.setupBufferByteLength(runtime, buffer)
+
+	// 使用独立的辅助函数配置 Buffer.isEncoding 静态方法
+	be.setupBufferIsEncoding(runtime, buffer)
+
+	// 使用独立的辅助函数配置 Buffer.compare 静态方法
+	be.setupBufferCompare(runtime, buffer)
+
+	// 使用独立的辅助函数配置 Buffer.concat 静态方法
+	be.setupBufferConcat(runtime, buffer)
+
+	// 使用独立的辅助函数配置 Buffer.poolSize 静态属性
+	be.setupBufferPoolSize(runtime, buffer)
+
+	// 使用独立的辅助函数配置 Buffer.copyBytesFrom 静态方法
+	be.setupBufferCopyBytesFrom(runtime, buffer)
+
+	// 使用独立的辅助函数配置 Buffer.transcode 静态方法
+	be.setupBufferTranscode(runtime, buffer)
+
+	// 🔥 性能优化：使用优化的 Buffer.alloc 实现（带 Buffer 池）
+	SetupOptimizedBufferAlloc(runtime, be.pool)
+
+	// 为Buffer原型添加扩展方法
+	be.enhanceBufferPrototype(runtime)
+
+	// 🔥 添加 TypedArray.from() 和 of() 静态方法
+	// 注：虽然 goja 内部已实现 typedArray_from 和 typedArray_of 函数，
+	// 但通过 _putProp 添加的方法无法在 JavaScript 中访问（原因未知）
+	// 因此使用 JavaScript polyfill 作为可靠的解决方案
+	be.polyfillTypedArrayFeatures(runtime)
+
+	// 🔥 添加 structuredClone 全局函数（Web API）
+	// 用于深拷贝对象，Buffer 会被转换为 Uint8Array
+	SetupStructuredClone(runtime)
+
+	// 注：length 属性只读行为已在 goja/typedarrays.go 中修复
+}
+
+func (be *BufferEnhancer) setupBufferFrom(runtime *goja.Runtime, buffer *goja.Object) {
 	// 保存原始的 Buffer.from 方法
 	originalFrom := buffer.Get("from")
 
@@ -416,7 +469,9 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 			fromObj.DefineDataProperty("name", runtime.ToValue("from"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
 		}
 	}
+}
 
+func (be *BufferEnhancer) setupBufferIsBuffer(runtime *goja.Runtime, buffer *goja.Object) {
 	// 添加 Buffer.isBuffer 静态方法（修复版 - 严格区分 Buffer 和 TypedArray）
 	buffer.Set("isBuffer", func(obj goja.Value) bool {
 		if obj == nil || goja.IsUndefined(obj) || goja.IsNull(obj) {
@@ -509,7 +564,9 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 			isBufferObj.DefineDataProperty("name", runtime.ToValue("isBuffer"), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_FALSE)
 		}
 	}
+}
 
+func (be *BufferEnhancer) setupBufferAllocUnsafe(runtime *goja.Runtime, buffer *goja.Object) {
 	// 添加 Buffer.allocUnsafe 静态方法
 	buffer.Set("allocUnsafe", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
@@ -533,7 +590,9 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		}
 		return result
 	})
+}
 
+func (be *BufferEnhancer) setupBufferAllocUnsafeSlow(runtime *goja.Runtime, buffer *goja.Object) {
 	// 添加 Buffer.allocUnsafeSlow 静态方法
 	buffer.Set("allocUnsafeSlow", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
@@ -557,7 +616,9 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		}
 		return result
 	})
+}
 
+func (be *BufferEnhancer) setupBufferByteLength(runtime *goja.Runtime, buffer *goja.Object) {
 	// 添加 Buffer.byteLength 静态方法
 	byteLengthFunc := func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
@@ -718,9 +779,9 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 							}
 						}
 					}
-				}
 
-				// Symbol检测已在函数开头处理
+					// Symbol检测已在函数开头处理
+				}
 			}
 		}
 
@@ -776,7 +837,9 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		// 设置 name 属性
 		byteLengthObj.DefineDataProperty("name", runtime.ToValue("byteLength"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE)
 	}
+}
 
+func (be *BufferEnhancer) setupBufferIsEncoding(runtime *goja.Runtime, buffer *goja.Object) {
 	// 添加 Buffer.isEncoding 静态方法
 	// 🔥 修复：严格类型检查，不进行隐式转换（100% 对齐 Node.js v25.0.0）
 	isEncodingFunc := func(call goja.FunctionCall) goja.Value {
@@ -832,7 +895,9 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 			isEncodingFuncObj.DefineDataProperty("name", runtime.ToValue("isEncoding"), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_FALSE)
 		}
 	}
+}
 
+func (be *BufferEnhancer) setupBufferCompare(runtime *goja.Runtime, buffer *goja.Object) {
 	// 添加 Buffer.compare 静态方法
 	// 🔥 100% 对齐 Node.js v25.0.0 行为：严格参数验证
 	buffer.Set("compare", func(call goja.FunctionCall) goja.Value {
@@ -897,7 +962,9 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		}
 		return runtime.ToValue(0)
 	})
+}
 
+func (be *BufferEnhancer) setupBufferConcat(runtime *goja.Runtime, buffer *goja.Object) {
 	// 添加 Buffer.concat 静态方法
 	buffer.Set("concat", func(call goja.FunctionCall) goja.Value {
 		// Buffer.concat 静态方法实现
@@ -1204,12 +1271,16 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		// 设置 name 属性
 		concatObj.DefineDataProperty("name", runtime.ToValue("concat"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE)
 	}
+}
 
+func (be *BufferEnhancer) setupBufferPoolSize(runtime *goja.Runtime, buffer *goja.Object) {
 	// 🔥 P1 修复：添加 Buffer.poolSize 属性 (Node.js v18+)
 	// poolSize 控制预分配的内部 Buffer 池的大小（字节）
 	// 默认值：DefaultPoolSize (8KB)
 	buffer.Set("poolSize", runtime.ToValue(DefaultPoolSize))
+}
 
+func (be *BufferEnhancer) setupBufferCopyBytesFrom(runtime *goja.Runtime, buffer *goja.Object) {
 	// 🔥 添加 Buffer.copyBytesFrom 静态方法（Node.js v17+）
 	// 创建一个新 Buffer，包含 view 的副本
 	buffer.Set("copyBytesFrom", func(call goja.FunctionCall) goja.Value {
@@ -1444,7 +1515,9 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		copyBytesFromFunc.DefineDataProperty("length", runtime.ToValue(3), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE)
 		copyBytesFromFunc.DefineDataProperty("name", runtime.ToValue("copyBytesFrom"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_FALSE)
 	}
+}
 
+func (be *BufferEnhancer) setupBufferTranscode(runtime *goja.Runtime, buffer *goja.Object) {
 	// 🔥 添加 Buffer.transcode 静态方法（Node.js v7.1.0+）
 	// 将 Buffer 从一种编码转换为另一种编码
 	transcodeFunc := func(call goja.FunctionCall) goja.Value {
@@ -1642,24 +1715,6 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 			}
 		})();
 	`)
-
-	// 🔥 性能优化：使用优化的 Buffer.alloc 实现（带 Buffer 池）
-	SetupOptimizedBufferAlloc(runtime, be.pool)
-
-	// 为Buffer原型添加扩展方法
-	be.enhanceBufferPrototype(runtime)
-
-	// 🔥 添加 TypedArray.from() 和 of() 静态方法
-	// 注：虽然 goja 内部已实现 typedArray_from 和 typedArray_of 函数，
-	// 但通过 _putProp 添加的方法无法在 JavaScript 中访问（原因未知）
-	// 因此使用 JavaScript polyfill 作为可靠的解决方案
-	be.polyfillTypedArrayFeatures(runtime)
-
-	// 🔥 添加 structuredClone 全局函数（Web API）
-	// 用于深拷贝对象，Buffer 会被转换为 Uint8Array
-	SetupStructuredClone(runtime)
-
-	// 注：length 属性只读行为已在 goja/typedarrays.go 中修复
 }
 
 // enhanceBufferPrototype 为Buffer原型添加扩展方法
