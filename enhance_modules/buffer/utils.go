@@ -156,12 +156,9 @@ func (be *BufferEnhancer) exportBufferBytesFast(runtime *goja.Runtime, obj *goja
 			if byteOffset >= end {
 				return []byte{}
 			}
-			// 🔥 安全性：必须复制数据！
-			// JavaScript ArrayBuffer 的内存可能被 JS GC 移动/释放
-			// 如果返回切片引用，后续 string(data) 可能访问无效内存导致段错误
-			result := make([]byte, end-byteOffset)
-			copy(result, allBytes[byteOffset:end])
-			return result
+			// 🔥 性能优化：直接返回底层数据的切片视图
+			// 注意：调用方必须在当前调用栈内以只读方式使用该切片，不要跨协程或长期保存
+			return allBytes[byteOffset:end]
 		}
 		// 检查是否已经是 []byte
 		if byteArray, ok := exported.([]byte); ok {
@@ -193,11 +190,9 @@ func (be *BufferEnhancer) exportBufferBytesFast(runtime *goja.Runtime, obj *goja
 					if byteOffset >= end {
 						return []byte{}
 					}
-					// 🔥 安全性：必须复制数据！
-					// JavaScript ArrayBuffer 的内存可能被 JS GC 移动/释放
-					result := make([]byte, end-byteOffset)
-					copy(result, allBytes[byteOffset:end])
-					return result
+					// 🔥 性能优化：直接返回底层数据的切片视图
+					// 注意：调用方必须在当前调用栈内以只读方式使用该切片，不要跨协程或长期保存
+					return allBytes[byteOffset:end]
 				}
 			}
 		}
