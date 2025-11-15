@@ -94,6 +94,15 @@ services:
       - IP_RATE_LIMIT_GLOBAL=100
       - IP_RATE_LIMIT_GLOBAL_BURST=200
       
+      # ==================== 🔧 Buffer 模块配置 ====================
+      # 环境变量控制的 Buffer 常量
+      - BUFFER_MAX_PRACTICAL_LENGTH=2147483647    # Buffer 最大实用长度（2GB，默认：2147483647）
+      - BUFFER_MAX_SAFE_INTEGER=9007199254740991  # JavaScript MAX_SAFE_INTEGER（默认：9007199254740991）
+      - BUFFER_MAX_STRING_LENGTH=536870888        # 字符串最大长度（~536MB，默认：536870888）
+      - BUFFER_MMAP_CLEANUP_INTERVAL=30           # mmap 清理间隔（秒，默认：30）
+      - BUFFER_MMAP_LEAK_TIMEOUT=300              # mmap 泄漏超时（秒，默认：300，即5分钟）
+      - BUFFER_MMAP_CLEANUP_BATCH_SIZE=64         # mmap 清理批量大小（默认：64）
+      
       # ==================== 🚀 JavaScript执行器配置 ====================
       # 开发环境配置（适合本地测试）
       - RUNTIME_POOL_SIZE=100             # 🔧 开发环境减少池大小

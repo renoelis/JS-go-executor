@@ -1,7 +1,48 @@
 package buffer
 
+import (
+	"os"
+	"strconv"
+)
+
 // Buffer 相关常量定义
 // 用于统一管理所有魔法数字，提高代码可维护性
+
+// 从环境变量读取配置的常量
+var (
+	// MaxPracticalLength 实用的内存限制（2GB = 2^31 - 1）
+	// 统一的内存分配限制，用于所有场景：
+	// - Buffer/ArrayBuffer 长度限制（Node.js 兼容）
+	// - Go 层面的内存分配检查
+	// - 防止系统内存耗尽
+	// 在 64 位系统上约为 2GB (0x7FFFFFFF)，与 Node.js buffer.constants.MAX_LENGTH 一致
+	// 环境变量: BUFFER_MAX_PRACTICAL_LENGTH (默认: 2147483647)
+	MaxPracticalLength int64 = getEnvInt64("BUFFER_MAX_PRACTICAL_LENGTH", 2147483647)
+
+	// MaxSafeInteger JavaScript Number.MAX_SAFE_INTEGER
+	// Buffer 大小的理论最大值
+	// 环境变量: BUFFER_MAX_SAFE_INTEGER (默认: 9007199254740991)
+	MaxSafeInteger int64 = getEnvInt64("BUFFER_MAX_SAFE_INTEGER", 9007199254740991)
+
+	// MaxStringLength 单个字符串实例允许的最大长度
+	// Node.js v25 的值，约为 2^29 - 24 (~536MB)
+	// 环境变量: BUFFER_MAX_STRING_LENGTH (默认: 536870888)
+	MaxStringLength int64 = getEnvInt64("BUFFER_MAX_STRING_LENGTH", 536870888)
+
+	// MmapCleanupInterval mmap 资源清理间隔（秒）
+	// 环境变量: BUFFER_MMAP_CLEANUP_INTERVAL (默认: 30)
+	MmapCleanupInterval int = getEnvInt("BUFFER_MMAP_CLEANUP_INTERVAL", 30)
+
+	// MmapLeakTimeout mmap 资源泄漏超时时间（秒）
+	// 超过此时间未释放的资源视为泄漏
+	// 环境变量: BUFFER_MMAP_LEAK_TIMEOUT (默认: 300，即5分钟)
+	MmapLeakTimeout int = getEnvInt("BUFFER_MMAP_LEAK_TIMEOUT", 5*60)
+
+	// MmapCleanupBatchSize mmap 清理批量大小
+	// 预分配容量，减少内存分配
+	// 环境变量: BUFFER_MMAP_CLEANUP_BATCH_SIZE (默认: 64)
+	MmapCleanupBatchSize int = getEnvInt("BUFFER_MMAP_CLEANUP_BATCH_SIZE", 64)
+)
 
 const (
 	// ===== 内存分配相关常量 =====
@@ -16,22 +57,6 @@ const (
 	// MmapThreshold 使用 mmap 分配的阈值（10MB）
 	// 超过此大小的 Buffer 使用 mmap 优化分配性能
 	MmapThreshold = 10 * 1024 * 1024 // 10MB
-
-	// MaxPracticalLength 实用的内存限制（2GB = 2^31 - 1）
-	// 统一的内存分配限制，用于所有场景：
-	// - Buffer/ArrayBuffer 长度限制（Node.js 兼容）
-	// - Go 层面的内存分配检查
-	// - 防止系统内存耗尽
-	// 在 64 位系统上约为 2GB (0x7FFFFFFF)，与 Node.js buffer.constants.MAX_LENGTH 一致
-	MaxPracticalLength = 2147483647 // 2^31 - 1
-
-	// MaxSafeInteger JavaScript Number.MAX_SAFE_INTEGER
-	// Buffer 大小的理论最大值
-	MaxSafeInteger = 9007199254740991
-
-	// MaxStringLength 单个字符串实例允许的最大长度
-	// Node.js v25 的值，约为 2^29 - 24 (~536MB)
-	MaxStringLength = 536870888
 
 	// ===== 性能优化相关常量 =====
 
@@ -91,19 +116,6 @@ const (
 
 	// Uint8Max uint8 最大值（255）
 	Uint8Max = 255
-
-	// ===== Mmap 资源管理相关常量 =====
-
-	// MmapCleanupInterval mmap 资源清理间隔（30秒）
-	MmapCleanupInterval = 30 // 秒
-
-	// MmapLeakTimeout mmap 资源泄漏超时时间（5分钟）
-	// 超过此时间未释放的资源视为泄漏
-	MmapLeakTimeout = 5 * 60 // 秒
-
-	// MmapCleanupBatchSize mmap 清理批量大小
-	// 预分配容量，减少内存分配
-	MmapCleanupBatchSize = 64
 
 	// ===== 字符编码相关常量 =====
 
@@ -197,3 +209,23 @@ const (
 	// EncodingUCS2Alias UCS-2 编码别名
 	EncodingUCS2Alias = "ucs-2"
 )
+
+// getEnvInt 从环境变量读取整数值，如果未设置或解析失败则使用默认值
+func getEnvInt(key string, defaultValue int) int {
+	if val, exists := os.LookupEnv(key); exists {
+		if intVal, err := strconv.Atoi(val); err == nil {
+			return intVal
+		}
+	}
+	return defaultValue
+}
+
+// getEnvInt64 从环境变量读取 int64 值，如果未设置或解析失败则使用默认值
+func getEnvInt64(key string, defaultValue int64) int64 {
+	if val, exists := os.LookupEnv(key); exists {
+		if intVal, err := strconv.ParseInt(val, 10, 64); err == nil {
+			return intVal
+		}
+	}
+	return defaultValue
+}
