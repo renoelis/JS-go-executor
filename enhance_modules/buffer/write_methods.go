@@ -2149,13 +2149,21 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		}
 
 		// 填充buffer - 性能优化版
+		// 预先将填充字节转换为 goja.Value，避免在循环中重复调用 runtime.ToValue
+		patternLen := len(fillData)
+		fillValues := make([]goja.Value, patternLen)
+		for i := 0; i < patternLen; i++ {
+			fillValues[i] = runtime.ToValue(fillData[i])
+		}
+
 		fillIndex := 0
 		for i := offset; i < end; i++ {
-			// 优化：预计算索引和填充值，减少重复计算
 			indexStr := getIndexString(i)
-			fillValue := runtime.ToValue(fillData[fillIndex])
-			this.Set(indexStr, fillValue)
-			fillIndex = (fillIndex + 1) % len(fillData)
+			this.Set(indexStr, fillValues[fillIndex])
+			fillIndex++
+			if fillIndex == patternLen {
+				fillIndex = 0
+			}
 		}
 
 		return this
