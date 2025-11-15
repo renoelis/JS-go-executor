@@ -2,7 +2,6 @@ package buffer
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"math"
@@ -231,82 +230,14 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			length = maxLength
 		}
 
-		// 转换字符串为字节
-		var data []byte
-		switch encoding {
-		case "utf8", "utf-8":
-			data = []byte(str)
-		case "hex":
-			// 🔥 修复：使用宽松的 hex 解码，处理奇数长度字符串
-			decoded, err := decodeHexLenient(str)
-			if err != nil {
-				panic(runtime.NewTypeError("无效的十六进制字符串"))
-			}
-			data = decoded
-		case "base64":
-			// 使用宽松的 base64 解码（Node.js 行为）
-			decoded, err := decodeBase64Lenient(str)
-			if err != nil {
-				panic(runtime.NewTypeError("无效的 base64 字符串"))
-			}
-			data = decoded
-		case "base64url":
-			decoded, err := decodeBase64URLLenient(str)
-			if err != nil {
-				panic(runtime.NewTypeError("无效的 base64url 字符串"))
-			}
-			data = decoded
-		case "latin1", "binary":
-			// 🔥 修复：按 UTF-16 码元处理，不是 Unicode 码点
-			// Latin1/Binary: 每个 UTF-16 码元的低 8 位
-			codeUnits := stringToUTF16CodeUnits(str)
-			data = make([]byte, len(codeUnits))
-			for i, unit := range codeUnits {
-				data[i] = byte(unit) & 0xFF
-			}
-		case "ascii":
-			// 🔥 修复：按 UTF-16 码元处理，不是 Unicode 码点
-			// Node.js v25.0.0: ASCII 编码实际保留完整 8 位（0x00-0xFF），而不是传统的 7 位
-			codeUnits := stringToUTF16CodeUnits(str)
-			data = make([]byte, len(codeUnits))
-			for i, unit := range codeUnits {
-				data[i] = byte(unit) & 0xFF
-			}
-		case "utf16le", "ucs2", "ucs-2", "utf-16le":
-			// UTF-16LE / UCS-2 编码（Node.js 行为）
-			// 对于 BMP 字符 (U+0000 to U+FFFF)：直接写 2 字节
-			// 对于超出 BMP 的字符 (U+10000+)：编码为 surrogate pair，写 4 字节
-			// 预计算需要的字节数
-			byteCount := utf16CodeUnitCount(str) * 2
-			data = make([]byte, byteCount)
-			offset := 0
-			for _, r := range str {
-				if r <= 0xFFFF {
-					// BMP 字符：直接写入
-					data[offset] = byte(r)
-					data[offset+1] = byte(r >> 8)
-					offset += 2
-				} else {
-					// 超出 BMP：编码为 surrogate pair
-					// 算法：r' = r - 0x10000
-					// high surrogate = 0xD800 + (r' >> 10)
-					// low surrogate = 0xDC00 + (r' & 0x3FF)
-					rPrime := r - 0x10000
-					high := uint16(0xD800 + (rPrime >> 10))
-					low := uint16(0xDC00 + (rPrime & 0x3FF))
-					// 写入 high surrogate (Little Endian)
-					data[offset] = byte(high)
-					data[offset+1] = byte(high >> 8)
-					offset += 2
-					// 写入 low surrogate (Little Endian)
-					data[offset] = byte(low)
-					data[offset+1] = byte(low >> 8)
-					offset += 2
-				}
-			}
-		default:
-			// 🔥 修复：未知编码应该抛出错误（Node.js 行为）
+		// 转换字符串为字节（统一走 EncodingConverter 抽象）
+		conv := GetEncodingConverter(encoding)
+		if conv == nil {
 			panic(runtime.NewTypeError(fmt.Sprintf("Unknown encoding: %s", encoding)))
+		}
+		data, err := conv.Encode(str)
+		if err != nil {
+			panic(runtime.NewTypeError(err.Error()))
 		}
 
 		// 🔥 修复：对于 UTF-8 和 UTF-16LE，需要检查多字节字符是否完整
@@ -614,66 +545,26 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 			// 字符串类型
 			searchStr := searchArg.String()
 			if searchStr != "" {
-				// 🔥 修复：完整的编码处理（对齐 Node.js）
-				switch strings.ToLower(encoding) {
-				case "utf8", "utf-8":
-					searchBytes = []byte(searchStr)
-				case "hex":
-					// 🔥 修复：使用宽松的 hex 解码，处理奇数长度字符串
-					decoded, err := decodeHexLenient(searchStr)
-					if err == nil {
-						searchBytes = decoded
-					}
-				case "base64":
-					// 使用宽松的 base64 解码
-					decoded, err := decodeBase64Lenient(searchStr)
-					if err == nil {
-						searchBytes = decoded
-					}
-				case "base64url":
-					decoded, err := decodeBase64URLLenient(searchStr)
-					if err == nil {
-						searchBytes = decoded
-					}
-				case "latin1", "binary":
-					// latin1: 按 UTF-16 码元转字节
-					cu := stringToUTF16CodeUnits(searchStr)
-					searchBytes = make([]byte, len(cu))
-					for i, u := range cu {
-						searchBytes[i] = byte(u)
-					}
-				case "ascii":
-					// ascii: 按 UTF-16 码元转字节，取低 7 位
+				// 🔥 优化：统一复用 EncodingConverter 的编码逻辑，减少重复
+				encLower := strings.ToLower(encoding)
+				if encLower == "ascii" {
+					// ASCII 在 indexOf 中仍保持 7 位行为（按 UTF-16 码元转字节，取低 7 位）
 					cu := stringToUTF16CodeUnits(searchStr)
 					searchBytes = make([]byte, len(cu))
 					for i, u := range cu {
 						searchBytes[i] = byte(u & 0x7F)
 					}
-				case "utf16le", "ucs2", "ucs-2", "utf-16le":
-					// utf16le: 完整的 UTF-16LE 编码
-					byteCount := utf16CodeUnitCount(searchStr) * 2
-					b := make([]byte, byteCount)
-					off := 0
-					for _, r := range searchStr {
-						if r <= 0xFFFF {
-							b[off] = byte(r)
-							b[off+1] = byte(r >> 8)
-							off += 2
-						} else {
-							rPrime := r - 0x10000
-							high := uint16(0xD800 + (rPrime >> 10))
-							low := uint16(0xDC00 + (rPrime & 0x3FF))
-							b[off] = byte(high)
-							b[off+1] = byte(high >> 8)
-							off += 2
-							b[off] = byte(low)
-							b[off+1] = byte(low >> 8)
-							off += 2
+				} else {
+					conv := GetEncodingConverter(encLower)
+					if conv != nil {
+						if data, err := conv.Encode(searchStr); err == nil {
+							searchBytes = data
 						}
+					} else {
+						// 理论上不会到这里：encoding 在前面已校验为合法编码
+						// 但为了安全起见，保留旧的回退行为
+						searchBytes = []byte(searchStr)
 					}
-					searchBytes = b
-				default:
-					searchBytes = []byte(searchStr)
 				}
 			}
 		} else {
@@ -870,69 +761,21 @@ func (be *BufferEnhancer) addBufferPrototypeMethods(runtime *goja.Runtime, proto
 		// 安全地提取数据（自动处理快速路径和降级方案）
 		data := be.extractBufferDataSafe(runtime, this, start, end, bufferLength)
 
-		// 根据编码类型转换（小 Buffer 或其他编码使用安全方案）
-		var result goja.Value
-		switch encoding {
-		case "utf8", "utf-8":
-			result = runtime.ToValue(string(data))
-		case "hex":
-			result = runtime.ToValue(hex.EncodeToString(data))
-		case "base64":
-			// 直接编码，标准库已优化
-			result = runtime.ToValue(base64.StdEncoding.EncodeToString(data))
-		case "base64url":
-			result = runtime.ToValue(base64.RawURLEncoding.EncodeToString(data))
-		case "latin1", "binary":
-			// Latin1 解码：每个字节(0-255)对应一个 Unicode 码点 (U+0000 to U+00FF)
-			runes := make([]rune, len(data))
-			for i, b := range data {
-				runes[i] = rune(b)
-			}
-			result = runtime.ToValue(string(runes))
-		case "ascii":
-			// ASCII 伪编码：只取低 7 位 (Node.js 行为)
-			asciiData := make([]byte, len(data))
-			for i, b := range data {
-				asciiData[i] = b & 0x7F
-			}
-			result = runtime.ToValue(string(asciiData))
-		case "utf16le", "ucs2", "ucs-2", "utf-16le":
-			// UTF-16LE 解码（正确处理 surrogate pairs）
-			if len(data) < 2 {
-				result = runtime.ToValue("")
-			} else {
-				// 解码 UTF-16LE，支持 surrogate pairs
-				var runes []rune
-				for i := 0; i < len(data)-1; i += 2 {
-					codeUnit := uint16(data[i]) | (uint16(data[i+1]) << 8)
-					if codeUnit >= 0xD800 && codeUnit <= 0xDBFF {
-						if i+3 < len(data) {
-							lowSurrogate := uint16(data[i+2]) | (uint16(data[i+3]) << 8)
-							if lowSurrogate >= 0xDC00 && lowSurrogate <= 0xDFFF {
-								codePoint := 0x10000 + ((uint32(codeUnit) - 0xD800) << 10) + (uint32(lowSurrogate) - 0xDC00)
-								runes = append(runes, rune(codePoint))
-								i += 2
-								continue
-							}
-						}
-						runes = append(runes, '\uFFFD')
-					} else if codeUnit >= 0xDC00 && codeUnit <= 0xDFFF {
-						runes = append(runes, '\uFFFD')
-					} else {
-						runes = append(runes, rune(codeUnit))
-					}
-				}
-				result = runtime.ToValue(string(runes))
-			}
-		default:
+		// 根据编码类型转换（统一使用 EncodingConverter.Decode）
+		conv := GetEncodingConverter(encoding)
+		if conv == nil {
 			panic(runtime.NewTypeError(fmt.Sprintf("Unknown encoding: %s", encoding)))
+		}
+		decoded, err := conv.Decode(data)
+		if err != nil {
+			panic(runtime.NewTypeError(err.Error()))
 		}
 
 		// 注意：不能在这里手动 GC！
 		// string(data) 可能引用 data 的底层内存，立即 GC 会导致段错误
 		// 让 Go 的 GC 自动管理内存
 
-		return result
+		return runtime.ToValue(decoded)
 	}
 	toStringValue := runtime.ToValue(toStringFunc)
 	setFunctionNameAndLength(runtime, toStringValue, "toString", 3)

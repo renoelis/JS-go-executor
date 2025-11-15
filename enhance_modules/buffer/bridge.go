@@ -70,73 +70,14 @@ func (be *BufferEnhancer) EnhanceBufferSupport(runtime *goja.Runtime) {
 		if arg0Type != nil && arg0Type.Kind().String() == "string" {
 			str := arg0.String()
 
-			// 使用我们的编码逻辑创建 buffer
-			var data []byte
-
-			switch encoding {
-			case "hex":
-				// 🔥 修复：使用宽松的 hex 解码，处理奇数长度字符串
-				decoded, err := decodeHexLenient(str)
-				if err != nil {
-					panic(runtime.NewTypeError("无效的十六进制字符串"))
-				}
-				data = decoded
-			case "base64":
-				decoded, err := decodeBase64Lenient(str)
-				if err != nil {
-					panic(runtime.NewTypeError("无效的 base64 字符串"))
-				}
-				data = decoded
-			case "base64url":
-				decoded, err := decodeBase64URLLenient(str)
-				if err != nil {
-					panic(runtime.NewTypeError("无效的 base64url 字符串"))
-				}
-				data = decoded
-			case "latin1", "binary":
-				// 🔥 修复：按 UTF-16 码元处理，不是 Unicode 码点
-				// Latin1: 每个 UTF-16 码元的低 8 位
-				codeUnits := stringToUTF16CodeUnits(str)
-				data = make([]byte, len(codeUnits))
-				for i, unit := range codeUnits {
-					data[i] = byte(unit) & 0xFF
-				}
-			case "ascii":
-				// 🔥 修复：Node.js v25 行为 - ascii 编码保留原始字节值（不截断到 7 位）
-				// 按 UTF-16 码元处理，不是 Unicode 码点
-				codeUnits := stringToUTF16CodeUnits(str)
-				data = make([]byte, len(codeUnits))
-				for i, unit := range codeUnits {
-					data[i] = byte(unit) & 0xFF // 保留完整字节值，与 Node.js v25 对齐
-				}
-			case "utf16le", "ucs2", "ucs-2", "utf-16le":
-				// UTF-16LE 编码
-				byteCount := utf16CodeUnitCount(str) * 2
-				data = make([]byte, byteCount)
-				offset := 0
-				for _, r := range str {
-					if r <= 0xFFFF {
-						data[offset] = byte(r)
-						data[offset+1] = byte(r >> 8)
-						offset += 2
-					} else {
-						rPrime := r - 0x10000
-						high := uint16(0xD800 + (rPrime >> 10))
-						low := uint16(0xDC00 + (rPrime & 0x3FF))
-						data[offset] = byte(high)
-						data[offset+1] = byte(high >> 8)
-						offset += 2
-						data[offset] = byte(low)
-						data[offset+1] = byte(low >> 8)
-						offset += 2
-					}
-				}
-			case "utf8", "utf-8":
-				// UTF-8
-				data = []byte(str)
-			default:
-				// 🔥 修复：未知编码应该抛出错误（Node.js 行为）
+			// 使用统一的编码转换器创建 buffer
+			conv := GetEncodingConverter(encoding)
+			if conv == nil {
 				panic(runtime.NewTypeError(fmt.Sprintf("Unknown encoding: %s", encoding)))
+			}
+			data, err := conv.Encode(str)
+			if err != nil {
+				panic(runtime.NewTypeError(err.Error()))
 			}
 
 			// 🔥 性能优化：直接使用 ArrayBuffer 而不是 Array

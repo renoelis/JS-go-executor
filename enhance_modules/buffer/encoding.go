@@ -2,6 +2,8 @@ package buffer
 
 import (
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"strings"
 )
 
@@ -24,15 +26,15 @@ func decodeBase64Lenient(str string) ([]byte, error) {
 
 	// 🔥 修复：Node.js v25 行为 - 单字符或不完整的 base64 会解码为空或部分数据
 	// 例如：'A' -> Buffer[], 'AB' -> Buffer[0], 'ABC' -> Buffer[0, 16]
-	
+
 	// 处理 padding
 	if idx := strings.Index(cleaned, "="); idx >= 0 {
 		cleaned = cleaned[:idx]
 	}
-	
+
 	// 移除所有 padding（如果还有）
 	cleaned = strings.TrimRight(cleaned, "=")
-	
+
 	// 如果为空或只有1个字符，返回空 Buffer（Node.js 行为）
 	if len(cleaned) <= 1 {
 		return []byte{}, nil
@@ -79,10 +81,10 @@ func decodeBase64URLLenient(str string) ([]byte, error) {
 	if idx := strings.Index(cleaned, "="); idx >= 0 {
 		cleaned = cleaned[:idx]
 	}
-	
+
 	// 移除所有 padding（如果还有）
 	cleaned = strings.TrimRight(cleaned, "=")
-	
+
 	// 如果为空或只有1个字符，返回空 Buffer（Node.js 行为）
 	if len(cleaned) <= 1 {
 		return []byte{}, nil
@@ -125,19 +127,19 @@ func decodeHexLenient(str string) ([]byte, error) {
 		}
 		validStr += string(c)
 	}
-	
+
 	str = validStr
-	
+
 	// 如果长度为奇数，去掉最后一个字符
 	if len(str)%2 != 0 {
 		str = str[:len(str)-1]
 	}
-	
+
 	// 如果为空，返回空字节数组
 	if len(str) == 0 {
 		return []byte{}, nil
 	}
-	
+
 	// 使用标准 hex 解码
 	result := make([]byte, len(str)/2)
 	for i := 0; i < len(str); i += 2 {
@@ -217,20 +219,20 @@ func findUTF8ByteBoundary(data []byte, maxBytes int64) int64 {
 	if maxBytes > int64(len(data)) {
 		maxBytes = int64(len(data))
 	}
-	
+
 	// 从后往前检查，找到最后一个完整的 UTF-8 字符
 	i := maxBytes
-	
+
 	// 如果最后一个字节是单字节字符（0xxxxxxx），直接返回
 	if i > 0 && data[i-1] < 0x80 {
 		return i
 	}
-	
+
 	// 从后往前找到字符的开始字节
 	for i > 0 && i > maxBytes-4 {
 		i--
 		b := data[i]
-		
+
 		// 检查这是否是一个字符的开始字节
 		if b < 0x80 {
 			// 单字节字符 (0xxxxxxx)
@@ -256,6 +258,177 @@ func findUTF8ByteBoundary(data []byte, maxBytes int64) int64 {
 		}
 		// 否则是continuation byte (10xxxxxx)，继续往前找
 	}
-	
+
 	return maxBytes // 默认返回 maxBytes（理论上不应该到这里）
+}
+
+type EncodingConverter interface {
+	Encode(str string) ([]byte, error)
+	Decode(data []byte) (string, error)
+}
+
+type utf8EncodingConverter struct{}
+
+func (c utf8EncodingConverter) Encode(str string) ([]byte, error) {
+	return []byte(str), nil
+}
+
+func (c utf8EncodingConverter) Decode(data []byte) (string, error) {
+	return string(data), nil
+}
+
+type hexEncodingConverter struct{}
+
+func (c hexEncodingConverter) Encode(str string) ([]byte, error) {
+	decoded, err := decodeHexLenient(str)
+	if err != nil {
+		return nil, errors.New("无效的十六进制字符串")
+	}
+	return decoded, nil
+}
+
+func (c hexEncodingConverter) Decode(data []byte) (string, error) {
+	return hex.EncodeToString(data), nil
+}
+
+type base64EncodingConverter struct{}
+
+func (c base64EncodingConverter) Encode(str string) ([]byte, error) {
+	decoded, err := decodeBase64Lenient(str)
+	if err != nil {
+		return nil, errors.New("无效的 base64 字符串")
+	}
+	return decoded, nil
+}
+
+func (c base64EncodingConverter) Decode(data []byte) (string, error) {
+	return base64.StdEncoding.EncodeToString(data), nil
+}
+
+type base64URLEncodingConverter struct{}
+
+func (c base64URLEncodingConverter) Encode(str string) ([]byte, error) {
+	decoded, err := decodeBase64URLLenient(str)
+	if err != nil {
+		return nil, errors.New("无效的 base64url 字符串")
+	}
+	return decoded, nil
+}
+
+func (c base64URLEncodingConverter) Decode(data []byte) (string, error) {
+	return base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+type latin1EncodingConverter struct{}
+
+func (c latin1EncodingConverter) Encode(str string) ([]byte, error) {
+	codeUnits := stringToUTF16CodeUnits(str)
+	data := make([]byte, len(codeUnits))
+	for i, unit := range codeUnits {
+		data[i] = byte(unit) & 0xFF
+	}
+	return data, nil
+}
+
+func (c utf16leEncodingConverter) Decode(data []byte) (string, error) {
+	if len(data) < 2 {
+		return "", nil
+	}
+
+	var runes []rune
+	for i := 0; i < len(data)-1; i += 2 {
+		codeUnit := uint16(data[i]) | (uint16(data[i+1]) << 8)
+		if codeUnit >= 0xD800 && codeUnit <= 0xDBFF {
+			if i+3 < len(data) {
+				lowSurrogate := uint16(data[i+2]) | (uint16(data[i+3]) << 8)
+				if lowSurrogate >= 0xDC00 && lowSurrogate <= 0xDFFF {
+					codePoint := 0x10000 + ((uint32(codeUnit) - 0xD800) << 10) + (uint32(lowSurrogate) - 0xDC00)
+					runes = append(runes, rune(codePoint))
+					i += 2
+					continue
+				}
+			}
+			runes = append(runes, '\uFFFD')
+		} else if codeUnit >= 0xDC00 && codeUnit <= 0xDFFF {
+			runes = append(runes, '\uFFFD')
+		} else {
+			runes = append(runes, rune(codeUnit))
+		}
+	}
+
+	return string(runes), nil
+}
+
+func (c latin1EncodingConverter) Decode(data []byte) (string, error) {
+	runes := make([]rune, len(data))
+	for i, b := range data {
+		runes[i] = rune(b)
+	}
+	return string(runes), nil
+}
+
+type asciiEncodingConverter struct{}
+
+func (c asciiEncodingConverter) Encode(str string) ([]byte, error) {
+	codeUnits := stringToUTF16CodeUnits(str)
+	data := make([]byte, len(codeUnits))
+	for i, unit := range codeUnits {
+		data[i] = byte(unit) & 0xFF
+	}
+	return data, nil
+}
+
+func (c asciiEncodingConverter) Decode(data []byte) (string, error) {
+	asciiData := make([]byte, len(data))
+	for i, b := range data {
+		asciiData[i] = b & 0x7F
+	}
+	return string(asciiData), nil
+}
+
+type utf16leEncodingConverter struct{}
+
+func (c utf16leEncodingConverter) Encode(str string) ([]byte, error) {
+	byteCount := utf16CodeUnitCount(str) * 2
+	data := make([]byte, byteCount)
+	offset := 0
+	for _, r := range str {
+		if r <= 0xFFFF {
+			data[offset] = byte(r)
+			data[offset+1] = byte(r >> 8)
+			offset += 2
+		} else {
+			rPrime := r - 0x10000
+			high := uint16(0xD800 + (rPrime >> 10))
+			low := uint16(0xDC00 + (rPrime & 0x3FF))
+			data[offset] = byte(high)
+			data[offset+1] = byte(high >> 8)
+			offset += 2
+			data[offset] = byte(low)
+			data[offset+1] = byte(low >> 8)
+			offset += 2
+		}
+	}
+	return data, nil
+}
+
+func GetEncodingConverter(encoding string) EncodingConverter {
+	switch encoding {
+	case "utf8", "utf-8":
+		return utf8EncodingConverter{}
+	case "hex":
+		return hexEncodingConverter{}
+	case "base64":
+		return base64EncodingConverter{}
+	case "base64url":
+		return base64URLEncodingConverter{}
+	case "latin1", "binary":
+		return latin1EncodingConverter{}
+	case "ascii":
+		return asciiEncodingConverter{}
+	case "utf16le", "ucs2", "ucs-2", "utf-16le":
+		return utf16leEncodingConverter{}
+	default:
+		return nil
+	}
 }
