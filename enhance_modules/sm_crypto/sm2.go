@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 
 	"github.com/dop251/goja"
@@ -51,17 +52,17 @@ func GenerateKeyPairHex(call goja.FunctionCall, runtime *goja.Runtime) goja.Valu
 		}
 
 		// 确保在有效范围内 (1 到 n-1)
-		n := sm2.P256().Params().N
+		n := sm2Curve.Params().N
 		d.Mod(d, n)
 		if d.Sign() == 0 {
 			d.SetInt64(1)
 		}
 
 		privateKey = new(sm2.PrivateKey)
-		privateKey.Curve = sm2.P256()
+		privateKey.Curve = sm2Curve
 		privateKey.D = d
-		privateKey.PublicKey.Curve = sm2.P256()
-		privateKey.PublicKey.X, privateKey.PublicKey.Y = sm2.P256().ScalarBaseMult(d.Bytes())
+		privateKey.PublicKey.Curve = sm2Curve
+		privateKey.PublicKey.X, privateKey.PublicKey.Y = sm2Curve.ScalarBaseMult(d.Bytes())
 	} else {
 		// 随机生成
 		privateKey, err = sm2.GenerateKey(rand.Reader)
@@ -198,12 +199,15 @@ func DoDecrypt(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 
 	// 🔥 如果不是 ASN.1 模式，需要在 C1 前添加 "04" 前缀
 	// JavaScript 版本的密文 C1 不包含 "04"，但 gmsm 需要
+	// 为了兼容来自其他实现的密文，这里只在首字节不是 0x04 时才添加前缀
 	if !asn1 {
-		// 在密文前添加 "04"
-		encryptDataWithPrefix := make([]byte, len(encryptData)+1)
-		encryptDataWithPrefix[0] = 0x04
-		copy(encryptDataWithPrefix[1:], encryptData)
-		encryptData = encryptDataWithPrefix
+		if len(encryptData) == 0 || encryptData[0] != 0x04 {
+			// 在密文前添加 "04"
+			encryptDataWithPrefix := make([]byte, len(encryptData)+1)
+			encryptDataWithPrefix[0] = 0x04
+			copy(encryptDataWithPrefix[1:], encryptData)
+			encryptData = encryptDataWithPrefix
+		}
 	}
 
 	// 执行解密
@@ -310,10 +314,12 @@ func DoSignature(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 						// 1. 获取所有元素（从索引 1 开始）
 						// 2. 重新排列数组
 						for i := 0; i < length-1; i++ {
-							pointPoolObj.Set(fmt.Sprintf("%d", i), pointPoolObj.Get(fmt.Sprintf("%d", i+1)))
+							srcKey := strconv.Itoa(i + 1)
+							dstKey := strconv.Itoa(i)
+							pointPoolObj.Set(dstKey, pointPoolObj.Get(srcKey))
 						}
 						// 3. 删除最后一个元素
-						pointPoolObj.Delete(fmt.Sprintf("%d", length-1))
+						pointPoolObj.Delete(strconv.Itoa(length - 1))
 						// 4. 更新 length
 						pointPoolObj.Set("length", runtime.ToValue(length-1))
 					}
@@ -594,24 +600,9 @@ func GetHash(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	var msgBytes []byte
 	var err error
 
-	// 检查是否是有效的十六进制字符串
-	isHex := true
-	for _, c := range msgStr {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-			isHex = false
-			break
-		}
-	}
-
-	if isHex && len(msgStr) > 0 {
-		// 尝试作为十六进制解析
-		msgBytes, err = HexToBytes(msgStr)
-		if err != nil {
-			// 十六进制解析失败，作为UTF-8处理
-			msgBytes = Utf8ToBytes(msgStr)
-		}
-	} else {
-		// 不是十六进制，作为UTF-8处理
+	msgBytes, err = HexToBytes(msgStr)
+	if err != nil {
+		// 十六进制解析失败，作为UTF-8处理
 		msgBytes = Utf8ToBytes(msgStr)
 	}
 
@@ -712,7 +703,7 @@ func ECDH(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 // 对应 JS: sm2.getPoint()
 // 返回: { x: string, y: string, k: string, x1: string, privateKey: string, publicKey: string }
 func GetPoint(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
-	params := sm2.P256().Params()
+	params := sm2Curve.Params()
 
 	// 生成一个临时密钥对用于填充 k, x1, privateKey, publicKey 字段
 	// 这匹配 Node.js sm-crypto-v2 的行为
@@ -935,7 +926,7 @@ func calculateSharedKeyCore(
 	x1_.Add(x1_, wPow2)
 
 	// 2. 计算 tA = (dA + x1_ * rA) mod n
-	curve := sm2.P256()
+	curve := sm2Curve
 	n := curve.Params().N
 
 	tA := new(big.Int).Mul(x1_, ephPrivA.D)

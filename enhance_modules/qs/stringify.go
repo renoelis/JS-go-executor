@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math/big"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -170,10 +169,8 @@ func stringifyObjectWithOrder(obj interface{}, keyOrder []string, opts *Stringif
 	}
 
 	// 如果用户提供了 sort 函数，应用排序
-	if opts.Sort != nil {
-		sort.SliceStable(objKeys, func(i, j int) bool {
-			return opts.Sort(objKeys[i], objKeys[j])
-		})
+	if opts.Sort != nil && objKeys != nil {
+		objKeys = SortKeys(objKeys, opts.Sort)
 	}
 
 	// 序列化每个键值对
@@ -308,36 +305,29 @@ func stringifyValue(
 			return []string{formatted(prefix) + "=" + formatted(valStr)}
 		}
 
-		// 先检查 ExportType 和 String()（不依赖 ToObject）
-		exportType := val.ExportType()
-
-		// 处理 BigInt 类型 - 优先策略（不需要 ToObject）
-		// BigInt 的特征：ExportType 是 int64 且 String() 返回纯数字字符串
-		if exportType != nil && exportType.Kind() == reflect.Int64 {
-			// 验证 valStr 是否为纯数字格式
-			if len(valStr) > 0 && !strings.HasPrefix(valStr, "[") {
-				firstChar := valStr[0]
-				isNumeric := (firstChar >= '0' && firstChar <= '9') ||
-					(firstChar == '-' && len(valStr) > 1)
-
-				if isNumeric {
-					// 这是 BigInt！直接序列化
-					if opts.Encode {
-						keyValue := prefix
-						if !opts.EncodeValuesOnly {
-							keyValue = encodeKey(prefix, opts)
-						}
-						return []string{formatted(keyValue) + "=" + formatted(encodeValue(valStr, opts))}
-					}
-					return []string{formatted(prefix) + "=" + formatted(valStr)}
-				}
-			}
-		}
-
-		// 尝试转换为对象以处理 Buffer 和 Date
+		// 处理 BigInt、Buffer 和 Date
 		gojaObj := val.ToObject(runtime)
 		if gojaObj != nil {
 			className := gojaObj.ClassName()
+
+			// 处理 BigInt - 基于 className 和 toString 处理
+			if className == "BigInt" {
+				if toStringFunc := gojaObj.Get("toString"); isFunction(toStringFunc) {
+					if toStringFn, ok := goja.AssertFunction(toStringFunc); ok {
+						if result, err := toStringFn(gojaObj); err == nil {
+							bigIntStr := result.String()
+							if opts.Encode {
+								keyValue := prefix
+								if !opts.EncodeValuesOnly {
+									keyValue = encodeKey(prefix, opts)
+								}
+								return []string{formatted(keyValue) + "=" + formatted(encodeValue(bigIntStr, opts))}
+							}
+							return []string{formatted(prefix) + "=" + formatted(bigIntStr)}
+						}
+					}
+				}
+			}
 
 			// 处理 Buffer - 通过 className 判断
 			if className == "Buffer" || className == "Uint8Array" || className == "ArrayBuffer" {

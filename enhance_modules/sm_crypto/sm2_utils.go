@@ -11,6 +11,8 @@ import (
 	"github.com/emmansun/gmsm/sm2"
 )
 
+var sm2Curve = sm2.P256()
+
 // ============================================================================
 // 🔧 SM2 密钥格式转换工具
 // ============================================================================
@@ -34,7 +36,7 @@ func HexToPrivateKey(privateKeyHex string) (*sm2.PrivateKey, error) {
 	}
 
 	// 验证 D 在有效范围内 (1 到 n-1)
-	curve := sm2.P256()
+	curve := sm2Curve
 	n := curve.Params().N
 	if d.Cmp(big.NewInt(1)) < 0 || d.Cmp(n) >= 0 {
 		return nil, errors.New("out of range [1..N-1]")
@@ -100,7 +102,7 @@ func ParsePublicKeyParam(val goja.Value, runtime *goja.Runtime) (*ecdsa.PublicKe
 	}()
 
 	if isObject {
-		curve := sm2.P256()
+		curve := sm2Curve
 		if !curve.IsOnCurve(x, y) {
 			return nil, errors.New("public key point is not on curve")
 		}
@@ -127,7 +129,7 @@ func HexToPublicKey(publicKeyHex string) (*ecdsa.PublicKey, error) {
 		publicKeyHex = publicKeyHex[2:]
 	}
 
-	curve := sm2.P256()
+	curve := sm2Curve
 	var x, y *big.Int
 
 	if len(publicKeyHex) == 130 && publicKeyHex[:2] == "04" {

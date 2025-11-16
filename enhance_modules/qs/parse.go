@@ -150,49 +150,51 @@ func parseQueryString(queryString string, opts *ParseOptions, runtime *goja.Runt
 	// 特殊处理：统计空键 "[]" 的数量，用于展平为数字键
 	emptyKeyIndex := 0
 
+	// 如果存在空键 "[]"，先展平为数字键 0, 1, 2, ...
+	if val, exists := tempObj.Get("[]"); exists {
+		if arr, ok := val.([]interface{}); ok {
+			// 如果值已经是数组（由 Combine 产生），展平每个元素
+			for _, item := range arr {
+				obj[strconv.Itoa(emptyKeyIndex)] = item
+				emptyKeyIndex++
+			}
+		} else {
+			obj[strconv.Itoa(emptyKeyIndex)] = val
+			emptyKeyIndex++
+		}
+	}
+
 	// 第二遍：解析并构建对象
 	// 按照顶层键的顺序分组处理，确保合并的确定性顺序
 	topLevelKeysOrder := extractTopLevelKeysWithOpts(keyOrder, opts)
-	processedTopKeys := make(map[string]bool)
+
+	// 将 key 按顶层键分组，避免 O(n^2) 的顶层二重循环
+	groupedKeys := make(map[string][]string)
+	for _, key := range keyOrder {
+		// 空键 "[]" 已在上面单独处理，这里跳过
+		if key == "[]" {
+			continue
+		}
+
+		currentTopKey := key
+		if idx := strings.Index(key, "["); idx != -1 {
+			currentTopKey = key[:idx]
+		} else if opts.AllowDots && strings.Contains(key, ".") {
+			// 处理 allowDots 情况
+			currentTopKey = key[:strings.Index(key, ".")]
+		}
+
+		groupedKeys[currentTopKey] = append(groupedKeys[currentTopKey], key)
+	}
 
 	for _, topKey := range topLevelKeysOrder {
-		// 处理所有属于这个顶层键的原始键
-		for _, key := range keyOrder {
+		keysForTop, ok := groupedKeys[topKey]
+		if !ok {
+			continue
+		}
+
+		for _, key := range keysForTop {
 			val, _ := tempObj.Get(key)
-
-			// 特殊处理空键 "[]"
-			if key == "[]" {
-				if !processedTopKeys["[]"] {
-					// 空键应该被展平为数字键 0, 1, 2, ...
-					// 处理值（可能是数组）
-					if arr, ok := val.([]interface{}); ok {
-						// 如果值已经是数组（由 Combine 产生），展平每个元素
-						for _, item := range arr {
-							obj[strconv.Itoa(emptyKeyIndex)] = item
-							emptyKeyIndex++
-						}
-					} else {
-						obj[strconv.Itoa(emptyKeyIndex)] = val
-						emptyKeyIndex++
-					}
-					processedTopKeys["[]"] = true
-				}
-				continue
-			}
-
-			// 提取当前键的顶层键
-			currentTopKey := key
-			if idx := strings.Index(key, "["); idx != -1 {
-				currentTopKey = key[:idx]
-			} else if opts.AllowDots && strings.Contains(key, ".") {
-				// 处理 allowDots 情况
-				currentTopKey = key[:strings.Index(key, ".")]
-			}
-
-			// 只处理属于当前顶层键的键
-			if currentTopKey != topKey {
-				continue
-			}
 
 			newObj := parseKeys(key, val, opts, true)
 			if newObj != nil {
@@ -268,7 +270,7 @@ func parseQueryString(queryString string, opts *ParseOptions, runtime *goja.Runt
 	// 4. 压缩对象（移除 undefined）或转换稀疏数组
 	arrayLimit := opts.ArrayLimit
 	if arrayLimit == 0 {
-		arrayLimit = 20
+		arrayLimit = DefaultArrayLimit
 	}
 
 	var finalResult interface{} = obj // 用于最终结果（可能是 map 或 array）
@@ -720,7 +722,7 @@ func parseValues(str string, opts *ParseOptions) (*OrderedMap, error) {
 	// 注意：parameterLimit: 0 表示不解析任何参数，而不是使用默认值
 	// 这与 Node.js qs 行为一致
 	if limit < 0 {
-		limit = 1000 // 负数使用默认值
+		limit = DefaultParameterLimit // 负数使用默认值
 	}
 
 	// parameterLimit: 0 的特殊处理（不解析任何参数）
@@ -993,7 +995,7 @@ func parseObject(chain []string, val interface{}, opts *ParseOptions, valuesPars
 				// 是数组索引
 				arrayLimit := opts.ArrayLimit
 				if arrayLimit == 0 {
-					arrayLimit = 20
+					arrayLimit = DefaultArrayLimit
 				}
 				if opts.ParseArrays && index <= arrayLimit {
 					// 创建一个对象，键为数字

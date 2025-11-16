@@ -89,21 +89,25 @@ func encodeUTF8(str string, format string) string {
 
 // encodeISO88591 ISO-8859-1 编码
 func encodeISO88591(str string) string {
-	// 使用 Go 的 escape 函数模拟
-	result := ""
+	// 使用 strings.Builder 构建结果，避免重复分配
+	var b strings.Builder
+	// 粗略预估容量：假设大部分字符需要编码到 %XX 或数字实体
+	b.Grow(len(str) * 4)
+
 	for _, r := range str {
 		if r < 256 {
 			if isUnreservedISO(r) {
-				result += string(r)
+				b.WriteRune(r)
 			} else {
-				result += fmt.Sprintf("%%%02X", r)
+				// 非保留字符按 %XX 编码
+				fmt.Fprintf(&b, "%%%02X", r)
 			}
 		} else {
 			// Unicode 字符转为数字实体
-			result += fmt.Sprintf("%%26%%23%d%%3B", r)
+			fmt.Fprintf(&b, "%%26%%23%d%%3B", r)
 		}
 	}
-	return result
+	return b.String()
 }
 
 // isUnreserved 检查字符是否为未保留字符
@@ -185,9 +189,12 @@ func decodeISO88591(str string) string {
 	re := regexp.MustCompile(`%[0-9a-fA-F]{2}`)
 	return re.ReplaceAllStringFunc(str, func(match string) string {
 		hex := match[1:]
-		var b byte
-		fmt.Sscanf(hex, "%02x", &b)
-		return string(b)
+		// 使用 ParseUint 解析十六进制，避免 fmt.Sscanf 的额外开销
+		if v, err := strconv.ParseUint(hex, 16, 8); err == nil {
+			return string(byte(v))
+		}
+		// 解析失败时返回原始片段，保持行为稳健
+		return match
 	})
 }
 
@@ -329,7 +336,7 @@ func Combine(a, b interface{}) []interface{} {
 
 // Compact 压缩对象，移除数组中的 undefined 值（对应 utils.compact）
 func Compact(value interface{}, arrayLimit ...int) interface{} {
-	limit := 20 // 默认值
+	limit := DefaultArrayLimit // 默认值
 	if len(arrayLimit) > 0 && arrayLimit[0] > 0 {
 		limit = arrayLimit[0]
 	}
@@ -643,17 +650,13 @@ func SortKeys(keys []string, sortFn func(a, b string) bool) []string {
 		return keys
 	}
 
-	// 使用冒泡排序（保持稳定性）
+	// 使用稳定排序（保持稳定性）
 	result := make([]string, len(keys))
 	copy(result, keys)
 
-	for i := 0; i < len(result); i++ {
-		for j := i + 1; j < len(result); j++ {
-			if sortFn(result[j], result[i]) {
-				result[i], result[j] = result[j], result[i]
-			}
-		}
-	}
+	sort.SliceStable(result, func(i, j int) bool {
+		return sortFn(result[i], result[j])
+	})
 
 	return result
 }

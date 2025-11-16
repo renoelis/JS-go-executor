@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -119,6 +120,17 @@ func ExportUint8Array(val goja.Value, runtime *goja.Runtime) ([]byte, error) {
 		return nil, errors.New("value is not an object")
 	}
 
+	// 优先尝试：对于真正的 TypedArray/Buffer（具有 byteLength），使用 ExportTo 快路径
+	byteLengthVal := obj.Get("byteLength")
+	if byteLengthVal != nil && !goja.IsUndefined(byteLengthVal) && !goja.IsNull(byteLengthVal) {
+		var fastBytes []byte
+		if err := runtime.ExportTo(val, &fastBytes); err == nil && fastBytes != nil {
+			result := make([]byte, len(fastBytes))
+			copy(result, fastBytes)
+			return result, nil
+		}
+	}
+
 	// 获取数组长度
 	lengthVal := obj.Get("length")
 	if lengthVal == nil || goja.IsUndefined(lengthVal) || goja.IsNull(lengthVal) {
@@ -140,7 +152,8 @@ func ExportUint8Array(val goja.Value, runtime *goja.Runtime) ([]byte, error) {
 
 	// 逐个读取元素
 	for i := int64(0); i < length; i++ {
-		elemVal := obj.Get(fmt.Sprintf("%d", i))
+		key := strconv.FormatInt(i, 10)
+		elemVal := obj.Get(key)
 		if elemVal == nil || goja.IsUndefined(elemVal) {
 			result[i] = 0
 		} else {
@@ -155,20 +168,31 @@ func ExportUint8Array(val goja.Value, runtime *goja.Runtime) ([]byte, error) {
 func CreateUint8Array(runtime *goja.Runtime, data []byte) goja.Value {
 	// 方法：使用 Uint8Array.from() 或者先创建普通数组再转换
 
-	// 创建包含数据的普通数组
-	dataArray := runtime.NewArray()
-	for i, b := range data {
-		dataArray.Set(fmt.Sprintf("%d", i), runtime.ToValue(int(b)))
+	// 首选快路径：通过 ArrayBuffer + Uint8Array 构造，避免逐元素写入
+	uint8ArrayConstructor := runtime.Get("Uint8Array")
+	if !goja.IsUndefined(uint8ArrayConstructor) && !goja.IsNull(uint8ArrayConstructor) {
+		if ctor, ok := goja.AssertConstructor(uint8ArrayConstructor); ok {
+			buf := make([]byte, len(data))
+			copy(buf, data)
+			ab := runtime.NewArrayBuffer(buf)
+			if u8Array, err := ctor(nil, runtime.ToValue(ab)); err == nil {
+				return u8Array
+			}
+		}
 	}
 
-	// 尝试使用 Uint8Array.from(array)
-	uint8ArrayConstructor := runtime.Get("Uint8Array")
+	// 退化路径：使用普通数组 + Uint8Array.from / new Uint8Array(array)
+	dataArray := runtime.NewArray()
+	for i, b := range data {
+		key := strconv.Itoa(i)
+		dataArray.Set(key, runtime.ToValue(int(b)))
+	}
+
 	if !goja.IsUndefined(uint8ArrayConstructor) {
 		constructorObj := uint8ArrayConstructor.ToObject(runtime)
 		fromFunc := constructorObj.Get("from")
 
 		if !goja.IsUndefined(fromFunc) {
-			// 使用 Uint8Array.from(array)
 			fromFn, ok := goja.AssertFunction(fromFunc)
 			if ok {
 				u8Array, err := fromFn(uint8ArrayConstructor, dataArray)
@@ -178,7 +202,6 @@ func CreateUint8Array(runtime *goja.Runtime, data []byte) goja.Value {
 			}
 		}
 
-		// 降级：尝试 new Uint8Array(array)
 		constructor, ok := goja.AssertFunction(uint8ArrayConstructor)
 		if ok {
 			u8Array, err := constructor(goja.Null(), dataArray)
@@ -205,13 +228,17 @@ func ParseStringOrBytes(val goja.Value, runtime *goja.Runtime) ([]byte, error) {
 	}
 
 	// 尝试作为字符串
-	if val.ExportType().Kind().String() == "string" {
+	exportType := val.ExportType()
+	if exportType != nil && exportType.Kind().String() == "string" {
 		return Utf8ToBytes(val.String()), nil
 	}
 
 	// 检查是否为数字类型（抛出错误，匹配 sm-crypto-v2 行为）
-	exportType := val.ExportType().Kind().String()
-	if exportType == "int" || exportType == "int64" || exportType == "float64" || exportType == "number" {
+	exportKind := ""
+	if exportType != nil {
+		exportKind = exportType.Kind().String()
+	}
+	if exportKind == "int" || exportKind == "int64" || exportKind == "float64" || exportKind == "number" {
 		return nil, errors.New("expected Uint8Array, got number")
 	}
 
@@ -251,7 +278,8 @@ func ParseHexOrBytes(val goja.Value, runtime *goja.Runtime) ([]byte, error) {
 	}
 
 	// 尝试作为字符串
-	if val.ExportType().Kind().String() == "string" {
+	exportType := val.ExportType()
+	if exportType != nil && exportType.Kind().String() == "string" {
 		str := val.String()
 		// 先尝试作为 hex 解析
 		hexBytes, err := HexToBytes(str)
@@ -263,8 +291,11 @@ func ParseHexOrBytes(val goja.Value, runtime *goja.Runtime) ([]byte, error) {
 	}
 
 	// 检查是否为数字类型（不允许）
-	exportType := val.ExportType().Kind().String()
-	if exportType == "int" || exportType == "int64" || exportType == "float64" || exportType == "number" {
+	exportKind := ""
+	if exportType != nil {
+		exportKind = exportType.Kind().String()
+	}
+	if exportKind == "int" || exportKind == "int64" || exportKind == "float64" || exportKind == "number" {
 		return nil, errors.New("invalid type: expected string or Uint8Array, got number")
 	}
 

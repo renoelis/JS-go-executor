@@ -7,6 +7,11 @@ import (
 	"github.com/dop251/goja"
 )
 
+const (
+	DefaultArrayLimit     = 20
+	DefaultParameterLimit = 1000
+)
+
 // ============================================================================
 // Types - 类型定义（完整手动实现，不依赖第三方库）
 // 对应 Node.js qs 的选项类型
@@ -103,7 +108,7 @@ func DefaultParseOptions() *ParseOptions {
 	return &ParseOptions{
 		Delimiter:                "&",
 		Depth:                    5,
-		ArrayLimit:               20,
+		ArrayLimit:               DefaultArrayLimit,
 		AllowDots:                false,
 		AllowPrototypes:          false,
 		AllowSparse:              false,
@@ -115,7 +120,7 @@ func DefaultParseOptions() *ParseOptions {
 		Duplicates:               "combine",
 		IgnoreQueryPrefix:        false,
 		InterpretNumericEntities: false,
-		ParameterLimit:           1000,
+		ParameterLimit:           DefaultParameterLimit,
 		ParseArrays:              true,
 		PlainObjects:             false,
 		StrictDepth:              false,
