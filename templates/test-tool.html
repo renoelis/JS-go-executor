@@ -2973,11 +2973,7 @@ return readExcelFromUrl();`
         
         function hideTokenQuery() {
             document.getElementById('tokenModal').classList.remove('show');
-            // 清理倒计时
-            if (sendCodeCooldownTimer) {
-                clearInterval(sendCodeCooldownTimer);
-                sendCodeCooldownTimer = null;
-            }
+            // 不再在关闭弹窗时清理倒计时，避免按钮保持禁用但计时停止的状态
         }
 
         async function queryToken() {
