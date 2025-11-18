@@ -45,6 +45,20 @@ func CreateSign(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		return call.This
 	})
 
+	signObj.Set("write", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			panic(runtime.NewTypeError("update 需要 data 参数"))
+		}
+
+		buf, err := ConvertToBytesStrict(runtime, call.Arguments[0])
+		if err != nil {
+			panic(runtime.NewTypeError(fmt.Sprintf("update 数据类型错误: %v", err)))
+		}
+		dataBuffer = append(dataBuffer, buf...)
+
+		return call.This
+	})
+
 	// end方法
 	signObj.Set("end", func(call goja.FunctionCall) goja.Value {
 		return call.This
@@ -200,6 +214,20 @@ func CreateVerify(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		}
 
 		// Node.js 行为：Verify.update() 不接受 ArrayBuffer，只接受 Buffer/TypedArray/DataView
+		buf, err := ConvertToBytesStrict(runtime, call.Arguments[0])
+		if err != nil {
+			panic(runtime.NewTypeError(fmt.Sprintf("update 数据类型错误: %v", err)))
+		}
+		dataBuffer = append(dataBuffer, buf...)
+
+		return call.This
+	})
+
+	verifyObj.Set("write", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			panic(runtime.NewTypeError("update 需要 data 参数"))
+		}
+
 		buf, err := ConvertToBytesStrict(runtime, call.Arguments[0])
 		if err != nil {
 			panic(runtime.NewTypeError(fmt.Sprintf("update 数据类型错误: %v", err)))
