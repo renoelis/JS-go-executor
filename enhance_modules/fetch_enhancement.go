@@ -910,6 +910,7 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 	if contentType != "" && httpReq.Header.Get("Content-Type") == "" {
 		httpReq.Header.Set("Content-Type", contentType)
 	}
+	applyDefaultRequestHeaders(httpReq)
 
 	// 6. 协议安全检查
 	if err := fe.checkProtocol(httpReq.URL.Scheme); err != nil {
@@ -1090,6 +1091,15 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 		} else {
 			req.resultCh <- FetchResult{nil, reqCtx.Err()}
 		}
+	}
+}
+
+func applyDefaultRequestHeaders(httpReq *http.Request) {
+	if httpReq.Header.Get("Accept") == "" {
+		httpReq.Header.Set("Accept", "application/json, text/plain, */*")
+	}
+	if httpReq.Header.Get("User-Agent") == "" {
+		httpReq.Header.Set("User-Agent", "Flow-HTTP-Client/1.0")
 	}
 }
 
