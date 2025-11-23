@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"unsafe"
 
+	goruntime "runtime"
+
 	"github.com/dop251/goja"
 )
 
@@ -209,6 +211,10 @@ func newOpenSSLECDHObject(runtime *goja.Runtime, curveName string) (*goja.Object
 	if err != nil {
 		return nil, err
 	}
+
+	goruntime.SetFinalizer(state, func(s *OpenSSLECDHState) {
+		s.Close()
+	})
 
 	obj := runtime.NewObject()
 

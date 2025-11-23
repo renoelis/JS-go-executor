@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/dop251/goja"
-	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/hkdf"
 	"golang.org/x/crypto/pbkdf2"
 	"golang.org/x/crypto/scrypt"
@@ -696,15 +695,19 @@ func HKDF(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 
 // ---------------- Argon2 ----------------
 
-// Argon2Sync 实现 crypto.argon2Sync
-func Argon2Sync(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
-	if len(call.Arguments) < 2 {
-		// 与 Node.js 行为对齐：缺少 parameters 时抛出 ERR_INVALID_ARG_TYPE
-		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"parameters\" argument must be of type object. Received undefined"))
-	}
+type Argon2Parameters struct {
+	Algorithm      string
+	Message        []byte
+	Nonce          []byte
+	Parallelism    uint32
+	TagLength      uint32
+	Memory         uint32
+	Passes         uint32
+	Secret         []byte
+	AssociatedData []byte
+}
 
-	// 解析 algorithm 参数
-	algorithmVal := call.Arguments[0]
+func parseArgon2Parameters(runtime *goja.Runtime, algorithmVal goja.Value, paramsVal goja.Value) *Argon2Parameters {
 	if goja.IsUndefined(algorithmVal) || goja.IsNull(algorithmVal) {
 		panic(runtime.NewTypeError("The \"algorithm\" argument is required and must be a string"))
 	}
@@ -712,14 +715,10 @@ func Argon2Sync(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	if algorithm == "" {
 		panic(runtime.NewTypeError("The \"algorithm\" argument must be of type string"))
 	}
-
-	// 验证算法名称
 	if algorithm != "argon2d" && algorithm != "argon2i" && algorithm != "argon2id" {
 		panic(runtime.NewTypeError("Invalid algorithm: " + algorithm))
 	}
 
-	// 解析 parameters 对象
-	paramsVal := call.Arguments[1]
 	if goja.IsUndefined(paramsVal) {
 		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"parameters\" argument must be of type object. Received undefined"))
 	}
@@ -731,12 +730,19 @@ func Argon2Sync(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"parameters\" argument must be of type object"))
 	}
 
+	var (
+		p   Argon2Parameters
+		err error
+	)
+
+	p.Algorithm = algorithm
+
 	// 提取必需参数：message
 	messageVal := paramsObj.Get("message")
 	if messageVal == nil || goja.IsUndefined(messageVal) || goja.IsNull(messageVal) {
 		panic(runtime.NewTypeError("The \"parameters.message\" property is required"))
 	}
-	message, err := ConvertToBytes(runtime, messageVal)
+	p.Message, err = ConvertToBytes(runtime, messageVal)
 	if err != nil {
 		panic(runtime.NewTypeError("The \"parameters.message\" property must be of type string or an instance of Buffer, TypedArray, or DataView"))
 	}
@@ -746,11 +752,11 @@ func Argon2Sync(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	if nonceVal == nil || goja.IsUndefined(nonceVal) || goja.IsNull(nonceVal) {
 		panic(runtime.NewTypeError("The \"parameters.nonce\" property is required"))
 	}
-	nonce, err := ConvertToBytes(runtime, nonceVal)
+	p.Nonce, err = ConvertToBytes(runtime, nonceVal)
 	if err != nil {
 		panic(runtime.NewTypeError("The \"parameters.nonce\" property must be of type string or an instance of Buffer, TypedArray, or DataView"))
 	}
-	if len(nonce) < 8 {
+	if len(p.Nonce) < 8 {
 		panic(runtime.NewTypeError("The \"parameters.nonce\" property must be at least 8 bytes long"))
 	}
 
@@ -849,51 +855,60 @@ func Argon2Sync(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	}
 
 	// 提取可选参数：secret
-	var secret []byte
 	secretVal := paramsObj.Get("secret")
 	if secretVal != nil && !goja.IsUndefined(secretVal) && !goja.IsNull(secretVal) {
-		secret, err = ConvertToBytes(runtime, secretVal)
+		p.Secret, err = ConvertToBytes(runtime, secretVal)
 		if err != nil {
 			panic(runtime.NewTypeError("The \"parameters.secret\" property must be of type string or an instance of Buffer, TypedArray, or DataView"))
 		}
-		if len(secret) > CryptoMaxInt32 {
+		if len(p.Secret) > CryptoMaxInt32 {
 			panic(runtime.NewTypeError("The \"parameters.secret\" property is too long"))
 		}
 	}
 
 	// 提取可选参数：associatedData
-	var associatedData []byte
 	adVal := paramsObj.Get("associatedData")
 	if adVal != nil && !goja.IsUndefined(adVal) && !goja.IsNull(adVal) {
-		associatedData, err = ConvertToBytes(runtime, adVal)
+		p.AssociatedData, err = ConvertToBytes(runtime, adVal)
 		if err != nil {
 			panic(runtime.NewTypeError("The \"parameters.associatedData\" property must be of type string or an instance of Buffer, TypedArray, or DataView"))
 		}
-		if len(associatedData) > CryptoMaxInt32 {
+		if len(p.AssociatedData) > CryptoMaxInt32 {
 			panic(runtime.NewTypeError("The \"parameters.associatedData\" property is too long"))
 		}
 	}
 
-	// 合并 message、secret 和 associatedData
-	// 注意：Go 的 argon2 包不直接支持 secret 和 associatedData 参数
-	// 我们将它们附加到 message 中（符合 Argon2 规范的做法）
-	combinedMessage := message
-	if len(secret) > 0 {
-		combinedMessage = append(combinedMessage, secret...)
-	}
-	if len(associatedData) > 0 {
-		combinedMessage = append(combinedMessage, associatedData...)
+	p.Parallelism = uint32(parallelism)
+	p.TagLength = uint32(tagLength)
+	p.Memory = uint32(memory)
+	p.Passes = uint32(passes)
+
+	return &p
+}
+
+// Argon2Sync 实现 crypto.argon2Sync
+func Argon2Sync(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
+	if len(call.Arguments) < 2 {
+		// 与 Node.js 行为对齐：缺少 parameters 时抛出 ERR_INVALID_ARG_TYPE
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"parameters\" argument must be of type object. Received undefined"))
 	}
 
-	// 执行 Argon2 派生
-	var derivedKey []byte
-	switch algorithm {
-	case "argon2d":
-		derivedKey = argon2dKey(combinedMessage, nonce, uint32(passes), uint32(memory), uint32(parallelism), uint32(tagLength))
-	case "argon2i":
-		derivedKey = argon2.Key(combinedMessage, nonce, uint32(passes), uint32(memory), uint8(parallelism), uint32(tagLength))
-	case "argon2id":
-		derivedKey = argon2.IDKey(combinedMessage, nonce, uint32(passes), uint32(memory), uint8(parallelism), uint32(tagLength))
+	params := parseArgon2Parameters(runtime, call.Arguments[0], call.Arguments[1])
+
+	// 使用 C 版 libargon2（或 stub）按规范处理 message/nonce/secret/associatedData
+	derivedKey, err := argon2KeyFull(
+		params.Algorithm,
+		params.Message,
+		params.Nonce,
+		params.Secret,
+		params.AssociatedData,
+		params.Passes,
+		params.Memory,
+		params.Parallelism,
+		params.TagLength,
+	)
+	if err != nil {
+		panic(runtime.NewGoError(err))
 	}
 
 	return CreateBuffer(runtime, derivedKey)
@@ -916,92 +931,7 @@ func Argon2(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		panic(runtime.NewTypeError("The \"callback\" argument must be of type function"))
 	}
 
-	algorithmVal := call.Arguments[0]
-	paramsVal := call.Arguments[1]
-
-	// 使用同步版本的逻辑，但在回调中执行
-	algorithm := SafeGetString(algorithmVal)
-	if algorithm == "" {
-		panic(runtime.NewTypeError("The \"algorithm\" argument must be of type string"))
-	}
-	if algorithm != "argon2d" && algorithm != "argon2i" && algorithm != "argon2id" {
-		panic(runtime.NewTypeError("Invalid algorithm: " + algorithm))
-	}
-
-	paramsObj, ok := paramsVal.(*goja.Object)
-	if !ok {
-		panic(runtime.NewTypeError("The \"parameters\" argument must be an object"))
-	}
-
-	// 提取所有参数（在主线程中验证）
-	messageVal := paramsObj.Get("message")
-	if messageVal == nil || goja.IsUndefined(messageVal) || goja.IsNull(messageVal) {
-		panic(runtime.NewTypeError("The \"parameters.message\" property is required"))
-	}
-	message, err := ConvertToBytes(runtime, messageVal)
-	if err != nil {
-		panic(runtime.NewTypeError("The \"parameters.message\" property must be of type string or an instance of Buffer, TypedArray, or DataView"))
-	}
-
-	nonceVal := paramsObj.Get("nonce")
-	if nonceVal == nil || goja.IsUndefined(nonceVal) || goja.IsNull(nonceVal) {
-		panic(runtime.NewTypeError("The \"parameters.nonce\" property is required"))
-	}
-	nonce, err := ConvertToBytes(runtime, nonceVal)
-	if err != nil {
-		panic(runtime.NewTypeError("The \"parameters.nonce\" property must be of type string or an instance of Buffer, TypedArray, or DataView"))
-	}
-	if len(nonce) < 8 {
-		panic(runtime.NewTypeError("The \"parameters.nonce\" property must be at least 8 bytes long"))
-	}
-
-	parallelismVal := paramsObj.Get("parallelism")
-	if parallelismVal == nil || goja.IsUndefined(parallelismVal) || goja.IsNull(parallelismVal) {
-		panic(runtime.NewTypeError("The \"parameters.parallelism\" property is required"))
-	}
-	parallelism := int(parallelismVal.ToInteger())
-	if parallelism < 1 {
-		panic(runtime.NewTypeError("The \"parameters.parallelism\" property must be greater than or equal to 1"))
-	}
-
-	tagLengthVal := paramsObj.Get("tagLength")
-	if tagLengthVal == nil || goja.IsUndefined(tagLengthVal) || goja.IsNull(tagLengthVal) {
-		panic(runtime.NewTypeError("The \"parameters.tagLength\" property is required"))
-	}
-	tagLength := int(tagLengthVal.ToInteger())
-	if tagLength < 4 {
-		panic(runtime.NewTypeError("The \"parameters.tagLength\" property must be greater than or equal to 4"))
-	}
-
-	memoryVal := paramsObj.Get("memory")
-	if memoryVal == nil || goja.IsUndefined(memoryVal) || goja.IsNull(memoryVal) {
-		panic(runtime.NewTypeError("The \"parameters.memory\" property is required"))
-	}
-	memory := int(memoryVal.ToInteger())
-	if memory < 8*parallelism {
-		panic(runtime.NewTypeError("The \"parameters.memory\" property must be greater than or equal to 8 * parallelism"))
-	}
-
-	passesVal := paramsObj.Get("passes")
-	if passesVal == nil || goja.IsUndefined(passesVal) || goja.IsNull(passesVal) {
-		panic(runtime.NewTypeError("The \"parameters.passes\" property is required"))
-	}
-	passes := int(passesVal.ToInteger())
-	if passes < 1 {
-		panic(runtime.NewTypeError("The \"parameters.passes\" property must be greater than or equal to 1"))
-	}
-
-	var secret []byte
-	secretVal := paramsObj.Get("secret")
-	if secretVal != nil && !goja.IsUndefined(secretVal) && !goja.IsNull(secretVal) {
-		secret, _ = ConvertToBytes(runtime, secretVal)
-	}
-
-	var associatedData []byte
-	adVal := paramsObj.Get("associatedData")
-	if adVal != nil && !goja.IsUndefined(adVal) && !goja.IsNull(adVal) {
-		associatedData, _ = ConvertToBytes(runtime, adVal)
-	}
+	params := parseArgon2Parameters(runtime, call.Arguments[0], call.Arguments[1])
 
 	// 使用 setImmediate 异步执行
 	setImmediate := runtime.Get("setImmediate")
@@ -1013,22 +943,20 @@ func Argon2(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 				_, _ = callback(goja.Undefined(), errVal, resVal)
 			}()
 
-			combinedMessage := message
-			if len(secret) > 0 {
-				combinedMessage = append(combinedMessage, secret...)
-			}
-			if len(associatedData) > 0 {
-				combinedMessage = append(combinedMessage, associatedData...)
-			}
-
-			var derivedKey []byte
-			switch algorithm {
-			case "argon2d":
-				derivedKey = argon2dKey(combinedMessage, nonce, uint32(passes), uint32(memory), uint32(parallelism), uint32(tagLength))
-			case "argon2i":
-				derivedKey = argon2.Key(combinedMessage, nonce, uint32(passes), uint32(memory), uint8(parallelism), uint32(tagLength))
-			case "argon2id":
-				derivedKey = argon2.IDKey(combinedMessage, nonce, uint32(passes), uint32(memory), uint8(parallelism), uint32(tagLength))
+			derivedKey, err := argon2KeyFull(
+				params.Algorithm,
+				params.Message,
+				params.Nonce,
+				params.Secret,
+				params.AssociatedData,
+				params.Passes,
+				params.Memory,
+				params.Parallelism,
+				params.TagLength,
+			)
+			if err != nil {
+				errVal = runtime.NewGoError(err)
+				return goja.Undefined()
 			}
 
 			resVal = CreateBuffer(runtime, derivedKey)
@@ -1039,25 +967,23 @@ func Argon2(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		return goja.Undefined()
 	}
 
-	// 降级同步
-	combinedMessage := message
-	if len(secret) > 0 {
-		combinedMessage = append(combinedMessage, secret...)
+	// 无 setImmediate 时降级为同步执行，但仍通过回调返回结果
+	derivedKey, err := argon2KeyFull(
+		params.Algorithm,
+		params.Message,
+		params.Nonce,
+		params.Secret,
+		params.AssociatedData,
+		params.Passes,
+		params.Memory,
+		params.Parallelism,
+		params.TagLength,
+	)
+	if err != nil {
+		errVal := runtime.NewGoError(err)
+		_, _ = callback(goja.Undefined(), errVal, goja.Null())
+	} else {
+		_, _ = callback(goja.Undefined(), goja.Null(), CreateBuffer(runtime, derivedKey))
 	}
-	if len(associatedData) > 0 {
-		combinedMessage = append(combinedMessage, associatedData...)
-	}
-
-	var derivedKey []byte
-	switch algorithm {
-	case "argon2d":
-		derivedKey = argon2dKey(combinedMessage, nonce, uint32(passes), uint32(memory), uint32(parallelism), uint32(tagLength))
-	case "argon2i":
-		derivedKey = argon2.Key(combinedMessage, nonce, uint32(passes), uint32(memory), uint8(parallelism), uint32(tagLength))
-	case "argon2id":
-		derivedKey = argon2.IDKey(combinedMessage, nonce, uint32(passes), uint32(memory), uint8(parallelism), uint32(tagLength))
-	}
-
-	_, _ = callback(goja.Undefined(), goja.Null(), CreateBuffer(runtime, derivedKey))
 	return goja.Undefined()
 }

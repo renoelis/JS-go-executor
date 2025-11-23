@@ -117,6 +117,11 @@ func DiffieHellman(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 // performDiffieHellmanCore 执行实际的 DH 密钥交换计算（参数已验证）
 func performDiffieHellmanCore(privKey, pubKey interface{}, keyType string, runtime *goja.Runtime) goja.Value {
 
+	// 防御性检查，避免内部错误导致 nil 解引用
+	if privKey == nil || pubKey == nil {
+		panic(runtime.NewGoError(fmt.Errorf("diffieHellman failed: internal key is nil")))
+	}
+
 	// 根据密钥类型执行密钥交换
 	var sharedSecret []byte
 	var err error
@@ -269,7 +274,15 @@ func parseKeyForDH(keyVal goja.Value, runtime *goja.Runtime, isPrivate bool) (in
 			// 尝试从 _key 直接获取 DH 私钥对象
 			internalKeyVal := keyObj.Get("_key")
 			if internalKeyVal != nil && !goja.IsUndefined(internalKeyVal) && !goja.IsNull(internalKeyVal) {
-				if dhPriv, ok := internalKeyVal.Export().(*DHPrivateKey); ok {
+				// 防御 typed-nil 场景，避免后续使用时 panic
+				exported := internalKeyVal.Export()
+				if exported == nil {
+					return nil, "", errors.New("internal DH private key is nil")
+				}
+				if dhPriv, ok := exported.(*DHPrivateKey); ok {
+					if dhPriv == nil {
+						return nil, "", errors.New("internal DH private key is nil")
+					}
 					return dhPriv, "dh", nil
 				}
 			}
@@ -284,7 +297,15 @@ func parseKeyForDH(keyVal goja.Value, runtime *goja.Runtime, isPrivate bool) (in
 			// 尝试从 _key 直接获取 DH 公钥对象
 			internalKeyVal := keyObj.Get("_key")
 			if internalKeyVal != nil && !goja.IsUndefined(internalKeyVal) && !goja.IsNull(internalKeyVal) {
-				if dhPub, ok := internalKeyVal.Export().(*DHPublicKey); ok {
+				// 防御 typed-nil 场景，避免后续使用时 panic
+				exported := internalKeyVal.Export()
+				if exported == nil {
+					return nil, "", errors.New("internal DH public key is nil")
+				}
+				if dhPub, ok := exported.(*DHPublicKey); ok {
+					if dhPub == nil {
+						return nil, "", errors.New("internal DH public key is nil")
+					}
 					return dhPub, "dh", nil
 				}
 			}

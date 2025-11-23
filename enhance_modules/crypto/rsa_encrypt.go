@@ -91,6 +91,11 @@ func PublicEncrypt(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		panic(runtime.NewGoError(err))
 	}
 
+	// 防御性检查，避免内部错误导致 nil 解引用
+	if publicKey == nil || publicKey.N == nil {
+		panic(runtime.NewGoError(fmt.Errorf("invalid RSA public key")))
+	}
+
 	// 执行加密 (支持 Node.js 18+ 的所有 padding 模式)
 	var encrypted []byte
 	k := (publicKey.N.BitLen() + 7) / 8

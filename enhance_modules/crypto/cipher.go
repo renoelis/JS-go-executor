@@ -5,7 +5,10 @@ package crypto
 import (
 	"encoding/base64"
 	"fmt"
+	"math"
 	"strings"
+
+	goruntime "runtime"
 
 	"github.com/dop251/goja"
 )
@@ -186,13 +189,17 @@ func CreateCipheriv(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	if len(call.Arguments) >= 4 {
 		if optObj, ok := call.Arguments[3].(*goja.Object); ok && optObj != nil {
 			if v := optObj.Get("authTagLength"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
-				// 使用 JavaScript 检查是否是整数
-				isInteger, _ := runtime.RunString(`(function(val) { return Number.isInteger(val); })`)
-				if checkFunc, ok := goja.AssertFunction(isInteger); ok {
-					result, _ := checkFunc(goja.Undefined(), v)
-					if result == nil || !result.ToBoolean() {
+				// 使用 Go 侧检查是否为 JS 整数，语义对齐 Number.isInteger
+				exported := v.Export()
+				switch num := exported.(type) {
+				case int64, int32, int:
+					// 这些整数类型直接视为合法整数
+				case float64:
+					if math.IsNaN(num) || math.IsInf(num, 0) || math.Trunc(num) != num {
 						panic(runtime.NewTypeError("The \"options.authTagLength\" property must be an integer"))
 					}
+				default:
+					panic(runtime.NewTypeError("The \"options.authTagLength\" property must be an integer"))
 				}
 
 				n := int(v.ToInteger())
@@ -303,13 +310,17 @@ func CreateDecipheriv(call goja.FunctionCall, runtime *goja.Runtime) goja.Value 
 	if len(call.Arguments) >= 4 {
 		if optObj, ok := call.Arguments[3].(*goja.Object); ok && optObj != nil {
 			if v := optObj.Get("authTagLength"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
-				// 使用 JavaScript 检查是否是整数
-				isInteger, _ := runtime.RunString(`(function(val) { return Number.isInteger(val); })`)
-				if checkFunc, ok := goja.AssertFunction(isInteger); ok {
-					result, _ := checkFunc(goja.Undefined(), v)
-					if result == nil || !result.ToBoolean() {
+				// 使用 Go 侧检查是否为 JS 整数，语义对齐 Number.isInteger
+				exported := v.Export()
+				switch num := exported.(type) {
+				case int64, int32, int:
+					// 这些整数类型直接视为合法整数
+				case float64:
+					if math.IsNaN(num) || math.IsInf(num, 0) || math.Trunc(num) != num {
 						panic(runtime.NewTypeError("The \"options.authTagLength\" property must be an integer"))
 					}
+				default:
+					panic(runtime.NewTypeError("The \"options.authTagLength\" property must be an integer"))
 				}
 
 				n := int(v.ToInteger())
@@ -339,6 +350,10 @@ func CreateDecipheriv(call goja.FunctionCall, runtime *goja.Runtime) goja.Value 
 // createCipherObject 创建 Cipher/Decipher JS 对象
 func createCipherObject(runtime *goja.Runtime, ctx *CipherCtx, algorithm string, encrypt bool, authTagLen int) goja.Value {
 	obj := runtime.NewObject()
+
+	goruntime.SetFinalizer(ctx, func(c *CipherCtx) {
+		c.Close()
+	})
 
 	finished := false
 	authTagSet := false

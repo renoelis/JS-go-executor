@@ -185,7 +185,12 @@ func ExtractArrayBufferBytes(runtime *goja.Runtime, obj *goja.Object) ([]byte, e
 		return nil, fmt.Errorf("Uint8Array view has no length")
 	}
 
-	length := int(lengthVal.ToInteger())
+	// 为 length 做一次健壮性检查，防止极端情况下的负数或超大值导致 panic
+	length64 := lengthVal.ToInteger()
+	if length64 < 0 || length64 > int64(CryptoMaxInt32) {
+		return nil, fmt.Errorf("invalid Uint8Array length: %d", length64)
+	}
+	length := int(length64)
 	out := make([]byte, length)
 	for i := 0; i < length; i++ {
 		val := viewObj.Get(strconv.Itoa(i))

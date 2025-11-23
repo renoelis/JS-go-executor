@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/big"
 	"strconv"
+	"sync"
 
 	"github.com/dop251/goja"
 )
@@ -50,6 +51,16 @@ func RandomBytes(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	if floatVal, ok := exportedVal.(float64); ok {
 		if floatVal != floatVal { // NaN check (NaN != NaN)
 			msg := fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received NaN", MaxRandomBytesSize)
+			errObj := runtime.NewGoError(fmt.Errorf("%s", msg))
+			errObj.Set("name", runtime.ToValue("RangeError"))
+			panic(errObj)
+		}
+		if math.IsInf(floatVal, 0) {
+			received := "Infinity"
+			if math.IsInf(floatVal, -1) {
+				received = "-Infinity"
+			}
+			msg := fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %s", MaxRandomBytesSize, received)
 			errObj := runtime.NewGoError(fmt.Errorf("%s", msg))
 			errObj.Set("name", runtime.ToValue("RangeError"))
 			panic(errObj)
@@ -148,8 +159,52 @@ func RandomBytes(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	return result
 }
 
+const uuidEntropyBatchSize = 128
+
+type uuidEntropyCache struct {
+	mu     sync.Mutex
+	buf    []byte
+	offset int
+}
+
+var globalUUIDEntropyCache uuidEntropyCache
+
+func getRandomUUIDBytes(disableEntropyCache bool) ([]byte, error) {
+	if disableEntropyCache {
+		uuid := make([]byte, 16)
+		_, err := rand.Read(uuid)
+		if err != nil {
+			return nil, err
+		}
+		return uuid, nil
+	}
+
+	globalUUIDEntropyCache.mu.Lock()
+	defer globalUUIDEntropyCache.mu.Unlock()
+
+	if globalUUIDEntropyCache.buf == nil || globalUUIDEntropyCache.offset+16 > len(globalUUIDEntropyCache.buf) {
+		if globalUUIDEntropyCache.buf == nil || len(globalUUIDEntropyCache.buf) != 16*uuidEntropyBatchSize {
+			globalUUIDEntropyCache.buf = make([]byte, 16*uuidEntropyBatchSize)
+		}
+		globalUUIDEntropyCache.offset = 0
+		if _, err := rand.Read(globalUUIDEntropyCache.buf); err != nil {
+			globalUUIDEntropyCache.buf = nil
+			globalUUIDEntropyCache.offset = 0
+			return nil, err
+		}
+	}
+
+	start := globalUUIDEntropyCache.offset
+	end := start + 16
+	uuid := make([]byte, 16)
+	copy(uuid, globalUUIDEntropyCache.buf[start:end])
+	globalUUIDEntropyCache.offset = end
+	return uuid, nil
+}
+
 // RandomUUID 生成随机 UUID
 func RandomUUID(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
+	disableEntropyCache := false
 	// Node.js v18+：接受可选的 options 参数 { disableEntropyCache?: boolean }
 	if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
 		arg := call.Arguments[0]
@@ -179,8 +234,9 @@ func RandomUUID(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 			// 必须是 boolean 类型
 			exportedVal := disableEntropyCacheVal.Export()
 
-			// 检查是否为 bool 类型
-			if _, ok := exportedVal.(bool); !ok {
+			if b, ok := exportedVal.(bool); ok {
+				disableEntropyCache = b
+			} else {
 				// 获取实际类型名称
 				actualType := "unknown"
 				actualValue := exportedVal
@@ -209,8 +265,7 @@ func RandomUUID(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	}
 
 	// 生成 UUID v4
-	uuid := make([]byte, 16)
-	_, err := rand.Read(uuid)
+	uuid, err := getRandomUUIDBytes(disableEntropyCache)
 	if err != nil {
 		panic(runtime.NewGoError(fmt.Errorf("生成 UUID 失败: %w", err)))
 	}
