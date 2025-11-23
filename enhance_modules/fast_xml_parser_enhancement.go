@@ -69,12 +69,12 @@ func (fxpe *FastXMLParserEnhancer) loadFastXMLParser(runtime *goja.Runtime) erro
 	exportsVal := runtime.Get("exports")
 	hasModule := moduleVal != nil && !goja.IsUndefined(moduleVal)
 	hasExports := exportsVal != nil && !goja.IsUndefined(exportsVal)
-	
+
 	// 检查 UMD 包装会用到的全局对象
 	windowVal := runtime.Get("window")
 	globalVal := runtime.Get("global")
 	selfVal := runtime.Get("self")
-	
+
 	// 完全删除 module 和 exports 属性，让 typeof 检查返回 "undefined"
 	if hasModule {
 		globalObj.Delete("module")
@@ -85,10 +85,10 @@ func (fxpe *FastXMLParserEnhancer) loadFastXMLParser(runtime *goja.Runtime) erro
 
 	// 运行编译后的程序（browserify 打包的代码会自动设置全局变量 fxp）
 	_, err = runtime.RunProgram(program)
-	
+
 	// 检查 fxp 是否被设置
 	fxpVal = runtime.Get("fxp")
-	
+
 	// 🔥 UMD 包装可能将 fxp 设置到 global/window/self 上，需要提升到顶层
 	if fxpVal == nil || goja.IsUndefined(fxpVal) {
 		// 优先从 global 获取（最常见）
@@ -122,7 +122,7 @@ func (fxpe *FastXMLParserEnhancer) loadFastXMLParser(runtime *goja.Runtime) erro
 			}
 		}
 	}
-	
+
 	// 恢复 module 和 exports
 	if hasModule {
 		runtime.Set("module", moduleVal)
@@ -130,7 +130,7 @@ func (fxpe *FastXMLParserEnhancer) loadFastXMLParser(runtime *goja.Runtime) erro
 	if hasExports {
 		runtime.Set("exports", exportsVal)
 	}
-	
+
 	if err != nil {
 		return fmt.Errorf("执行 fast-xml-parser 程序失败: %w", err)
 	}
@@ -151,7 +151,7 @@ func (fxpe *FastXMLParserEnhancer) getCompiledProgram() (*goja.Program, error) {
 			return
 		}
 
-		program, err := goja.Compile("fast-xml-parser.min.js", fxpe.embeddedCode, true)
+		program, err := goja.Compile("fast-xml-parser.min.js", fxpe.embeddedCode, false)
 		if err != nil {
 			fxpe.compileErr = fmt.Errorf("编译 fast-xml-parser 代码失败: %w", err)
 			return

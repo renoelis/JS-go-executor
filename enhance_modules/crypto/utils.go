@@ -1,6 +1,9 @@
 package crypto
 
 import (
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
@@ -9,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	ed448lib "github.com/cloudflare/circl/sign/ed448"
 	"github.com/dop251/goja"
 )
 
@@ -17,11 +21,18 @@ import (
 // ============================================================================
 
 // SafeGetString 安全获取字符串
+// 注意：对于 Symbol 类型，会返回空字符串（调用方需要额外检查）
 func SafeGetString(val goja.Value) string {
 	if val == nil || goja.IsUndefined(val) || goja.IsNull(val) {
 		return ""
 	}
+	// 检查是否是 Symbol 类型
 	if exported := val.Export(); exported != nil {
+		// Symbol 类型在 Go 中导出为特殊类型，需要检查
+		exportedStr := fmt.Sprintf("%T", exported)
+		if strings.Contains(exportedStr, "Symbol") {
+			return "" // Symbol 返回空字符串，让调用方检查
+		}
 		return fmt.Sprintf("%v", exported)
 	}
 	return ""
@@ -68,10 +79,11 @@ func ExtractKeyFromDEROptions(runtime *goja.Runtime, opts *goja.Object) string {
 	enc := strings.ToLower(SafeGetString(opts.Get("encoding"))) // 可选: base64 | hex | base64url
 
 	// 读取 type（spki/pkcs1/pkcs8）
-	typ := strings.ToLower(SafeGetString(opts.Get("type")))
+	typeVal := opts.Get("type")
+	typ := strings.ToLower(SafeGetString(typeVal))
 	if typ == "" {
-		// 与 Node 常见用法对齐：未给 type 时默认按 spki
-		typ = "spki"
+		// 对 DER 格式，Node 要求必须显式提供 type（spki/pkcs1/pkcs8）
+		panic(runtime.NewTypeError("The \"type\" property is required for DER format keys"))
 	}
 
 	// 将 key 解码为原始 DER 字节
@@ -113,21 +125,24 @@ func ExtractKeyFromDEROptions(runtime *goja.Runtime, opts *goja.Object) string {
 	// 选择 PEM 头部
 	var pemType string
 	switch typ {
-	case "spki", "subjectpublickeyinfo":
+	case "spki":
 		pemType = "PUBLIC KEY"
 	case "pkcs1":
-		// 自动探测：优先判断是否为 PKCS#1 私钥，否则尝试公钥
-		if _, perr := x509.ParsePKCS1PrivateKey(der); perr == nil {
+		// pkcs1 在 Node.js 中既可以表示 RSA 公钥也可以表示 RSA 私钥：
+		// - createPublicKey({ format: 'der', type: 'pkcs1' }) 使用 RSAPublicKey 结构
+		// - createPrivateKey({ format: 'der', type: 'pkcs1' }) 使用 RSAPrivateKey 结构
+		// 这里优先尝试按私钥解析；若失败则视为公钥，以与 Node 行为对齐。
+		if _, err := x509.ParsePKCS1PrivateKey(der); err == nil {
 			pemType = "RSA PRIVATE KEY"
-		} else if _, perr := x509.ParsePKCS1PublicKey(der); perr == nil {
-			pemType = "RSA PUBLIC KEY"
 		} else {
-			panic(runtime.NewTypeError("无法识别的 PKCS#1 DER：既非私钥也非公钥"))
+			pemType = "RSA PUBLIC KEY"
 		}
 	case "pkcs8":
 		pemType = "PRIVATE KEY"
+	case "sec1":
+		pemType = "EC PRIVATE KEY"
 	default:
-		panic(runtime.NewTypeError(fmt.Sprintf("不支持的 DER type: %s (支持: spki, pkcs1, pkcs8)", typ)))
+		panic(runtime.NewTypeError(fmt.Sprintf("不支持的 DER type: %s (支持: spki, pkcs1, pkcs8, sec1)", typ)))
 	}
 
 	// 包装为 PEM
@@ -201,13 +216,43 @@ func convertToBytesInternal(runtime *goja.Runtime, value goja.Value, allowArrayB
 		return nil, fmt.Errorf("值为 undefined 或 null")
 	}
 
+	// 首先检查Symbol（最优先 - 在任何Export之前）
+	// Symbol在goja中是*goja.Symbol类型，不是Object
+	if _, isSymbol := value.(*goja.Symbol); isSymbol {
+		return nil, fmt.Errorf("The \"buffer\" argument must be of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView. Received type symbol")
+	}
+
+	// Export值用于后续类型检查
+	exported := value.Export()
+
+	// 显式拒绝其他非法类型（function、boolean 等）
+	switch exported.(type) {
+	case bool:
+		return nil, fmt.Errorf("data must be a string or a buffer-like object")
+	case func(goja.FunctionCall) goja.Value, func(goja.ConstructorCall) *goja.Object:
+		return nil, fmt.Errorf("data must be a string or a buffer-like object")
+	case int, int64, float64:
+		// 纯数字类型也应该拒绝（除非在特定上下文）
+		return nil, fmt.Errorf("data must be a string or a buffer-like object")
+	}
+
 	// 1. 字符串
-	if str, ok := value.Export().(string); ok {
+	if str, ok := exported.(string); ok {
 		return []byte(str), nil
 	}
 
-	// 2. 对象类型 (Buffer, ArrayBuffer, TypedArray, DataView)
+	// 2. 对象类型 (Buffer, ArrayBuffer, TypedArray, DataView, KeyObject 等)
 	if obj, ok := value.(*goja.Object); ok && obj != nil {
+		// 特殊处理：对称密钥 KeyObject（type: 'secret'），从 _key 属性中提取真实字节
+		if t := obj.Get("type"); t != nil && !goja.IsUndefined(t) && !goja.IsNull(t) {
+			if strings.ToLower(SafeGetString(t)) == "secret" {
+				if keyVal := obj.Get("_key"); keyVal != nil && !goja.IsUndefined(keyVal) && !goja.IsNull(keyVal) {
+					// 递归调用 ConvertToBytes 处理 _key（通常是 Buffer）
+					return ConvertToBytes(runtime, keyVal)
+				}
+			}
+		}
+
 		className := obj.ClassName()
 		bufferProp := obj.Get("buffer")
 		byteLengthVal := obj.Get("byteLength")
@@ -335,10 +380,200 @@ func ExtractKeyPEM(runtime *goja.Runtime, keyArg goja.Value) string {
 			// 否则递归提取 key 值
 			return ExtractKeyPEM(runtime, keyVal)
 		}
+
+		// 可能是 Buffer/TypedArray/ArrayBuffer，尝试转换为字符串
+		if bytes, err := ConvertToBytes(runtime, obj); err == nil && bytes != nil {
+			return string(bytes)
+		}
 	}
 
 	// 默认作为字符串处理
 	return SafeGetString(keyArg)
+}
+
+// ExtractKeyPEMWithEncoding 从参数中提取 PEM 格式的密钥，支持 encoding 参数
+// encoding 可以是: utf8, hex, base64, latin1, binary 等
+func ExtractKeyPEMWithEncoding(runtime *goja.Runtime, keyArg goja.Value, encoding string) string {
+	// 如果是对象且有 key 属性，先提取 key
+	if obj, ok := keyArg.(*goja.Object); ok && obj != nil {
+		// 检查是否是 { key: ... } 格式的对象
+		if keyVal := obj.Get("key"); keyVal != nil && !goja.IsUndefined(keyVal) {
+			// 检查是否嵌套了 key 对象（不允许）
+			if keyValObj, ok := keyVal.(*goja.Object); ok && keyValObj != nil {
+				// 如果 keyVal 本身也有 key 属性，这是无效的嵌套
+				if nestedKey := keyValObj.Get("key"); nestedKey != nil && !goja.IsUndefined(nestedKey) {
+					panic(runtime.NewTypeError("The \"key\" property cannot be a nested object with its own \"key\" property"))
+				}
+			}
+
+			// 递归处理 key 值
+			return ExtractKeyPEMWithEncoding(runtime, keyVal, encoding)
+		}
+
+		// 检查是否是 KeyObject
+		if keyType := obj.Get("type"); !goja.IsUndefined(keyType) && !goja.IsNull(keyType) {
+			typeStr := SafeGetString(keyType)
+			if typeStr == "public" || typeStr == "private" {
+				// 是 KeyObject，使用 ExtractKeyPEM
+				return ExtractKeyPEM(runtime, keyArg)
+			}
+		}
+
+		// 可能是 Buffer/TypedArray/ArrayBuffer
+		if bytes, err := ConvertToBytes(runtime, obj); err == nil && bytes != nil {
+			// Buffer/TypedArray/ArrayBuffer 不受 encoding 影响，直接转换为字符串
+			return string(bytes)
+		}
+	}
+
+	// 字符串类型，根据 encoding 解码
+	if encoding == "" || encoding == "utf8" || encoding == "utf-8" {
+		// 默认 UTF-8
+		return SafeGetString(keyArg)
+	}
+
+	// 获取字符串值
+	strVal := SafeGetString(keyArg)
+	if strVal == "" {
+		return ""
+	}
+
+	// 根据 encoding 解码
+	switch encoding {
+	case "hex":
+		// hex 解码
+		if decoded, err := hex.DecodeString(strVal); err == nil {
+			return string(decoded)
+		}
+		return strVal // 解码失败，返回原始字符串
+
+	case "base64":
+		// base64 解码
+		decoded := decodeBase64Lenient(strVal)
+		if decoded != nil {
+			return string(decoded)
+		}
+		return strVal
+
+	case "latin1", "binary":
+		// latin1 和 binary 在 Go 中直接当作字节序列处理
+		return strVal
+
+	default:
+		// 未知编码，作为 UTF-8 处理
+		return strVal
+	}
+}
+
+// ExtractKeyFromJWK 从 JWK 格式提取密钥并转换为 PEM 格式
+// 支持 RSA、EC (ECDSA)、OKP (Ed25519/Ed448) 密钥类型
+func ExtractKeyFromJWK(runtime *goja.Runtime, keyArg goja.Value) string {
+	// 将 goja.Value 转换为 map[string]interface{}
+	var jwkMap map[string]interface{}
+
+	if obj, ok := keyArg.(*goja.Object); ok && obj != nil {
+		exported := obj.Export()
+		if m, ok := exported.(map[string]interface{}); ok {
+			jwkMap = m
+		} else {
+			panic(runtime.NewTypeError("JWK key must be an object"))
+		}
+	} else {
+		panic(runtime.NewTypeError("JWK key must be an object"))
+	}
+
+	// 使用 JWKToPublicKey 或 JWKToPrivateKey 转换
+	// 先检查是否有私钥字段 'd'
+	hasPrivateKey := false
+	if _, exists := jwkMap["d"]; exists {
+		hasPrivateKey = true
+	}
+
+	if hasPrivateKey {
+		// 私钥
+		privateKey, keyType, err := JWKToPrivateKey(jwkMap)
+		if err != nil {
+			panic(runtime.NewGoError(fmt.Errorf("Failed to parse JWK private key: %w", err)))
+		}
+
+		// 将私钥转换为 PEM
+		switch strings.ToLower(keyType) {
+		case "rsa":
+			if rsaKey, ok := privateKey.(*rsa.PrivateKey); ok {
+				derBytes := x509.MarshalPKCS1PrivateKey(rsaKey)
+				pemBlock := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: derBytes}
+				return string(pem.EncodeToMemory(pemBlock))
+			}
+		case "ec":
+			if ecKey, ok := privateKey.(*ecdsa.PrivateKey); ok {
+				derBytes, err := x509.MarshalECPrivateKey(ecKey)
+				if err == nil {
+					pemBlock := &pem.Block{Type: "EC PRIVATE KEY", Bytes: derBytes}
+					return string(pem.EncodeToMemory(pemBlock))
+				}
+			}
+		case "ed25519":
+			if edKey, ok := privateKey.(ed25519.PrivateKey); ok {
+				derBytes, err := x509.MarshalPKCS8PrivateKey(edKey)
+				if err == nil {
+					pemBlock := &pem.Block{Type: "PRIVATE KEY", Bytes: derBytes}
+					return string(pem.EncodeToMemory(pemBlock))
+				}
+			}
+		case "ed448":
+			if edKey, ok := privateKey.(ed448lib.PrivateKey); ok {
+				derBytes, err := x509.MarshalPKCS8PrivateKey(edKey)
+				if err == nil {
+					pemBlock := &pem.Block{Type: "PRIVATE KEY", Bytes: derBytes}
+					return string(pem.EncodeToMemory(pemBlock))
+				}
+			}
+		}
+		panic(runtime.NewGoError(fmt.Errorf("Unsupported JWK private key type: %s", keyType)))
+	} else {
+		// 公钥
+		publicKey, keyType, err := JWKToPublicKey(jwkMap)
+		if err != nil {
+			panic(runtime.NewGoError(fmt.Errorf("Failed to parse JWK public key: %w", err)))
+		}
+
+		// 将公钥转换为 PEM
+		switch strings.ToLower(keyType) {
+		case "rsa":
+			if rsaKey, ok := publicKey.(*rsa.PublicKey); ok {
+				derBytes, err := x509.MarshalPKIXPublicKey(rsaKey)
+				if err == nil {
+					pemBlock := &pem.Block{Type: "PUBLIC KEY", Bytes: derBytes}
+					return string(pem.EncodeToMemory(pemBlock))
+				}
+			}
+		case "ec":
+			if ecKey, ok := publicKey.(*ecdsa.PublicKey); ok {
+				derBytes, err := x509.MarshalPKIXPublicKey(ecKey)
+				if err == nil {
+					pemBlock := &pem.Block{Type: "PUBLIC KEY", Bytes: derBytes}
+					return string(pem.EncodeToMemory(pemBlock))
+				}
+			}
+		case "ed25519":
+			if edKey, ok := publicKey.(ed25519.PublicKey); ok {
+				derBytes, err := x509.MarshalPKIXPublicKey(edKey)
+				if err == nil {
+					pemBlock := &pem.Block{Type: "PUBLIC KEY", Bytes: derBytes}
+					return string(pem.EncodeToMemory(pemBlock))
+				}
+			}
+		case "ed448":
+			if edKey, ok := publicKey.(ed448lib.PublicKey); ok {
+				derBytes, err := x509.MarshalPKIXPublicKey(edKey)
+				if err == nil {
+					pemBlock := &pem.Block{Type: "PUBLIC KEY", Bytes: derBytes}
+					return string(pem.EncodeToMemory(pemBlock))
+				}
+			}
+		}
+		panic(runtime.NewGoError(fmt.Errorf("Unsupported JWK public key type: %s", keyType)))
+	}
 }
 
 // CreateBuffer 创建 Buffer 对象

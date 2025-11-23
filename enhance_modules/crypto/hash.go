@@ -80,6 +80,64 @@ func (h *md5sha1Hash) BlockSize() int {
 	return 64 // MD5 和 SHA1 都是 64 字节块
 }
 
+// MarshalBinary 实现 encoding.BinaryMarshaler 接口
+func (h *md5sha1Hash) MarshalBinary() ([]byte, error) {
+	md5Marshaler, ok := h.md5Hash.(encoding.BinaryMarshaler)
+	if !ok {
+		return nil, fmt.Errorf("md5 hasher 不支持 BinaryMarshaler")
+	}
+	md5State, err := md5Marshaler.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+
+	sha1Marshaler, ok := h.sha1Hash.(encoding.BinaryMarshaler)
+	if !ok {
+		return nil, fmt.Errorf("sha1 hasher 不支持 BinaryMarshaler")
+	}
+	sha1State, err := sha1Marshaler.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+
+	// 格式: [md5State长度(4字节)][md5State][sha1State]
+	result := make([]byte, 4+len(md5State)+len(sha1State))
+	result[0] = byte(len(md5State) >> 24)
+	result[1] = byte(len(md5State) >> 16)
+	result[2] = byte(len(md5State) >> 8)
+	result[3] = byte(len(md5State))
+	copy(result[4:], md5State)
+	copy(result[4+len(md5State):], sha1State)
+	return result, nil
+}
+
+// UnmarshalBinary 实现 encoding.BinaryUnmarshaler 接口
+func (h *md5sha1Hash) UnmarshalBinary(data []byte) error {
+	if len(data) < 4 {
+		return fmt.Errorf("invalid state data")
+	}
+
+	md5Len := int(data[0])<<24 | int(data[1])<<16 | int(data[2])<<8 | int(data[3])
+	if len(data) < 4+md5Len {
+		return fmt.Errorf("invalid state data")
+	}
+
+	md5Unmarshaler, ok := h.md5Hash.(encoding.BinaryUnmarshaler)
+	if !ok {
+		return fmt.Errorf("md5 hasher 不支持 BinaryUnmarshaler")
+	}
+	err := md5Unmarshaler.UnmarshalBinary(data[4 : 4+md5Len])
+	if err != nil {
+		return err
+	}
+
+	sha1Unmarshaler, ok := h.sha1Hash.(encoding.BinaryUnmarshaler)
+	if !ok {
+		return fmt.Errorf("sha1 hasher 不支持 BinaryUnmarshaler")
+	}
+	return sha1Unmarshaler.UnmarshalBinary(data[4+md5Len:])
+}
+
 // ssl3MD5Hash 实现 SSL3 MD5
 type ssl3MD5Hash struct {
 	hash.Hash
@@ -89,6 +147,24 @@ func newSSL3MD5() hash.Hash {
 	return &ssl3MD5Hash{Hash: md5.New()}
 }
 
+// MarshalBinary 实现 encoding.BinaryMarshaler 接口
+func (h *ssl3MD5Hash) MarshalBinary() ([]byte, error) {
+	marshaler, ok := h.Hash.(encoding.BinaryMarshaler)
+	if !ok {
+		return nil, fmt.Errorf("underlying hash 不支持 BinaryMarshaler")
+	}
+	return marshaler.MarshalBinary()
+}
+
+// UnmarshalBinary 实现 encoding.BinaryUnmarshaler 接口
+func (h *ssl3MD5Hash) UnmarshalBinary(data []byte) error {
+	unmarshaler, ok := h.Hash.(encoding.BinaryUnmarshaler)
+	if !ok {
+		return fmt.Errorf("underlying hash 不支持 BinaryUnmarshaler")
+	}
+	return unmarshaler.UnmarshalBinary(data)
+}
+
 // ssl3SHA1Hash 实现 SSL3 SHA1
 type ssl3SHA1Hash struct {
 	hash.Hash
@@ -96,6 +172,66 @@ type ssl3SHA1Hash struct {
 
 func newSSL3SHA1() hash.Hash {
 	return &ssl3SHA1Hash{Hash: sha1.New()}
+}
+
+// MarshalBinary 实现 encoding.BinaryMarshaler 接口
+func (h *ssl3SHA1Hash) MarshalBinary() ([]byte, error) {
+	marshaler, ok := h.Hash.(encoding.BinaryMarshaler)
+	if !ok {
+		return nil, fmt.Errorf("underlying hash 不支持 BinaryMarshaler")
+	}
+	return marshaler.MarshalBinary()
+}
+
+// UnmarshalBinary 实现 encoding.BinaryUnmarshaler 接口
+func (h *ssl3SHA1Hash) UnmarshalBinary(data []byte) error {
+	unmarshaler, ok := h.Hash.(encoding.BinaryUnmarshaler)
+	if !ok {
+		return fmt.Errorf("underlying hash 不支持 BinaryUnmarshaler")
+	}
+	return unmarshaler.UnmarshalBinary(data)
+}
+
+// replayHash 实现支持数据重放的 hash（用于不支持序列化的算法如 RIPEMD）
+type replayHash struct {
+	hash.Hash
+	newFunc func() hash.Hash
+	data    []byte
+}
+
+func newReplayHash(newFunc func() hash.Hash) *replayHash {
+	return &replayHash{
+		Hash:    newFunc(),
+		newFunc: newFunc,
+		data:    make([]byte, 0),
+	}
+}
+
+func (h *replayHash) Write(p []byte) (n int, err error) {
+	// 记录写入的数据
+	h.data = append(h.data, p...)
+	return h.Hash.Write(p)
+}
+
+func (h *replayHash) Reset() {
+	h.Hash.Reset()
+	h.data = make([]byte, 0)
+}
+
+// MarshalBinary 实现 encoding.BinaryMarshaler 接口
+func (h *replayHash) MarshalBinary() ([]byte, error) {
+	// 返回所有已写入的数据
+	return h.data, nil
+}
+
+// UnmarshalBinary 实现 encoding.BinaryUnmarshaler 接口
+func (h *replayHash) UnmarshalBinary(data []byte) error {
+	// 重置并重放数据
+	h.Hash = h.newFunc()
+	h.data = make([]byte, len(data))
+	copy(h.data, data)
+	_, err := h.Hash.Write(data)
+	return err
 }
 
 // ============================================================================
@@ -108,16 +244,25 @@ func CreateHash(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		panic(runtime.NewTypeError("createHash 需要一个 algorithm 参数"))
 	}
 
+	// 检查是否是 Symbol 类型
+	if isSymbolFn := getCryptoIsSymbolCheckFunc(runtime); isSymbolFn != nil {
+		if result, err := isSymbolFn(goja.Undefined(), call.Arguments[0]); err == nil && result.ToBoolean() {
+			panic(runtime.NewTypeError("Cannot convert a Symbol value to a string"))
+		}
+	}
+
 	// 支持算法别名（rsa-sha256、sha-256 等）
 	algorithm := NormalizeHashAlgorithm(strings.ToLower(call.Arguments[0].String()))
 
 	// Node.js 18+：解析 options 参数（用于 SHAKE）
 	var outputLength int
+	var hasOutputLength bool
 	if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) && !goja.IsNull(call.Arguments[1]) {
 		// 尝试将第二个参数转换为对象
 		if opts := call.Arguments[1].ToObject(runtime); opts != nil {
 			if lengthVal := opts.Get("outputLength"); lengthVal != nil && !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
 				outputLength = int(lengthVal.ToInteger())
+				hasOutputLength = true
 			}
 		}
 	}
@@ -132,7 +277,7 @@ func CreateHash(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	case "md5":
 		hasher = md5.New()
 	case "md5sha1":
-		hasher = newMD5SHA1()
+		hasher = newReplayHash(func() hash.Hash { return newMD5SHA1() })
 	case "md5withrsaencryption":
 		hasher = md5.New() // WithRSAEncryption 只是签名时的标识，hash 本身一样
 
@@ -196,8 +341,9 @@ func CreateHash(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	case "shake128":
 		isShake = true
 		shakeHash = sha3.NewShake128()
-		if outputLength == 0 {
-			outputLength = 16 // 默认输出长度
+		if !hasOutputLength {
+			// 未显式指定 outputLength 时使用默认输出长度（16 字节）
+			outputLength = 16
 		} else if outputLength < 0 {
 			// Node.js 行为：负数 outputLength 抛出 RangeError
 			panic(runtime.NewTypeError(fmt.Sprintf("The 'outputLength' option must be >= 0. Received %d", outputLength)))
@@ -205,8 +351,9 @@ func CreateHash(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	case "shake256":
 		isShake = true
 		shakeHash = sha3.NewShake256()
-		if outputLength == 0 {
-			outputLength = 32 // 默认输出长度
+		if !hasOutputLength {
+			// 未显式指定 outputLength 时使用默认输出长度（32 字节）
+			outputLength = 32
 		} else if outputLength < 0 {
 			// Node.js 行为：负数 outputLength 抛出 RangeError
 			panic(runtime.NewTypeError(fmt.Sprintf("The 'outputLength' option must be >= 0. Received %d", outputLength)))
@@ -228,9 +375,9 @@ func CreateHash(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 
 	// ========== RIPEMD 系列 ==========
 	case "ripemd", "ripemd160", "rmd160":
-		hasher = ripemd160.New()
+		hasher = newReplayHash(ripemd160.New)
 	case "ripemd160withrsa":
-		hasher = ripemd160.New()
+		hasher = newReplayHash(ripemd160.New)
 
 	// ========== SM3（国密算法）==========
 	case "sm3":
@@ -240,9 +387,9 @@ func CreateHash(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 
 	// ========== SSL3 相关 ==========
 	case "ssl3md5":
-		hasher = newSSL3MD5()
+		hasher = newReplayHash(func() hash.Hash { return newSSL3MD5() })
 	case "ssl3sha1":
-		hasher = newSSL3SHA1()
+		hasher = newReplayHash(func() hash.Hash { return newSSL3SHA1() })
 
 	default:
 		// 与 Node.js 保持一致的错误消息
@@ -270,6 +417,13 @@ func createHashObject(runtime *goja.Runtime, hasher hash.Hash, shakeHash sha3.Sh
 			panic(runtime.NewTypeError("update 需要 data 参数"))
 		}
 
+		// 检查第一个参数是否是 Symbol
+		if isSymbolFn := getCryptoIsSymbolCheckFunc(runtime); isSymbolFn != nil {
+			if result, err := isSymbolFn(goja.Undefined(), call.Arguments[0]); err == nil && result.ToBoolean() {
+				panic(runtime.NewTypeError("Cannot convert a Symbol value to a string"))
+			}
+		}
+
 		buf := parseDataWithEncoding(runtime, call.Arguments)
 
 		// SHAKE 和标准 hash 都使用 Write
@@ -291,6 +445,15 @@ func createHashObject(runtime *goja.Runtime, hasher hash.Hash, shakeHash sha3.Sh
 		}
 		digested = true
 
+		// 检查编码参数是否是 Symbol
+		if len(call.Arguments) > 0 {
+			if isSymbolFn := getCryptoIsSymbolCheckFunc(runtime); isSymbolFn != nil {
+				if result, err := isSymbolFn(goja.Undefined(), call.Arguments[0]); err == nil && result.ToBoolean() {
+					panic(runtime.NewTypeError("Cannot convert a Symbol value to a string"))
+				}
+			}
+		}
+
 		var sum []byte
 
 		// SHAKE 系列使用 Read() 方法
@@ -309,6 +472,63 @@ func createHashObject(runtime *goja.Runtime, hasher hash.Hash, shakeHash sha3.Sh
 
 	// copy 方法
 	hashObj.Set("copy", createHashCopyFunc(runtime, hasher, shakeHash, algorithm, &digested, isShake, outputLength))
+
+	// write 方法（Stream 接口）- 等同于 update
+	hashObj.Set("write", func(call goja.FunctionCall) goja.Value {
+		if digested {
+			panic(runtime.NewTypeError("Digest already called"))
+		}
+
+		if len(call.Arguments) == 0 {
+			panic(runtime.NewTypeError("write 需要 data 参数"))
+		}
+
+		// 检查第一个参数是否是 Symbol
+		if isSymbolFn := getCryptoIsSymbolCheckFunc(runtime); isSymbolFn != nil {
+			if result, err := isSymbolFn(goja.Undefined(), call.Arguments[0]); err == nil && result.ToBoolean() {
+				panic(runtime.NewTypeError("Cannot convert a Symbol value to a string"))
+			}
+		}
+
+		buf := parseDataWithEncoding(runtime, call.Arguments)
+
+		if isShake {
+			shakeHash.Write(buf)
+		} else {
+			hasher.Write(buf)
+		}
+
+		// Node.js Hash.write() 返回一个布尔值，表示写入是否成功。
+		// 对于内存中的 Hash，这里总是返回 true 即可。
+		return runtime.ToValue(true)
+	})
+
+	// end 方法（Stream 接口）- 可选地写入数据然后返回 this
+	hashObj.Set("end", func(call goja.FunctionCall) goja.Value {
+		if digested {
+			panic(runtime.NewTypeError("Digest already called"))
+		}
+
+		// 如果有参数，写入数据
+		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
+			// 检查第一个参数是否是 Symbol
+			if isSymbolFn := getCryptoIsSymbolCheckFunc(runtime); isSymbolFn != nil {
+				if result, err := isSymbolFn(goja.Undefined(), call.Arguments[0]); err == nil && result.ToBoolean() {
+					panic(runtime.NewTypeError("Cannot convert a Symbol value to a string"))
+				}
+			}
+
+			buf := parseDataWithEncoding(runtime, call.Arguments)
+
+			if isShake {
+				shakeHash.Write(buf)
+			} else {
+				hasher.Write(buf)
+			}
+		}
+
+		return call.This
+	})
 
 	return hashObj
 }
@@ -358,7 +578,6 @@ func createHashCopyFunc(runtime *goja.Runtime, currentHasher hash.Hash, currentS
 	}
 }
 
-// CreateHmac 创建 HMAC 对象
 func CreateHmac(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	if len(call.Arguments) < 2 {
 		panic(runtime.NewTypeError("createHmac 需要 algorithm 和 key 参数"))
@@ -366,6 +585,16 @@ func CreateHmac(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 
 	// 支持算法别名
 	algorithm := NormalizeHashAlgorithm(strings.ToLower(call.Arguments[0].String()))
+
+	// 检查 algorithm 和 key 是否是 Symbol
+	if isSymbolFn := getCryptoIsSymbolCheckFunc(runtime); isSymbolFn != nil {
+		if result, err := isSymbolFn(goja.Undefined(), call.Arguments[0]); err == nil && result.ToBoolean() {
+			panic(runtime.NewTypeError("Cannot convert a Symbol value to a string"))
+		}
+		if result, err := isSymbolFn(goja.Undefined(), call.Arguments[1]); err == nil && result.ToBoolean() {
+			panic(runtime.NewTypeError("Cannot convert a Symbol value to a string"))
+		}
+	}
 
 	// key 支持二进制输入
 	keyBytes, err := ConvertToBytes(runtime, call.Arguments[1])
@@ -483,6 +712,13 @@ func CreateHmac(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 			panic(runtime.NewTypeError("update 需要 data 参数"))
 		}
 
+		// 检查第一个参数是否是 Symbol
+		if isSymbolFn := getCryptoIsSymbolCheckFunc(runtime); isSymbolFn != nil {
+			if result, err := isSymbolFn(goja.Undefined(), call.Arguments[0]); err == nil && result.ToBoolean() {
+				panic(runtime.NewTypeError("Cannot convert a Symbol value to a string"))
+			}
+		}
+
 		buf := parseDataWithEncoding(runtime, call.Arguments)
 		hasher.Write(buf)
 		return call.This
@@ -493,6 +729,15 @@ func CreateHmac(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		if digested {
 			// Node.js v25.0.0 行为：第二次调用 digest() 返回空字符串，而不是抛出错误
 			return runtime.ToValue("")
+		}
+
+		// 检查编码参数是否是 Symbol
+		if len(call.Arguments) > 0 {
+			if isSymbolFn := getCryptoIsSymbolCheckFunc(runtime); isSymbolFn != nil {
+				if result, err := isSymbolFn(goja.Undefined(), call.Arguments[0]); err == nil && result.ToBoolean() {
+					panic(runtime.NewTypeError("Cannot convert a Symbol value to a string"))
+				}
+			}
 		}
 		digested = true
 
@@ -528,6 +773,19 @@ func GetHashFunction(hashName string) (hash.Hash, error) {
 		return sha512.New384(), nil
 	case "sha512":
 		return sha512.New(), nil
+	case "sha512224":
+		return sha512.New512_224(), nil
+	case "sha512256":
+		return sha512.New512_256(), nil
+	// SHA-3 系列
+	case "sha3224":
+		return sha3.New224(), nil
+	case "sha3256":
+		return sha3.New256(), nil
+	case "sha3384":
+		return sha3.New384(), nil
+	case "sha3512":
+		return sha3.New512(), nil
 	default:
 		// 返回 Node.js 兼容的错误
 		return nil, &HashError{Code: "ERR_CRYPTO_INVALID_DIGEST", Message: fmt.Sprintf("Invalid digest: %s", hashName)}
@@ -551,7 +809,7 @@ func createHasherByAlgorithm(runtime *goja.Runtime, algo string) hash.Hash {
 	case "md5":
 		return md5.New()
 	case "md5sha1":
-		return newMD5SHA1()
+		return newReplayHash(func() hash.Hash { return newMD5SHA1() })
 	case "md5withrsaencryption":
 		return md5.New()
 
@@ -627,9 +885,9 @@ func createHasherByAlgorithm(runtime *goja.Runtime, algo string) hash.Hash {
 
 	// RIPEMD 系列
 	case "ripemd", "ripemd160", "rmd160":
-		return ripemd160.New()
+		return newReplayHash(ripemd160.New)
 	case "ripemd160withrsa":
-		return ripemd160.New()
+		return newReplayHash(ripemd160.New)
 
 	// SM3 国密
 	case "sm3":
@@ -639,9 +897,9 @@ func createHasherByAlgorithm(runtime *goja.Runtime, algo string) hash.Hash {
 
 	// SSL3 相关
 	case "ssl3md5":
-		return newSSL3MD5()
+		return newReplayHash(func() hash.Hash { return newSSL3MD5() })
 	case "ssl3sha1":
-		return newSSL3SHA1()
+		return newReplayHash(func() hash.Hash { return newSSL3SHA1() })
 
 	default:
 		// 与 Node.js 保持一致的错误消息
@@ -656,67 +914,117 @@ func parseDataWithEncoding(runtime *goja.Runtime, args []goja.Value) []byte {
 
 	// 检查是否有 inputEncoding 参数
 	if len(args) > 1 && !goja.IsUndefined(args[1]) && !goja.IsNull(args[1]) {
-		// 有 encoding 参数，data 必须是字符串
-		dataStr := args[0].String()
-		encoding := strings.ToLower(args[1].String())
+		// 有 encoding 参数：
+		// - 若 data 是字符串，则按 encoding 解析；
+		// - 若 data 是 Buffer/TypedArray/DataView 等二进制类型，则忽略 encoding，直接按二进制处理。
+		if _, ok := args[0].(goja.String); ok {
+			// 字符串路径：按照 encoding 解码
+			dataStr := args[0].String()
+			encoding := strings.ToLower(args[1].String())
 
-		switch encoding {
-		case "utf8", "utf-8":
-			buf = []byte(dataStr)
-		case "hex":
-			buf, err = hex.DecodeString(dataStr)
-			if err != nil {
-				// Node.js 行为：hex 解码失败时抛出错误
-				panic(runtime.NewTypeError(fmt.Sprintf("The argument 'encoding' is invalid for data of length %d. Received 'hex'", len(dataStr))))
-			}
-		case "base64":
-			// Node.js 行为：base64 解码宽松，忽略无效字符，不抛出错误
-			buf, err = base64.StdEncoding.DecodeString(dataStr)
-			if err != nil {
-				// 如果解码失败，尝试宽松解码（忽略非 base64 字符）
-				buf = decodeBase64Lenient(dataStr)
-			}
-		case "latin1", "binary":
-			// Latin1/Binary 编码：将字符串的每个字符码点（必须0-255）转为字节
-			// JavaScript字符串是UTF-16，我们需要提取每个字符的低8位
-			runes := []rune(dataStr)
-			buf = make([]byte, len(runes))
-			for i, r := range runes {
-				if r > 255 {
-					panic(runtime.NewTypeError(fmt.Sprintf("latin1 字符串包含非法字符: U+%04X", r)))
+			switch encoding {
+			case "utf8", "utf-8":
+				buf = []byte(dataStr)
+			case "hex":
+				buf = decodeHexNodeStyle(runtime, dataStr)
+			case "base64":
+				// Node.js 行为：base64 解码宽松，忽略无效字符，不抛出错误
+				buf, err = base64.StdEncoding.DecodeString(dataStr)
+				if err != nil {
+					// 如果解码失败，尝试宽松解码（忽略非 base64 字符）
+					buf = decodeBase64Lenient(dataStr)
 				}
-				buf[i] = byte(r & 0xFF)
-			}
-		case "ascii":
-			buf = make([]byte, len(dataStr))
-			for i, r := range dataStr {
-				if r > 127 {
-					panic(runtime.NewTypeError(fmt.Sprintf("ascii 字符串包含非法字符: U+%04X", r)))
+			case "base64url":
+				// Node.js v18+ 支持 base64url，使用 URL-safe base64 字符集
+				buf, err = base64.RawURLEncoding.DecodeString(dataStr)
+				if err != nil {
+					// 兼容带 padding 场景
+					buf, err = base64.URLEncoding.DecodeString(dataStr)
+					if err != nil {
+						// 与 base64 一致：失败时进行宽松解码，过滤非 base64 字符
+						buf = decodeBase64Lenient(dataStr)
+					}
 				}
-				buf[i] = byte(r)
+			case "latin1", "binary":
+				// Latin1/Binary 编码：将字符串的每个字符码点（必须0-255）转为字节
+				// JavaScript字符串是UTF-16，我们需要提取每个字符的低8位
+				runes := []rune(dataStr)
+				buf = make([]byte, len(runes))
+				for i, r := range runes {
+					if r > 255 {
+						panic(runtime.NewTypeError(fmt.Sprintf("latin1 字符串包含非法字符: U+%04X", r)))
+					}
+					buf[i] = byte(r & 0xFF)
+				}
+			case "ascii":
+				runes := []rune(dataStr)
+				buf = make([]byte, len(runes))
+				for i, r := range runes {
+					buf[i] = byte(r & 0xFF)
+				}
+			case "utf16le", "ucs2", "ucs-2":
+				// UTF-16LE 编码：每个字符2字节，小端序
+				runes := []rune(dataStr)
+				buf = make([]byte, len(runes)*2)
+				for i, r := range runes {
+					buf[i*2] = byte(r)        // 低字节
+					buf[i*2+1] = byte(r >> 8) // 高字节
+				}
+			default:
+				// Node.js 行为：不支持的编码当作 utf8 处理，不抛出错误
+				buf = []byte(dataStr)
 			}
-		case "utf16le", "ucs2", "ucs-2":
-			// UTF-16LE 编码：每个字符2字节，小端序
-			runes := []rune(dataStr)
-			buf = make([]byte, len(runes)*2)
-			for i, r := range runes {
-				buf[i*2] = byte(r)        // 低字节
-				buf[i*2+1] = byte(r >> 8) // 高字节
+		} else {
+			// 非字符串：视为二进制输入（Buffer/TypedArray/DataView 等），忽略 encoding
+			// 与 Node.js 行为保持一致：当 data 已是二进制类型时，inputEncoding 被忽略。
+			buf, err = ConvertToBytesStrict(runtime, args[0])
+			if err != nil {
+				panic(runtime.NewTypeError(fmt.Sprintf("update 数据类型错误: %v", err)))
 			}
-		default:
-			// Node.js 行为：不支持的编码当作 utf8 处理，不抛出错误
-			buf = []byte(dataStr)
 		}
 	} else {
 		// 没有 encoding 参数，使用 ConvertToBytesStrict（不接受 ArrayBuffer）
 		// Node.js 行为：Hash.update() 和 Hmac.update() 不接受 ArrayBuffer
 		buf, err = ConvertToBytesStrict(runtime, args[0])
 		if err != nil {
-			panic(runtime.NewTypeError(fmt.Sprintf("update 数据类型错误: %v", err)))
+			// 与 Node.js 对齐：update(data) 在 data 类型非法时抛出 TypeError，
+			// 消息中包含 data / type / string / Buffer 关键信息。
+			panic(runtime.NewTypeError("The \"data\" argument must be of type string or an instance of Buffer, TypedArray, or DataView."))
 		}
 	}
 
 	return buf
+}
+
+func decodeHexNodeStyle(runtime *goja.Runtime, s string) []byte {
+	data := []byte(s)
+	n := len(data)
+	if n%2 == 1 {
+		panic(runtime.NewTypeError(fmt.Sprintf("The argument 'encoding' is invalid for data of length %d. Received 'hex'", len(s))))
+	}
+	out := make([]byte, 0, n/2)
+	for i := 0; i < n; i += 2 {
+		high, okHigh := fromHexChar(data[i])
+		low, okLow := fromHexChar(data[i+1])
+		if !okHigh || !okLow {
+			break
+		}
+		out = append(out, (high<<4)|low)
+	}
+	return out
+}
+
+func fromHexChar(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	default:
+		return 0, false
+	}
 }
 
 // decodeBase64Lenient 宽松的 base64 解码（忽略无效字符）
@@ -733,13 +1041,31 @@ func decodeBase64Lenient(str string) []byte {
 		}
 	}
 
-	// 尝试解码过滤后的字符串
-	decoded, err := base64.StdEncoding.DecodeString(string(filtered))
-	if err != nil {
-		// 如果还是失败，返回空字节数组
+	clean := string(filtered)
+	if clean == "" {
 		return []byte{}
 	}
-	return decoded
+
+	// 1) 优先按“无 padding”的语义解码（RawStdEncoding）以支持 SGVsbG8 这类输入
+	if decoded, err := base64.RawStdEncoding.DecodeString(clean); err == nil {
+		return decoded
+	}
+
+	// 2) 尝试标准 base64 解码（带 padding 或长度刚好为 4 的倍数）
+	if decoded, err := base64.StdEncoding.DecodeString(clean); err == nil {
+		return decoded
+	}
+
+	// 3) 如长度不是 4 的倍数，自动补齐 '=' 再尝试一次
+	if rem := len(clean) % 4; rem != 0 {
+		clean = clean + strings.Repeat("=", 4-rem)
+		if decoded, err := base64.StdEncoding.DecodeString(clean); err == nil {
+			return decoded
+		}
+	}
+
+	// 4) 仍然失败则返回空字节数组（与 Node 宽松行为一致：不会抛错，只是得到空 Buffer）
+	return []byte{}
 }
 
 // formatDigest 格式化摘要输出

@@ -13,36 +13,47 @@ import (
 // TimingSafeEqual 时间安全的相等性比较（防止时序攻击）
 // Node.js: crypto.timingSafeEqual(a, b)
 func TimingSafeEqual(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
-	if len(call.Arguments) < 2 {
-		panic(runtime.NewTypeError("timingSafeEqual 需要两个参数"))
+	// 检查参数数量并获取参数
+	var firstArg, secondArg goja.Value
+	if len(call.Arguments) >= 1 {
+		firstArg = call.Arguments[0]
+	}
+	if len(call.Arguments) >= 2 {
+		secondArg = call.Arguments[1]
 	}
 
 	// Node.js 行为：不接受字符串，只接受 Buffer/TypedArray/DataView/ArrayBuffer
 	// 检查第一个参数类型
-	firstArg := call.Arguments[0]
+	if firstArg == nil || goja.IsUndefined(firstArg) || goja.IsNull(firstArg) {
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE",
+			"The \"buf1\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView. Received undefined"))
+	}
 	if _, isString := firstArg.Export().(string); isString {
-		panic(runtime.NewTypeError(
-			"The \"buf1\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView."))
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE",
+			"The \"buf1\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView. Received type string"))
 	}
 
 	// 检查第二个参数类型
-	secondArg := call.Arguments[1]
+	if secondArg == nil || goja.IsUndefined(secondArg) || goja.IsNull(secondArg) {
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE",
+			"The \"buf2\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView. Received undefined"))
+	}
 	if _, isString := secondArg.Export().(string); isString {
-		panic(runtime.NewTypeError(
-			"The \"buf2\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView."))
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE",
+			"The \"buf2\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView. Received type string"))
 	}
 
 	// 获取第一个参数
 	a, errA := ConvertToBytes(runtime, firstArg)
 	if errA != nil {
-		panic(runtime.NewTypeError(
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE",
 			"The \"buf1\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView."))
 	}
 
 	// 获取第二个参数
 	b, errB := ConvertToBytes(runtime, secondArg)
 	if errB != nil {
-		panic(runtime.NewTypeError(
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE",
 			"The \"buf2\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView."))
 	}
 

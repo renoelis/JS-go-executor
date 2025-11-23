@@ -21,6 +21,7 @@ import (
 
 // DiffieHellman 计算 Diffie-Hellman 共享密钥
 // 支持: ECDH (EC curves), X25519, X448, DH
+// crypto.diffieHellman(options[, callback])
 func DiffieHellman(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	if len(call.Arguments) < 1 {
 		panic(runtime.NewTypeError("crypto.diffieHellman requires an options object"))
@@ -34,7 +35,7 @@ func DiffieHellman(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 
 	optionsObj := optionsVal.ToObject(runtime)
 
-	// 获取私钥和公钥
+	// 提前验证关键参数（同步抛出错误，与 Node.js 行为一致）
 	privateKeyVal := optionsObj.Get("privateKey")
 	publicKeyVal := optionsObj.Get("publicKey")
 
@@ -45,27 +46,82 @@ func DiffieHellman(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		panic(runtime.NewTypeError("publicKey is required"))
 	}
 
-	// 解析私钥
+	// 解析并验证密钥类型（同步抛出）
 	privKey, privKeyType, err := parseKeyForDH(privateKeyVal, runtime, true)
 	if err != nil {
 		panic(runtime.NewGoError(fmt.Errorf("invalid privateKey: %w", err)))
 	}
 
-	// 解析公钥
 	pubKey, pubKeyType, err := parseKeyForDH(publicKeyVal, runtime, false)
 	if err != nil {
 		panic(runtime.NewGoError(fmt.Errorf("invalid publicKey: %w", err)))
 	}
 
-	// 密钥类型必须匹配
+	// 密钥类型必须匹配（同步抛出）
 	if privKeyType != pubKeyType {
 		panic(runtime.NewTypeError(fmt.Sprintf("key type mismatch: private=%s, public=%s", privKeyType, pubKeyType)))
 	}
 
+	// 检查是否有 callback 参数
+	var callback goja.Callable
+	if len(call.Arguments) >= 2 {
+		callbackVal := call.Argument(1)
+		if !goja.IsUndefined(callbackVal) && !goja.IsNull(callbackVal) {
+			var ok bool
+			callback, ok = goja.AssertFunction(callbackVal)
+			if !ok {
+				panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE",
+					"The \"callback\" argument must be of type function"))
+			}
+		}
+	}
+
+	// 如果有 callback，使用异步模式
+	if callback != nil {
+		setImmediate := runtime.Get("setImmediate")
+		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
+			asyncCallback := func(call goja.FunctionCall) goja.Value {
+				defer func() {
+					if r := recover(); r != nil {
+						// 捕获 panic，转换为错误回调
+						var err error
+						switch v := r.(type) {
+						case error:
+							err = v
+						case *goja.Object:
+							// 已经是 Node error 对象
+							callback(goja.Undefined(), v, goja.Undefined())
+							return
+						default:
+							err = fmt.Errorf("%v", r)
+						}
+						errObj := runtime.NewGoError(err)
+						callback(goja.Undefined(), errObj, goja.Undefined())
+					}
+				}()
+
+				// 执行密钥交换（参数已验证）
+				sharedSecret := performDiffieHellmanCore(privKey, pubKey, privKeyType, runtime)
+				callback(goja.Undefined(), goja.Null(), sharedSecret)
+				return goja.Undefined()
+			}
+			setImmediateFn(goja.Undefined(), runtime.ToValue(asyncCallback))
+		}
+		return goja.Undefined()
+	}
+
+	// 同步模式（参数已验证）
+	return performDiffieHellmanCore(privKey, pubKey, privKeyType, runtime)
+}
+
+// performDiffieHellmanCore 执行实际的 DH 密钥交换计算（参数已验证）
+func performDiffieHellmanCore(privKey, pubKey interface{}, keyType string, runtime *goja.Runtime) goja.Value {
+
 	// 根据密钥类型执行密钥交换
 	var sharedSecret []byte
+	var err error
 
-	switch privKeyType {
+	switch keyType {
 	case "ec":
 		// ECDH for EC curves
 		sharedSecret, err = ecdhCompute(privKey, pubKey)
@@ -79,7 +135,7 @@ func DiffieHellman(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		// DH (modp groups)
 		sharedSecret, err = dhCompute(privKey, pubKey)
 	default:
-		panic(runtime.NewTypeError(fmt.Sprintf("unsupported key type for diffieHellman: %s", privKeyType)))
+		panic(runtime.NewTypeError(fmt.Sprintf("unsupported key type for diffieHellman: %s", keyType)))
 	}
 
 	if err != nil {

@@ -132,7 +132,13 @@ func GenerateKeyPairSync(call goja.FunctionCall, runtime *goja.Runtime) goja.Val
 		panic(runtime.NewTypeError("generateKeyPairSync 需要 type 参数"))
 	}
 
-	keyType := strings.ToLower(call.Arguments[0].String())
+	// 算法名大小写敏感，不转换
+	keyType := call.Arguments[0].String()
+
+	// 验证算法名必须是小写
+	if keyType != strings.ToLower(keyType) {
+		panic(runtime.NewTypeError(fmt.Sprintf("The argument 'type' must be a supported key type. Received '%s'", keyType)))
+	}
 
 	// 解析选项（某些密钥类型可能不需要 options）
 	var options *goja.Object
@@ -412,8 +418,9 @@ func generateRSAKeyPairSync(runtime *goja.Runtime, keyType string, options *goja
 				passphrase = string(passphraseBytes)
 			}
 
-			// 验证：如果指定了 cipher，必须提供 passphrase
-			if cipher != "" && passphrase == "" {
+			// 验证：如果指定了 cipher，passphrase 不能是 undefined 或 null
+			// 注意：Node.js 允许空字符串作为 passphrase
+			if cipher != "" {
 				passphraseVal := privEncObj.Get("passphrase")
 				if passphraseVal == nil || goja.IsUndefined(passphraseVal) {
 					panic(NewNodeError(runtime, "ERR_INVALID_ARG_VALUE", "The property 'options.privateKeyEncoding.passphrase' is invalid. Received undefined"))
@@ -421,6 +428,12 @@ func generateRSAKeyPairSync(runtime *goja.Runtime, keyType string, options *goja
 				if goja.IsNull(passphraseVal) {
 					panic(NewNodeError(runtime, "ERR_INVALID_ARG_VALUE", "The property 'options.privateKeyEncoding.passphrase' is invalid. Received null"))
 				}
+				// 空字符串是允许的，不需要额外检查
+			}
+
+			// 验证：如果指定了 passphrase 但没有 cipher，应该报错
+			if passphrase != "" && cipher == "" {
+				panic(NewNodeError(runtime, "ERR_INVALID_ARG_VALUE", "The property 'options.privateKeyEncoding.cipher' is invalid. Received undefined"))
 			}
 		}
 	}
@@ -542,7 +555,7 @@ func generateRSAKeyPairSync(runtime *goja.Runtime, keyType string, options *goja
 		if privateKeyFormat == "jwk" {
 			result.Set("privateKey", EncodePrivateKeyJWK(runtime, privateKey, "rsa"))
 		} else {
-			privateKeyData, err := ExportPrivateKey(privateKey, privateKeyType, privateKeyFormat, cipher, passphrase)
+			privateKeyData, err := ExportPrivateKey(privateKey, privateKeyType, privateKeyFormat, cipher, passphrase, "rsa")
 			if err != nil {
 				// 检查是否是 CryptoError
 				if cryptoErr, ok := err.(*CryptoError); ok {
@@ -685,9 +698,10 @@ func ExportPublicKey(publicKey *rsa.PublicKey, keyType, format string) ([]byte, 
 }
 
 // ExportPrivateKey 导出私钥 (支持 pkcs8/pkcs1 + pem/der + 加密)
-func ExportPrivateKey(privateKey *rsa.PrivateKey, keyType, format, cipher, passphrase string) ([]byte, error) {
+func ExportPrivateKey(privateKey *rsa.PrivateKey, keyType, format, cipher, passphrase, algType string) ([]byte, error) {
 	var der []byte
 	var pemType string
+	isPKCS1 := false
 
 	switch strings.ToLower(keyType) {
 	case "pkcs8":
@@ -701,6 +715,7 @@ func ExportPrivateKey(privateKey *rsa.PrivateKey, keyType, format, cipher, passp
 	case "pkcs1":
 		der = x509.MarshalPKCS1PrivateKey(privateKey)
 		pemType = "RSA PRIVATE KEY"
+		isPKCS1 = true
 
 	default:
 		return nil, fmt.Errorf("不支持的私钥类型: %s", keyType)
@@ -725,7 +740,17 @@ func ExportPrivateKey(privateKey *rsa.PrivateKey, keyType, format, cipher, passp
 	// 加密（如果指定了 cipher）
 	// 注意：Node.js 允许空字符串作为 passphrase，所以这里只检查 cipher
 	if cipher != "" {
-		encryptedBlock, err := encryptPEMBlock(block, cipher, passphrase)
+		var encryptedBlock *pem.Block
+		var err error
+
+		if isPKCS1 {
+			// PKCS#1 使用传统 PEM 加密（Proc-Type + DEK-Info）
+			encryptedBlock, err = encryptPEMBlockTraditional(block, cipher, passphrase)
+		} else {
+			// PKCS#8 使用 PBES2 加密
+			encryptedBlock, err = encryptPEMBlock(block, cipher, passphrase)
+		}
+
 		if err != nil {
 			// 检查是否是 Unknown cipher 错误
 			if strings.Contains(err.Error(), "Unknown cipher") {
@@ -1059,7 +1084,7 @@ func exportPrivateKeyFromOptions(runtime *goja.Runtime, privateKey *rsa.PrivateK
 
 	// 将字节数组转换为字符串传递给 ExportPrivateKey
 	passphrase := string(passphraseBytes)
-	exported, err := ExportPrivateKey(privateKey, keyType, format, cipher, passphrase)
+	exported, err := ExportPrivateKey(privateKey, keyType, format, cipher, passphrase, "rsa")
 	if err != nil {
 		// 检查是否是 CryptoError
 		if cryptoErr, ok := err.(*CryptoError); ok {
@@ -1074,40 +1099,71 @@ func exportPrivateKeyFromOptions(runtime *goja.Runtime, privateKey *rsa.PrivateK
 	return runtime.ToValue(string(exported))
 }
 
-// encryptPEMBlock 加密 PEM 块 (PKCS#8 加密格式)
+// encryptPEMBlock 加密 PEM 块 (PKCS#8 PBES2 加密格式 - 100% Node.js 兼容)
 func encryptPEMBlock(block *pem.Block, cipher, passphrase string) (*pem.Block, error) {
 	// 如果没有指定 cipher，返回未加密的密钥
-	// 注意：Node.js 允许空字符串作为 passphrase，所以这里只检查 cipher
 	if cipher == "" {
 		return block, nil
 	}
 
-	// 使用 PKCS#8 加密格式（与 Node.js 兼容）
-	// 注意：x509.EncryptPEMBlock 已废弃，但仍然可用
-	// 选择合适的加密算法
-	var pemCipher x509.PEMCipher
-	switch cipher {
-	case "aes-128-cbc":
-		pemCipher = x509.PEMCipherAES128
-	case "aes-192-cbc":
-		pemCipher = x509.PEMCipherAES192
-	case "aes-256-cbc":
-		pemCipher = x509.PEMCipherAES256
-	case "des-ede3-cbc":
-		pemCipher = x509.PEMCipher3DES
-	case "":
-		// 空 cipher，不加密
-		return block, nil
-	default:
-		// 不支持的 cipher
-		return nil, fmt.Errorf("Unknown cipher: %s", cipher)
+	// 使用我们自己实现的 PKCS#8 PBES2 加密（完全兼容 Node.js）
+	encryptedDER, err := EncryptPKCS8PrivateKeyLocal(block.Bytes, passphrase, cipher)
+	if err != nil {
+		// 检查是否是不支持的cipher错误
+		if strings.Contains(err.Error(), "unsupported cipher") {
+			return nil, fmt.Errorf("Unknown cipher: %s", cipher)
+		}
+		return nil, fmt.Errorf("加密失败: %w", err)
 	}
 
-	// 使用 x509.EncryptPEMBlock 加密
-	encryptedBlock, err := x509.EncryptPEMBlock(rand.Reader, "ENCRYPTED PRIVATE KEY", block.Bytes, []byte(passphrase), pemCipher)
+	// 返回加密后的 PEM 块
+	return &pem.Block{
+		Type:  "ENCRYPTED PRIVATE KEY",
+		Bytes: encryptedDER,
+	}, nil
+}
+
+// encryptPEMBlockTraditional 使用传统 PEM 加密 (PKCS#1 格式，带 Proc-Type 和 DEK-Info 头部)
+func encryptPEMBlockTraditional(block *pem.Block, cipher, passphrase string) (*pem.Block, error) {
+	// 如果没有指定 cipher，返回未加密的密钥
+	if cipher == "" {
+		return block, nil
+	}
+
+	// 使用 x509.EncryptPEMBlock (Go 1.16+)
+	// 注意：这是传统的 PEM 加密方式，会在 PEM 头部添加 Proc-Type 和 DEK-Info
+	encryptedBlock, err := x509.EncryptPEMBlock(
+		rand.Reader,
+		block.Type,
+		block.Bytes,
+		[]byte(passphrase),
+		getCipherAlgorithm(cipher),
+	)
 	if err != nil {
+		if strings.Contains(err.Error(), "unknown") {
+			return nil, fmt.Errorf("Unknown cipher: %s", cipher)
+		}
 		return nil, fmt.Errorf("加密失败: %w", err)
 	}
 
 	return encryptedBlock, nil
+}
+
+// getCipherAlgorithm 将 cipher 名称转换为 x509.PEMCipher
+func getCipherAlgorithm(cipher string) x509.PEMCipher {
+	switch strings.ToLower(cipher) {
+	case "aes-128-cbc", "aes128":
+		return x509.PEMCipherAES128
+	case "aes-192-cbc", "aes192":
+		return x509.PEMCipherAES192
+	case "aes-256-cbc", "aes256":
+		return x509.PEMCipherAES256
+	case "des-cbc", "des":
+		return x509.PEMCipherDES
+	case "des-ede3-cbc", "3des":
+		return x509.PEMCipher3DES
+	default:
+		// 返回一个无效值，让 EncryptPEMBlock 报错
+		return x509.PEMCipher(-1)
+	}
 }

@@ -35,10 +35,21 @@ func PublicEncrypt(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		if hasKeyProp {
 			// 对象形式: { key: '...' | KeyObject | Buffer, format: 'pem'|'der', type: '...', padding: ..., oaepHash: '...', oaepLabel: ... }
 
-			// 检查是否是 DER 格式
+			// 检查 format 参数
 			formatVal := obj.Get("format")
-			if !goja.IsUndefined(formatVal) && !goja.IsNull(formatVal) && SafeGetString(formatVal) == "der" {
-				keyPEM = ExtractKeyFromDEROptions(runtime, obj)
+			if !goja.IsUndefined(formatVal) && !goja.IsNull(formatVal) {
+				formatStr := SafeGetString(formatVal)
+				if formatStr == "jwk" {
+					panic(runtime.NewTypeError("JWK format is not supported"))
+				}
+				if formatStr != "" && formatStr != "pem" && formatStr != "der" {
+					panic(runtime.NewTypeError(fmt.Sprintf("The value '%s' is invalid for option 'format'", formatStr)))
+				}
+				if formatStr == "der" {
+					keyPEM = ExtractKeyFromDEROptions(runtime, obj)
+				} else {
+					keyPEM = ExtractKeyPEM(runtime, obj.Get("key"))
+				}
 			} else {
 				keyPEM = ExtractKeyPEM(runtime, obj.Get("key"))
 			}
@@ -145,16 +156,38 @@ func PrivateDecrypt(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	var oaepHash string = "sha1" // OAEP 默认哈希算法
 	var oaepLabel []byte = nil   // OAEP 默认不使用 label
 	var passphrase string = ""
+	var hasPassphrase bool = false // 是否提供了 passphrase
 
 	firstArg := call.Arguments[0]
 	if obj, ok := firstArg.(*goja.Object); ok && obj != nil {
 		hasKeyProp := obj.Get("key") != nil && !goja.IsUndefined(obj.Get("key"))
 		if hasKeyProp {
+			// 验证 format 参数
 			formatVal := obj.Get("format")
-			if !goja.IsUndefined(formatVal) && !goja.IsNull(formatVal) && SafeGetString(formatVal) == "der" {
-				keyPEM = ExtractKeyFromDEROptions(runtime, obj)
+			if !goja.IsUndefined(formatVal) && !goja.IsNull(formatVal) {
+				formatStr := SafeGetString(formatVal)
+				if formatStr == "jwk" {
+					panic(runtime.NewTypeError("JWK format is not supported"))
+				}
+				if formatStr != "" && formatStr != "pem" && formatStr != "der" {
+					panic(runtime.NewTypeError(fmt.Sprintf("The value '%s' is invalid for option 'format'", formatStr)))
+				}
+				if formatStr == "der" {
+					keyPEM = ExtractKeyFromDEROptions(runtime, obj)
+				} else {
+					keyPEM = ExtractKeyPEM(runtime, obj.Get("key"))
+				}
 			} else {
 				keyPEM = ExtractKeyPEM(runtime, obj.Get("key"))
+			}
+
+			// 验证 type 参数
+			typeVal := obj.Get("type")
+			if !goja.IsUndefined(typeVal) && !goja.IsNull(typeVal) {
+				typeStr := SafeGetString(typeVal)
+				if typeStr != "" && typeStr != "pkcs1" && typeStr != "pkcs8" && typeStr != "sec1" {
+					panic(runtime.NewTypeError(fmt.Sprintf("The value '%s' is invalid for option 'type'", typeStr)))
+				}
 			}
 
 			if paddingVal := obj.Get("padding"); paddingVal != nil && !goja.IsUndefined(paddingVal) && !goja.IsNull(paddingVal) {
@@ -173,7 +206,23 @@ func PrivateDecrypt(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 				}
 			}
 			if passphraseVal := obj.Get("passphrase"); passphraseVal != nil && !goja.IsUndefined(passphraseVal) && !goja.IsNull(passphraseVal) {
-				passphrase = SafeGetString(passphraseVal)
+				hasPassphrase = true
+				// 严格类型检查：只接受 string 或 Buffer 类型
+				exported := passphraseVal.Export()
+				switch v := exported.(type) {
+				case string:
+					passphrase = v
+				case []byte:
+					passphrase = string(v)
+				default:
+					// 尝试作为 Buffer 对象处理
+					if bytes, err := ConvertToBytes(runtime, passphraseVal); err == nil {
+						passphrase = string(bytes)
+					} else {
+						// 不是 string 或 Buffer 类型，抛出错误
+						panic(runtime.NewTypeError(fmt.Sprintf("passphrase must be a string or Buffer, received %T", exported)))
+					}
+				}
 			}
 		} else {
 			keyPEM = ExtractKeyPEM(runtime, firstArg)
@@ -190,9 +239,11 @@ func PrivateDecrypt(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 
 	// 解析私钥
 	var privateKey *rsa.PrivateKey
-	if passphrase != "" {
+	if hasPassphrase {
+		// 提供了 passphrase（包括空字符串）
 		privateKey, err = ParsePrivateKey(keyPEM, passphrase)
 	} else {
+		// 未提供 passphrase
 		privateKey, err = ParsePrivateKey(keyPEM)
 	}
 	if err != nil {
@@ -249,23 +300,61 @@ func PrivateEncrypt(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	var keyPEM string
 	var padding int = 1 // 默认 RSA_PKCS1_PADDING
 	var passphrase string = ""
+	var hasPassphrase bool = false // 是否提供了 passphrase
 
 	firstArg := call.Arguments[0]
 	if obj, ok := firstArg.(*goja.Object); ok && obj != nil {
 		hasKeyProp := obj.Get("key") != nil && !goja.IsUndefined(obj.Get("key"))
 		if hasKeyProp {
+			// 验证 format 参数
 			formatVal := obj.Get("format")
-			if !goja.IsUndefined(formatVal) && !goja.IsNull(formatVal) && SafeGetString(formatVal) == "der" {
-				keyPEM = ExtractKeyFromDEROptions(runtime, obj)
+			if !goja.IsUndefined(formatVal) && !goja.IsNull(formatVal) {
+				formatStr := SafeGetString(formatVal)
+				if formatStr == "jwk" {
+					panic(runtime.NewTypeError("JWK format is not supported"))
+				}
+				if formatStr != "" && formatStr != "pem" && formatStr != "der" {
+					panic(runtime.NewTypeError(fmt.Sprintf("The value '%s' is invalid for option 'format'", formatStr)))
+				}
+				if formatStr == "der" {
+					keyPEM = ExtractKeyFromDEROptions(runtime, obj)
+				} else {
+					keyPEM = ExtractKeyPEM(runtime, obj.Get("key"))
+				}
 			} else {
 				keyPEM = ExtractKeyPEM(runtime, obj.Get("key"))
+			}
+
+			// 验证 type 参数
+			typeVal := obj.Get("type")
+			if !goja.IsUndefined(typeVal) && !goja.IsNull(typeVal) {
+				typeStr := SafeGetString(typeVal)
+				if typeStr != "" && typeStr != "pkcs1" && typeStr != "pkcs8" && typeStr != "sec1" {
+					panic(runtime.NewTypeError(fmt.Sprintf("The value '%s' is invalid for option 'type'", typeStr)))
+				}
 			}
 
 			if paddingVal := obj.Get("padding"); paddingVal != nil && !goja.IsUndefined(paddingVal) && !goja.IsNull(paddingVal) {
 				padding = int(paddingVal.ToInteger())
 			}
 			if passphraseVal := obj.Get("passphrase"); passphraseVal != nil && !goja.IsUndefined(passphraseVal) && !goja.IsNull(passphraseVal) {
-				passphrase = SafeGetString(passphraseVal)
+				hasPassphrase = true
+				// 严格类型检查：只接受 string 或 Buffer 类型
+				exported := passphraseVal.Export()
+				switch v := exported.(type) {
+				case string:
+					passphrase = v
+				case []byte:
+					passphrase = string(v)
+				default:
+					// 尝试作为 Buffer 对象处理
+					if bytes, err := ConvertToBytes(runtime, passphraseVal); err == nil {
+						passphrase = string(bytes)
+					} else {
+						// 不是 string 或 Buffer 类型，抛出错误
+						panic(runtime.NewTypeError(fmt.Sprintf("passphrase must be a string or Buffer, received %T", exported)))
+					}
+				}
 			}
 		} else {
 			keyPEM = ExtractKeyPEM(runtime, firstArg)
@@ -274,15 +363,24 @@ func PrivateEncrypt(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		keyPEM = ExtractKeyPEM(runtime, firstArg)
 	}
 
-	data, err := ConvertToBytes(runtime, call.Arguments[1])
+	// 显式检查第二个参数是否为Symbol（在ConvertToBytes之前）
+	// Symbol在goja中是*goja.Symbol类型
+	secondArg := call.Arguments[1]
+	if _, isSymbol := secondArg.(*goja.Symbol); isSymbol {
+		panic(runtime.NewTypeError("The \"buffer\" argument must be of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView. Received type symbol"))
+	}
+
+	data, err := ConvertToBytes(runtime, secondArg)
 	if err != nil {
 		panic(runtime.NewTypeError(fmt.Sprintf("data 类型错误: %v", err)))
 	}
 
 	var privateKey *rsa.PrivateKey
-	if passphrase != "" {
+	if hasPassphrase {
+		// 提供了 passphrase（包括空字符串）
 		privateKey, err = ParsePrivateKey(keyPEM, passphrase)
 	} else {
+		// 未提供 passphrase
 		privateKey, err = ParsePrivateKey(keyPEM)
 	}
 	if err != nil {

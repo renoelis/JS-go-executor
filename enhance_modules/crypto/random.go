@@ -3,10 +3,15 @@ package crypto
 import (
 	"crypto/rand"
 	"fmt"
+	"math"
+	"math/big"
 	"strconv"
 
 	"github.com/dop251/goja"
 )
+
+// maxPrimeSize 复用通用 int32 上限，保持与 Node.js 行为一致
+const maxPrimeSize = CryptoMaxInt32
 
 // ============================================================================
 // 🔥 随机数功能
@@ -44,9 +49,10 @@ func RandomBytes(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	// 检查 NaN 和 Infinity
 	if floatVal, ok := exportedVal.(float64); ok {
 		if floatVal != floatVal { // NaN check (NaN != NaN)
-			panic(runtime.NewTypeError(fmt.Sprintf(
-				"The value of \"size\" is out of range. It must be >= 0 && <= %d. Received NaN",
-				MaxRandomBytesSize)))
+			msg := fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received NaN", MaxRandomBytesSize)
+			errObj := runtime.NewGoError(fmt.Errorf("%s", msg))
+			errObj.Set("name", runtime.ToValue("RangeError"))
+			panic(errObj)
 		}
 	}
 
@@ -54,19 +60,29 @@ func RandomBytes(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 
 	// Node.js 行为：接受 0（返回空 Buffer），拒绝负数和超出最大值
 	if size < 0 || size > MaxRandomBytesSize {
-		panic(runtime.NewTypeError(fmt.Sprintf(
-			"The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %d",
-			MaxRandomBytesSize, size)))
+		msg := fmt.Sprintf("The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %d", MaxRandomBytesSize, size)
+		errObj := runtime.NewGoError(fmt.Errorf("%s", msg))
+		errObj.Set("name", runtime.ToValue("RangeError"))
+		panic(errObj)
 	}
 
 	// 检查是否提供了回调函数（异步模式）
 	var callback goja.Callable
 	if len(call.Arguments) >= 2 {
-		if callbackArg := call.Arguments[1]; !goja.IsUndefined(callbackArg) && !goja.IsNull(callbackArg) {
+		callbackArg := call.Arguments[1]
+		// Node.js 行为：如果提供了第二个参数且不是 undefined，必须是函数
+		if !goja.IsUndefined(callbackArg) {
+			// 尝试将参数转为函数
 			if callbackObj, ok := callbackArg.(*goja.Object); ok {
 				if cbFunc, ok := goja.AssertFunction(callbackObj); ok {
 					callback = cbFunc
+				} else {
+					// 是对象但不是函数，抛出 TypeError
+					panic(runtime.NewTypeError("The \"callback\" argument must be of type function. Received " + getTypeString(callbackArg.Export())))
 				}
+			} else {
+				// 不是对象（比如是字符串、数字、null 等），抛出 TypeError
+				panic(runtime.NewTypeError("The \"callback\" argument must be of type function. Received " + getTypeString(callbackArg.Export())))
 			}
 		}
 	}
@@ -184,7 +200,7 @@ func RandomUUID(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 					actualType = fmt.Sprintf("%T", v)
 				}
 
-				panic(runtime.NewTypeError(fmt.Sprintf(
+				panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf(
 					"The \"options.disableEntropyCache\" property must be of type boolean. Received type %s (%v)",
 					actualType, actualValue,
 				)))
@@ -342,10 +358,45 @@ func RandomFillSync(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		panic(runtime.NewTypeError("第一个参数必须是 Buffer 或 TypedArray"))
 	}
 
+	// 检查是否是普通数组（应该报错）
+	// 普通数组没有 buffer 属性且没有 byteLength 属性
+	bufferVal := obj.Get("buffer")
+	byteLengthVal := obj.Get("byteLength")
+	if (bufferVal == nil || goja.IsUndefined(bufferVal) || goja.IsNull(bufferVal)) &&
+		(byteLengthVal == nil || goja.IsUndefined(byteLengthVal) || goja.IsNull(byteLengthVal)) {
+		// 检查是否有 length 属性但不是 Buffer/TypedArray
+		lengthVal := obj.Get("length")
+		if lengthVal != nil && !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
+			panic(runtime.NewTypeError("The \"buf\" argument must be an instance of ArrayBuffer or ArrayBufferView. Received an instance of Array"))
+		}
+	}
+
 	// 获取 buffer 的字节长度
 	byteLength := getByteLength(runtime, obj)
 
+	// 检测是否是 TypedArray（有 BYTES_PER_ELEMENT 属性）
+	bytesPerElementVal := obj.Get("BYTES_PER_ELEMENT")
+	var bytesPerElement int
+	isTypedArray := false
+	if bytesPerElementVal != nil && !goja.IsUndefined(bytesPerElementVal) && !goja.IsNull(bytesPerElementVal) {
+		bytesPerElement = int(bytesPerElementVal.ToInteger())
+		isTypedArray = bytesPerElement > 0
+	}
+
+	// 对于 TypedArray，还需要获取元素数量（用于错误信息）
+	var elementLength int
+	if isTypedArray {
+		lengthVal := obj.Get("length")
+		if lengthVal != nil && !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
+			elementLength = int(lengthVal.ToInteger())
+		} else {
+			elementLength = byteLength / bytesPerElement
+		}
+	}
+
 	// 解析 offset 和 size 参数
+	// 对于 TypedArray，offset 和 size 是元素索引
+	// 对于 Buffer/DataView，offset 和 size 是字节索引
 	var offset, size int
 
 	// 处理 offset 参数
@@ -373,17 +424,36 @@ func RandomFillSync(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 		// 检查 NaN
 		if floatVal, ok := exportedVal.(float64); ok {
 			if floatVal != floatVal { // NaN check (NaN != NaN)
+				maxOffset := byteLength
+				if isTypedArray {
+					maxOffset = elementLength
+				}
 				panic(runtime.NewTypeError(fmt.Sprintf(
 					"The value of \"offset\" is out of range. It must be >= 0 && <= %d. Received NaN",
-					byteLength)))
+					maxOffset)))
 			}
 		}
 
-		offset = int(offsetArg.ToInteger())
-		if offset < 0 || offset > byteLength {
-			panic(runtime.NewTypeError(fmt.Sprintf(
-				"The value of \"offset\" is out of range. It must be >= 0 && <= %d. Received %d",
-				byteLength, offset)))
+		offsetValue := int(offsetArg.ToInteger())
+
+		// 对于 TypedArray，offset 是元素索引，需要转换为字节索引
+		if isTypedArray {
+			// 检查元素索引范围
+			if offsetValue < 0 || offsetValue > elementLength {
+				panic(runtime.NewTypeError(fmt.Sprintf(
+					"The value of \"offset\" is out of range. It must be >= 0 && <= %d. Received %d",
+					elementLength, offsetValue)))
+			}
+			// 转换为字节索引
+			offset = offsetValue * bytesPerElement
+		} else {
+			// Buffer/DataView 直接使用字节索引
+			if offsetValue < 0 || offsetValue > byteLength {
+				panic(runtime.NewTypeError(fmt.Sprintf(
+					"The value of \"offset\" is out of range. It must be >= 0 && <= %d. Received %d",
+					byteLength, offsetValue)))
+			}
+			offset = offsetValue
 		}
 	}
 
@@ -418,16 +488,38 @@ func RandomFillSync(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 			}
 		}
 
-		size = int(sizeArg.ToInteger())
-		if size < 0 {
-			panic(runtime.NewTypeError(fmt.Sprintf(
-				"The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %d",
-				MaxRandomBytesSize, size)))
-		}
-		if offset+size > byteLength {
-			panic(runtime.NewTypeError(fmt.Sprintf(
-				"The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %d",
-				byteLength-offset, size)))
+		sizeValue := int(sizeArg.ToInteger())
+
+		// 对于 TypedArray，size 是元素数量，需要转换为字节数
+		if isTypedArray {
+			if sizeValue < 0 {
+				panic(runtime.NewTypeError(fmt.Sprintf(
+					"The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %d",
+					MaxRandomBytesSize, sizeValue)))
+			}
+			// 检查元素索引范围
+			// offset 已经转换为字节，需要先转回元素索引进行检查
+			offsetInElements := offset / bytesPerElement
+			if offsetInElements+sizeValue > elementLength {
+				panic(runtime.NewTypeError(fmt.Sprintf(
+					"The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %d",
+					elementLength-offsetInElements, sizeValue)))
+			}
+			// 转换为字节数
+			size = sizeValue * bytesPerElement
+		} else {
+			// Buffer/DataView 直接使用字节数
+			if sizeValue < 0 {
+				panic(runtime.NewTypeError(fmt.Sprintf(
+					"The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %d",
+					MaxRandomBytesSize, sizeValue)))
+			}
+			if offset+sizeValue > byteLength {
+				panic(runtime.NewTypeError(fmt.Sprintf(
+					"The value of \"size\" is out of range. It must be >= 0 && <= %d. Received %d",
+					byteLength-offset, sizeValue)))
+			}
+			size = sizeValue
 		}
 	} else {
 		size = byteLength - offset
@@ -571,7 +663,7 @@ func RandomFill(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 // - min < max
 func RandomInt(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	if len(call.Arguments) == 0 {
-		panic(runtime.NewTypeError("The \"max\" argument must be of type number"))
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"max\" argument must be of type number. Received undefined"))
 	}
 
 	var min, max int64
@@ -586,21 +678,44 @@ func RandomInt(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	} else if len(call.Arguments) == 2 {
 		// 可能是 randomInt(max, callback) 或 randomInt(min, max)
 		lastArg := call.Arguments[1]
-		if cbObj, ok := lastArg.(*goja.Object); ok {
-			if cbFunc, ok := goja.AssertFunction(cbObj); ok {
-				// randomInt(max, callback)
-				callback = cbFunc
-				maxArg = call.Arguments[0]
-				min = 0
-			} else {
+
+		// undefined 被当作未提供，等价于 randomInt(max)
+		if goja.IsUndefined(lastArg) {
+			maxArg = call.Arguments[0]
+			min = 0
+		} else {
+			// 先检查第二个参数是否是数字类型
+			isNumber := false
+			if !goja.IsNull(lastArg) {
+				exported := lastArg.Export()
+				switch exported.(type) {
+				case int64, int, int32, float64, float32:
+					isNumber = true
+				}
+			}
+
+			if isNumber {
 				// randomInt(min, max)
 				minArg = call.Arguments[0]
 				maxArg = call.Arguments[1]
+			} else if goja.IsNull(lastArg) {
+				// null 作为 callback 应该抛出错误
+				panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"callback\" argument must be of type function. Received null"))
+			} else if cbObj, ok := lastArg.(*goja.Object); ok {
+				if cbFunc, ok := goja.AssertFunction(cbObj); ok {
+					// randomInt(max, callback)
+					callback = cbFunc
+					maxArg = call.Arguments[0]
+					min = 0
+				} else {
+					// 对象但不是函数
+					panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"callback\" argument must be of type function. Received object"))
+				}
+			} else {
+				// 其他类型作为 callback
+				exported := lastArg.Export()
+				panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf("The \"callback\" argument must be of type function. Received %s", getTypeString(exported))))
 			}
-		} else {
-			// randomInt(min, max)
-			minArg = call.Arguments[0]
-			maxArg = call.Arguments[1]
 		}
 	} else if len(call.Arguments) >= 3 {
 		// randomInt(min, max, callback)
@@ -614,74 +729,105 @@ func RandomInt(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 				if cbFunc, ok := goja.AssertFunction(cbObj); ok {
 					callback = cbFunc
 				} else {
-					panic(runtime.NewTypeError("The \"callback\" argument must be of type function"))
+					panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"callback\" argument must be of type function. Received object"))
 				}
 			} else {
-				panic(runtime.NewTypeError("The \"callback\" argument must be of type function"))
+				exported := lastArg.Export()
+				panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf("The \"callback\" argument must be of type function. Received %s", getTypeString(exported))))
 			}
 		}
 	}
 
 	// 验证参数类型 - 必须是数字
 	if minArg != nil {
+		// 首先检查是否是对象（拒绝 Number/Boolean/String 等包装对象）
+		if obj, ok := minArg.(*goja.Object); ok {
+			// 获取对象的类名
+			className := obj.ClassName()
+			if className == "Number" || className == "Boolean" || className == "String" {
+				panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf("The \"min\" argument must be a safe integer. Received an instance of %s", className)))
+			}
+			// 其他对象类型（Date、RegExp等）
+			panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf("The \"min\" argument must be of type number. Received an instance of %s", className)))
+		}
+
 		exported := minArg.Export()
 		switch exported.(type) {
 		case int64, int, int32, float64, float32:
 			// 检查是否为安全整数
 			floatVal := minArg.ToFloat()
 			if floatVal != floatVal { // NaN
-				panic(runtime.NewTypeError("The \"min\" argument must be a safe integer"))
+				panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"min\" argument must be a safe integer. Received type number (NaN)"))
 			}
 			if floatVal == floatVal+1 || floatVal == floatVal-1 { // Infinity
-				panic(runtime.NewTypeError(fmt.Sprintf("The \"min\" argument must be a safe integer. Received type number (%v)", exported)))
+				infinityStr := "Infinity"
+				if floatVal < 0 {
+					infinityStr = "-Infinity"
+				}
+				panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf("The \"min\" argument must be a safe integer. Received type number (%s)", infinityStr)))
 			}
 			// 检查是否超出安全整数范围
 			if floatVal > 9007199254740991 || floatVal < -9007199254740991 {
-				panic(runtime.NewTypeError(fmt.Sprintf("The \"min\" argument must be a safe integer. Received type number (%v)", exported)))
+				panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf("The \"min\" argument must be a safe integer. Received type number (%v)", int64(floatVal))))
 			}
 			// 检查是否为整数（不是小数）
 			if floatVal != float64(int64(floatVal)) {
-				panic(runtime.NewTypeError(fmt.Sprintf("The \"min\" argument must be a safe integer. Received type number (%v)", exported)))
+				panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf("The \"min\" argument must be a safe integer. Received type number (%v)", floatVal)))
 			}
 			min = int64(floatVal)
 		default:
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"min\" argument must be of type number. Received %s", getTypeString(exported))))
+			panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf("The \"min\" argument must be of type number. Received %s", getTypeString(exported))))
 		}
 	}
 
 	if maxArg != nil {
+		// 首先检查是否是对象（拒绝 Number/Boolean/String 等包装对象）
+		if obj, ok := maxArg.(*goja.Object); ok {
+			// 获取对象的类名
+			className := obj.ClassName()
+			if className == "Number" || className == "Boolean" || className == "String" {
+				panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf("The \"max\" argument must be a safe integer. Received an instance of %s", className)))
+			}
+			// 其他对象类型（Date、RegExp等）
+			panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf("The \"max\" argument must be of type number. Received an instance of %s", className)))
+		}
+
 		exported := maxArg.Export()
 		switch exported.(type) {
 		case int64, int, int32, float64, float32:
 			// 检查是否为安全整数
 			floatVal := maxArg.ToFloat()
 			if floatVal != floatVal { // NaN
-				panic(runtime.NewTypeError("The \"max\" argument must be a safe integer"))
+				panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"max\" argument must be a safe integer. Received type number (NaN)"))
 			}
 			if floatVal == floatVal+1 || floatVal == floatVal-1 { // Infinity
-				panic(runtime.NewTypeError(fmt.Sprintf("The \"max\" argument must be a safe integer. Received type number (%v)", exported)))
+				infinityStr := "Infinity"
+				if floatVal < 0 {
+					infinityStr = "-Infinity"
+				}
+				panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf("The \"max\" argument must be a safe integer. Received type number (%s)", infinityStr)))
 			}
 			// 检查是否超出安全整数范围
 			if floatVal > 9007199254740991 || floatVal < -9007199254740991 {
-				panic(runtime.NewTypeError(fmt.Sprintf("The \"max\" argument must be a safe integer. Received type number (%v)", exported)))
+				panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf("The \"max\" argument must be a safe integer. Received type number (%v)", int64(floatVal))))
 			}
 			// 检查是否为整数（不是小数）
 			if floatVal != float64(int64(floatVal)) {
-				panic(runtime.NewTypeError(fmt.Sprintf("The \"max\" argument must be a safe integer. Received type number (%v)", exported)))
+				panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf("The \"max\" argument must be a safe integer. Received type number (%v)", floatVal)))
 			}
 			max = int64(floatVal)
 		default:
-			panic(runtime.NewTypeError(fmt.Sprintf("The \"max\" argument must be of type number. Received %s", getTypeString(exported))))
+			panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf("The \"max\" argument must be of type number. Received %s", getTypeString(exported))))
 		}
 	} else {
-		panic(runtime.NewTypeError("The \"max\" argument must be of type number"))
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"max\" argument must be of type number. Received undefined"))
 	}
 
 	// 验证 min < max
 	if min >= max {
 		code := "ERR_OUT_OF_RANGE"
 		msg := fmt.Sprintf("The value of \"max\" is out of range. It must be greater than the value of \"min\" (%d). Received %d", min, max)
-		errObj := runtime.NewGoError(fmt.Errorf(msg))
+		errObj := runtime.NewGoError(fmt.Errorf("%s", msg))
 		errObj.Set("code", runtime.ToValue(code))
 		errObj.Set("name", runtime.ToValue("RangeError"))
 		panic(errObj)
@@ -693,7 +839,7 @@ func RandomInt(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
 	if rangeSize >= maxRange {
 		code := "ERR_OUT_OF_RANGE"
 		msg := fmt.Sprintf("The value of \"max - min\" is out of range. It must be <= %d. Received %d", maxRange-1, rangeSize)
-		errObj := runtime.NewGoError(fmt.Errorf(msg))
+		errObj := runtime.NewGoError(fmt.Errorf("%s", msg))
 		errObj.Set("code", runtime.ToValue(code))
 		errObj.Set("name", runtime.ToValue("RangeError"))
 		panic(errObj)
@@ -948,4 +1094,475 @@ func getTypeString(val interface{}) string {
 	default:
 		return fmt.Sprintf("type %T", v)
 	}
+}
+
+// isPrimeConstraintFeasible 检查在给定位数范围内是否存在满足 p ≡ rem (mod add) 的整数
+func isPrimeConstraintFeasible(size int, add, rem *big.Int) bool {
+	if add == nil || rem == nil {
+		return true
+	}
+	// 位范围 [2^(size-1), 2^size - 1]
+	min := new(big.Int).Lsh(big.NewInt(1), uint(size-1))
+	max := new(big.Int).Lsh(big.NewInt(1), uint(size))
+	max.Sub(max, big.NewInt(1))
+
+	// 寻找最小的 k 使得 p = rem + k*add >= min
+	tmp := new(big.Int).Sub(min, rem)
+	var k *big.Int
+	if tmp.Sign() <= 0 {
+		// rem 已经在范围内，下界对应 k=0
+		k = big.NewInt(0)
+	} else {
+		k = new(big.Int).Div(tmp, add)
+		if new(big.Int).Mod(tmp, add).Sign() != 0 {
+			k.Add(k, big.NewInt(1))
+		}
+	}
+
+	p := new(big.Int).Mul(k, add)
+	p.Add(p, rem)
+
+	// 如果第一个满足同余条件的 p 已经超出位范围，则没有解
+	return p.Cmp(max) <= 0
+}
+
+func generateRandomPrime(size int, safe bool, add, rem *big.Int) (*big.Int, error) {
+	if size <= 0 {
+		return nil, fmt.Errorf("The \"size\" argument must be >= 1")
+	}
+	if add != nil && rem != nil {
+		if !isPrimeConstraintFeasible(size, add, rem) {
+			return nil, fmt.Errorf("invalid options.add")
+		}
+	}
+	one := big.NewInt(1)
+	two := big.NewInt(2)
+	for {
+		var p *big.Int
+		if safe {
+			q, err := rand.Prime(rand.Reader, size-1)
+			if err != nil {
+				return nil, err
+			}
+			p = new(big.Int).Mul(q, two)
+			p.Add(p, one)
+			if p.BitLen() != size || !p.ProbablyPrime(20) {
+				continue
+			}
+		} else {
+			q, err := rand.Prime(rand.Reader, size)
+			if err != nil {
+				return nil, err
+			}
+			p = q
+		}
+		// 只有当 add 和 rem 都提供时才应用约束
+		if add != nil && rem != nil {
+			m := new(big.Int).Mod(p, add)
+			if m.Cmp(rem) != 0 {
+				continue
+			}
+		}
+		return p, nil
+	}
+}
+
+func parseRandomPrimeOptions(runtime *goja.Runtime, val goja.Value) (bool, *big.Int, *big.Int, bool) {
+	safe := false
+	var add *big.Int
+	var rem *big.Int
+	bigint := false
+	if val == nil || goja.IsUndefined(val) || goja.IsNull(val) {
+		return safe, add, rem, bigint
+	}
+	obj, ok := val.(*goja.Object)
+	if !ok || obj == nil {
+		panic(runtime.NewTypeError("The \"options\" argument must be of type object"))
+	}
+	// 拒绝数组作为 options（与 Node 行为保持一致）
+	if ctor := obj.Get("constructor"); ctor != nil && !goja.IsUndefined(ctor) && !goja.IsNull(ctor) {
+		if ctorObj, ok := ctor.(*goja.Object); ok {
+			if nameVal := ctorObj.Get("name"); !goja.IsUndefined(nameVal) && !goja.IsNull(nameVal) && nameVal.String() == "Array" {
+				panic(runtime.NewTypeError("The \"options\" argument must be of type object. Received an instance of Array"))
+			}
+		}
+	}
+	// safe: boolean
+	if v := obj.Get("safe"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
+		if b, ok := v.Export().(bool); ok {
+			safe = b
+		} else {
+			panic(runtime.NewTypeError("The \"options.safe\" property must be of type boolean"))
+		}
+	}
+	// bigint: boolean
+	if v := obj.Get("bigint"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
+		if b, ok := v.Export().(bool); ok {
+			bigint = b
+		} else {
+			panic(runtime.NewTypeError("The \"options.bigint\" property must be of type boolean"))
+		}
+	}
+	if v := obj.Get("add"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
+		// 支持 bigint 或 TypedArray/Buffer
+		if bi, ok := v.Export().(*big.Int); ok && bi != nil {
+			add = new(big.Int).Set(bi)
+		} else {
+			// 仅当为对象（Buffer/TypedArray/DataView 等）时尝试按字节视图解析
+			if _, ok := v.(*goja.Object); ok {
+				bytes, err := ConvertToBytes(runtime, v)
+				if err == nil && len(bytes) > 0 {
+					add = new(big.Int).SetBytes(bytes)
+				} else {
+					panic(runtime.NewTypeError("The \"options.add\" property must be of type bigint or TypedArray"))
+				}
+			} else {
+				panic(runtime.NewTypeError("The \"options.add\" property must be of type bigint or TypedArray"))
+			}
+		}
+	}
+	if v := obj.Get("rem"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
+		// 支持 bigint 或 TypedArray/Buffer
+		if bi, ok := v.Export().(*big.Int); ok && bi != nil {
+			rem = new(big.Int).Set(bi)
+		} else {
+			// 仅当为对象（Buffer/TypedArray/DataView 等）时尝试按字节视图解析
+			if _, ok := v.(*goja.Object); ok {
+				bytes, err := ConvertToBytes(runtime, v)
+				if err == nil && len(bytes) > 0 {
+					rem = new(big.Int).SetBytes(bytes)
+				} else {
+					panic(runtime.NewTypeError("The \"options.rem\" property must be of type bigint or TypedArray"))
+				}
+			} else {
+				panic(runtime.NewTypeError("The \"options.rem\" property must be of type bigint or TypedArray"))
+			}
+		}
+	}
+	// add/rem 数值范围与关系校验
+	if add != nil {
+		if add.Sign() < 0 {
+			panic(runtime.NewTypeError("The \"options.add\" property must be >= 0"))
+		}
+		if add.Sign() == 0 {
+			panic(runtime.NewTypeError("The \"options.add\" property must be > 0"))
+		}
+	}
+	if rem != nil && rem.Sign() < 0 {
+		panic(runtime.NewTypeError("The \"options.rem\" property must be >= 0"))
+	}
+	if add != nil && rem != nil && rem.Cmp(add) >= 0 {
+		panic(runtime.NewTypeError("The \"options.rem\" property must be < \"options.add\""))
+	}
+	// 仅提供 add 时，默认 rem=1，使 prime ≡ 1 (mod add)
+	if add != nil && rem == nil {
+		rem = big.NewInt(1)
+	}
+	// 仅提供 rem 时允许但忽略约束
+	return safe, add, rem, bigint
+}
+
+func valueToBigInt(runtime *goja.Runtime, val goja.Value) (*big.Int, error) {
+	if val == nil || goja.IsUndefined(val) {
+		return nil, fmt.Errorf("candidate is undefined")
+	}
+	if goja.IsNull(val) {
+		return nil, fmt.Errorf("candidate is null")
+	}
+
+	// 严格类型检查：只接受 BigInt、Buffer、TypedArray、ArrayBuffer、DataView
+	exported := val.Export()
+
+	// 检查是否为 BigInt
+	if bi, ok := exported.(*big.Int); ok && bi != nil {
+		return new(big.Int).Set(bi), nil
+	}
+
+	// 明确拒绝不支持的类型
+	switch exported.(type) {
+	case int, int32, int64, float32, float64:
+		// 数字类型不被接受
+		return nil, fmt.Errorf("The \"candidate\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView")
+	case string:
+		// 字符串不被接受
+		return nil, fmt.Errorf("The \"candidate\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView")
+	case bool:
+		// 布尔不被接受
+		return nil, fmt.Errorf("The \"candidate\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView")
+	}
+
+	// 检查是否为数组
+	if obj, ok := val.(*goja.Object); ok {
+		if obj.ClassName() == "Array" {
+			return nil, fmt.Errorf("The \"candidate\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView")
+		}
+		// 检查是否为普通对象（非 Buffer/TypedArray/ArrayBuffer/DataView）
+		className := obj.ClassName()
+		if className != "ArrayBuffer" && className != "Uint8Array" && className != "Int8Array" &&
+			className != "Uint16Array" && className != "Int16Array" &&
+			className != "Uint32Array" && className != "Int32Array" &&
+			className != "Float32Array" && className != "Float64Array" &&
+			className != "DataView" && className != "Buffer" {
+			// 检查是否有 buffer 属性（TypedArray 特征）
+			bufferProp := obj.Get("buffer")
+			byteLengthVal := obj.Get("byteLength")
+			if bufferProp == nil || goja.IsUndefined(bufferProp) {
+				// 不是 TypedArray，可能是普通对象
+				if byteLengthVal == nil || goja.IsUndefined(byteLengthVal) {
+					return nil, fmt.Errorf("The \"candidate\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView")
+				}
+			}
+		}
+	}
+
+	// 尝试转换为字节数组
+	bytes, err := ConvertToBytes(runtime, val)
+	if err != nil {
+		return nil, fmt.Errorf("The \"candidate\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView")
+	}
+	if len(bytes) == 0 {
+		return big.NewInt(0), nil
+	}
+	n := new(big.Int).SetBytes(bytes)
+	return n, nil
+}
+
+func parseCheckPrimeOptions(runtime *goja.Runtime, val goja.Value) int {
+	if val == nil || goja.IsUndefined(val) {
+		return 0
+	}
+	if goja.IsNull(val) {
+		return 0
+	}
+	obj, ok := val.(*goja.Object)
+	if !ok || obj == nil {
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"options\" argument must be of type object"))
+	}
+	checksVal := obj.Get("checks")
+	if checksVal == nil || goja.IsUndefined(checksVal) {
+		return 0
+	}
+
+	// checks 不能为 null
+	if goja.IsNull(checksVal) {
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"options.checks\" property must be of type number. Received null"))
+	}
+
+	exported := checksVal.Export()
+	switch exported.(type) {
+	case int, int32, int64, float32, float64:
+	default:
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"options.checks\" property must be of type number"))
+	}
+
+	// 检查 NaN 和 Infinity
+	floatVal := checksVal.ToFloat()
+	if math.IsNaN(floatVal) {
+		panic(NewNodeError(runtime, "ERR_OUT_OF_RANGE", "The value of \"options.checks\" is out of range. It must be >= 0. Received NaN"))
+	}
+	if math.IsInf(floatVal, 0) {
+		panic(NewNodeError(runtime, "ERR_OUT_OF_RANGE", "The value of \"options.checks\" is out of range. It must be >= 0. Received Infinity"))
+	}
+
+	checks := int(checksVal.ToInteger())
+	if checks < 0 {
+		panic(NewNodeError(runtime, "ERR_OUT_OF_RANGE", "The value of \"options.checks\" is out of range. It must be >= 0. Received "+fmt.Sprint(checks)))
+	}
+	return checks
+}
+
+func GeneratePrimeSync(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
+	if len(call.Arguments) == 0 {
+		panic(runtime.NewTypeError("generatePrimeSync 需要 size 参数"))
+	}
+	sizeVal := call.Arguments[0]
+	exported := sizeVal.Export()
+	switch exported.(type) {
+	case int, int32, int64, float32, float64:
+	default:
+		panic(runtime.NewTypeError("The \"size\" argument must be of type number"))
+	}
+	floatSize := sizeVal.ToFloat()
+	if floatSize != floatSize || floatSize < 1 || floatSize > float64(maxPrimeSize) {
+		msg := fmt.Sprintf("The value of \"size\" is out of range. It must be >= 1 && <= %d. Received %v", maxPrimeSize, exported)
+		panic(runtime.NewTypeError(msg))
+	}
+	size := int(sizeVal.ToInteger())
+	var optsVal goja.Value
+	if len(call.Arguments) > 1 {
+		optsVal = call.Arguments[1]
+	}
+	safe, add, rem, bigint := parseRandomPrimeOptions(runtime, optsVal)
+	p, err := generateRandomPrime(size, safe, add, rem)
+	if err != nil {
+		panic(runtime.NewGoError(err))
+	}
+	if bigint {
+		return runtime.ToValue(p)
+	}
+	// Node.js v25.0.0 默认返回 ArrayBuffer
+	return runtime.ToValue(runtime.NewArrayBuffer(p.Bytes()))
+}
+
+func GeneratePrime(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
+	if len(call.Arguments) < 2 {
+		panic(runtime.NewTypeError("generatePrime 需要 size 和 callback 参数"))
+	}
+	sizeVal := call.Arguments[0]
+	exported := sizeVal.Export()
+	switch exported.(type) {
+	case int, int32, int64, float32, float64:
+	default:
+		panic(runtime.NewTypeError("The \"size\" argument must be of type number"))
+	}
+	floatSize := sizeVal.ToFloat()
+	if floatSize != floatSize || floatSize < 1 || floatSize > float64(maxPrimeSize) {
+		msg := fmt.Sprintf("The value of \"size\" is out of range. It must be >= 1 && <= %d. Received %v", maxPrimeSize, exported)
+		panic(runtime.NewTypeError(msg))
+	}
+	size := int(sizeVal.ToInteger())
+	var optsVal goja.Value
+	var cbVal goja.Value
+	if len(call.Arguments) == 2 {
+		cbVal = call.Arguments[1]
+	} else {
+		optsVal = call.Arguments[1]
+		cbVal = call.Arguments[2]
+	}
+	cbFunc, ok := goja.AssertFunction(cbVal)
+	if !ok {
+		panic(runtime.NewTypeError("The \"callback\" argument must be of type function"))
+	}
+	safe, add, rem, bigint := parseRandomPrimeOptions(runtime, optsVal)
+	setImmediate := runtime.Get("setImmediate")
+	if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
+		asyncCallback := func(goja.FunctionCall) goja.Value {
+			var errVal goja.Value = goja.Null()
+			var resVal goja.Value = goja.Null()
+			defer func() {
+				_, _ = cbFunc(goja.Undefined(), errVal, resVal)
+			}()
+			p, err := generateRandomPrime(size, safe, add, rem)
+			if err != nil {
+				errVal = runtime.NewGoError(err)
+				return goja.Undefined()
+			}
+			if bigint {
+				resVal = runtime.ToValue(p)
+			} else {
+				// Node.js v25.0.0 默认返回 ArrayBuffer
+				resVal = runtime.ToValue(runtime.NewArrayBuffer(p.Bytes()))
+			}
+			return goja.Undefined()
+		}
+		_, _ = setImmediateFn(goja.Undefined(), runtime.ToValue(asyncCallback))
+		return goja.Undefined()
+	}
+	// 无 setImmediate，降级同步执行
+	p, err := generateRandomPrime(size, safe, add, rem)
+	var errVal goja.Value = goja.Null()
+	var resVal goja.Value = goja.Null()
+	if err != nil {
+		errVal = runtime.NewGoError(err)
+	} else {
+		if bigint {
+			resVal = runtime.ToValue(p)
+		} else {
+			// Node.js v25.0.0 默认返回 ArrayBuffer
+			resVal = runtime.ToValue(runtime.NewArrayBuffer(p.Bytes()))
+		}
+	}
+	_, _ = cbFunc(goja.Undefined(), errVal, resVal)
+	return goja.Undefined()
+}
+
+func CheckPrimeSync(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
+	if len(call.Arguments) == 0 {
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"candidate\" argument is required"))
+	}
+	candidateVal := call.Arguments[0]
+	var optsVal goja.Value
+	if len(call.Arguments) > 1 {
+		optsVal = call.Arguments[1]
+	}
+	checks := parseCheckPrimeOptions(runtime, optsVal)
+	if checks <= 0 {
+		checks = 20
+	}
+	n, err := valueToBigInt(runtime, candidateVal)
+	if err != nil {
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf("The \"candidate\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, DataView, or bigint. %v", err)))
+	}
+	// 检查是否为负数（BigInt 负数应抛出错误）
+	if n.Sign() < 0 {
+		panic(NewNodeError(runtime, "ERR_OUT_OF_RANGE", "The value of \"candidate\" is out of range. It must be >= 0. Received a negative value"))
+	}
+	// 0 返回 false
+	if n.Sign() == 0 {
+		return runtime.ToValue(false)
+	}
+	return runtime.ToValue(n.ProbablyPrime(checks))
+}
+
+func CheckPrime(call goja.FunctionCall, runtime *goja.Runtime) goja.Value {
+	if len(call.Arguments) < 2 {
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"callback\" argument is required"))
+	}
+	candidateVal := call.Arguments[0]
+	var optsVal goja.Value
+	var cbVal goja.Value
+	if len(call.Arguments) == 2 {
+		cbVal = call.Arguments[1]
+	} else {
+		optsVal = call.Arguments[1]
+		cbVal = call.Arguments[2]
+	}
+	cbFunc, ok := goja.AssertFunction(cbVal)
+	if !ok {
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", "The \"callback\" argument must be of type function"))
+	}
+
+	// 参数验证必须同步进行（如果参数类型错误应立即抛出）
+	checks := parseCheckPrimeOptions(runtime, optsVal)
+	if checks <= 0 {
+		checks = 20
+	}
+
+	// 同步验证 candidate 参数类型（类型错误应同步抛出）
+	n, err := valueToBigInt(runtime, candidateVal)
+	if err != nil {
+		panic(NewNodeError(runtime, "ERR_INVALID_ARG_TYPE", fmt.Sprintf("The \"candidate\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, DataView, or bigint. %v", err)))
+	}
+	// 检查负数（同步抛出）
+	if n.Sign() < 0 {
+		panic(NewNodeError(runtime, "ERR_OUT_OF_RANGE", "The value of \"candidate\" is out of range. It must be >= 0. Received a negative value"))
+	}
+
+	setImmediate := runtime.Get("setImmediate")
+	if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
+		asyncCallback := func(goja.FunctionCall) goja.Value {
+			var errVal goja.Value = goja.Null()
+			var resVal goja.Value
+			// n 已经验证通过，直接使用
+			if n.Sign() == 0 {
+				resVal = runtime.ToValue(false)
+			} else {
+				resVal = runtime.ToValue(n.ProbablyPrime(checks))
+			}
+			_, _ = cbFunc(goja.Undefined(), errVal, resVal)
+			return goja.Undefined()
+		}
+		_, _ = setImmediateFn(goja.Undefined(), runtime.ToValue(asyncCallback))
+		return goja.Undefined()
+	}
+	// 无 setImmediate，降级同步执行
+	var errVal goja.Value = goja.Null()
+	var resVal goja.Value
+	if n.Sign() == 0 {
+		resVal = runtime.ToValue(false)
+	} else {
+		resVal = runtime.ToValue(n.ProbablyPrime(checks))
+	}
+	_, _ = cbFunc(goja.Undefined(), errVal, resVal)
+	return goja.Undefined()
 }

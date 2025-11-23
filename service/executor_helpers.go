@@ -648,9 +648,18 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 
 			defer func() {
 				if r := recover(); r != nil {
+					buf := make([]byte, 8192)
+					stackSize := goruntime.Stack(buf, false)
+					stackTrace := string(buf[:stackSize])
+
+					utils.Error("EventLoop 捕获到panic",
+						zap.Any("panic_value", r),
+						zap.String("stack_trace", stackTrace))
+
 					finalError = &model.ExecutionError{
 						Type:    "RuntimeError",
 						Message: fmt.Sprintf("代码执行panic: %v", r),
+						Stack:   stackTrace,
 					}
 				}
 			}()

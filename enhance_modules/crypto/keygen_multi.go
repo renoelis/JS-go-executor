@@ -109,10 +109,10 @@ func CreateKeyObject(runtime *goja.Runtime, key interface{}, keyType string, isP
 	case "rsa", "rsa-pss":
 		if rsaKey, ok := key.(*rsa.PrivateKey); ok {
 			details.Set("modulusLength", rsaKey.N.BitLen())
-			details.Set("publicExponent", int64(rsaKey.E))
+			details.Set("publicExponent", runtime.ToValue(big.NewInt(int64(rsaKey.E))))
 		} else if rsaPub, ok := key.(*rsa.PublicKey); ok {
 			details.Set("modulusLength", rsaPub.N.BitLen())
-			details.Set("publicExponent", int64(rsaPub.E))
+			details.Set("publicExponent", runtime.ToValue(big.NewInt(int64(rsaPub.E))))
 		}
 	case "ec":
 		var curveName string
@@ -211,6 +211,131 @@ func CreateKeyObject(runtime *goja.Runtime, key interface{}, keyType string, isP
 		return EncodePrivateKey(runtime, key, options, keyType)
 	})
 
+	// equals(otherKey) - 比较非对称 KeyObject 是否等价
+	keyObj.Set("equals", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			return runtime.ToValue(false)
+		}
+
+		otherObj, ok := call.Arguments[0].(*goja.Object)
+		if !ok || otherObj == nil {
+			return runtime.ToValue(false)
+		}
+
+		// 自反性：同一对象直接返回 true
+		if otherObj == keyObj {
+			return runtime.ToValue(true)
+		}
+
+		// type / asymmetricKeyType 必须一致
+		otherType := strings.ToLower(SafeGetString(otherObj.Get("type")))
+		if otherType != keyObjType {
+			return runtime.ToValue(false)
+		}
+		otherAsym := strings.ToLower(SafeGetString(otherObj.Get("asymmetricKeyType")))
+		if otherAsym != strings.ToLower(keyType) {
+			return runtime.ToValue(false)
+		}
+
+		lowerKeyType := strings.ToLower(keyType)
+
+		// 特殊处理 X25519/X448: 直接比较公钥字节
+		if lowerKeyType == "x25519" || lowerKeyType == "x448" {
+			selfKey := keyObj.Get("_key")
+			otherKeyVal := otherObj.Get("_key")
+			if selfKey != nil && otherKeyVal != nil &&
+				!goja.IsUndefined(selfKey) && !goja.IsUndefined(otherKeyVal) &&
+				!goja.IsNull(selfKey) && !goja.IsNull(otherKeyVal) {
+				selfExport := selfKey.Export()
+				otherExport := otherKeyVal.Export()
+				selfBytes, ok1 := selfExport.([]byte)
+				otherBytes, ok2 := otherExport.([]byte)
+				if ok1 && ok2 {
+					if len(selfBytes) != len(otherBytes) {
+						return runtime.ToValue(false)
+					}
+					for i := range selfBytes {
+						if selfBytes[i] != otherBytes[i] {
+							return runtime.ToValue(false)
+						}
+					}
+					return runtime.ToValue(true)
+				}
+			}
+		}
+
+		// 特殊处理 EC: 直接比较椭圆曲线公钥坐标
+		if lowerKeyType == "ec" {
+			selfKey := keyObj.Get("_key")
+			otherKeyVal := otherObj.Get("_key")
+			if selfKey != nil && otherKeyVal != nil &&
+				!goja.IsUndefined(selfKey) && !goja.IsUndefined(otherKeyVal) &&
+				!goja.IsNull(selfKey) && !goja.IsNull(otherKeyVal) {
+				selfExport := selfKey.Export()
+				otherExport := otherKeyVal.Export()
+
+				var selfPub, otherPub *ecdsa.PublicKey
+				if pub, ok := selfExport.(*ecdsa.PublicKey); ok {
+					selfPub = pub
+				} else if priv, ok := selfExport.(*ecdsa.PrivateKey); ok {
+					selfPub = &priv.PublicKey
+				}
+				if pub, ok := otherExport.(*ecdsa.PublicKey); ok {
+					otherPub = pub
+				} else if priv, ok := otherExport.(*ecdsa.PrivateKey); ok {
+					otherPub = &priv.PublicKey
+				}
+				if selfPub != nil && otherPub != nil {
+					// 比较曲线名称
+					if selfPub.Curve.Params().Name != otherPub.Curve.Params().Name {
+						return runtime.ToValue(false)
+					}
+					// 比较坐标
+					if selfPub.X.Cmp(otherPub.X) != 0 || selfPub.Y.Cmp(otherPub.Y) != 0 {
+						return runtime.ToValue(false)
+					}
+					return runtime.ToValue(true)
+				}
+			}
+		}
+
+		// 调用 export({ type, format: 'pem' }) 生成规范 PEM 再比较
+		getPEM := func(obj *goja.Object) (string, error) {
+			exportVal := obj.Get("export")
+			exportFn, ok := goja.AssertFunction(exportVal)
+			if !ok {
+				return "", fmt.Errorf("export is not a function")
+			}
+			opts := runtime.NewObject()
+			opts.Set("format", "pem")
+			t := strings.ToLower(SafeGetString(obj.Get("type")))
+			if t == "public" {
+				opts.Set("type", "spki")
+			} else if t == "private" {
+				opts.Set("type", "pkcs8")
+			}
+			res, err := exportFn(obj, opts)
+			if err != nil {
+				return "", err
+			}
+			return res.String(), nil
+		}
+
+		selfPEM, err := getPEM(keyObj)
+		if err != nil {
+			return runtime.ToValue(false)
+		}
+		otherPEM, err := getPEM(otherObj)
+		if err != nil {
+			return runtime.ToValue(false)
+		}
+
+		return runtime.ToValue(selfPEM == otherPEM)
+	})
+
+	// 使属性不可变（与 Node.js 行为一致）
+	MakeKeyObjectPropertiesImmutable(runtime, keyObj)
+
 	return keyObj
 }
 
@@ -266,7 +391,8 @@ func GenerateECKeyPair(runtime *goja.Runtime, options *goja.Object) (goja.Value,
 	case "secp521r1", "P-521":
 		privateKey, err = ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 	default:
-		panic(runtime.NewGoError(fmt.Errorf("invalid or unknown EC curve name: '%s'. Supported curves: prime256v1, P-256, secp256r1, secp256k1, secp384r1, P-384, secp521r1, P-521", namedCurve)))
+		// 与 Node.js 行为对齐：无效 namedCurve 抛 TypeError
+		panic(runtime.NewTypeError(fmt.Sprintf("unsupported curve '%s'", namedCurve)))
 	}
 
 	if err != nil {
@@ -488,7 +614,12 @@ func GenerateDSAKeyPair(runtime *goja.Runtime, options *goja.Object) (goja.Value
 	modulusLength := int(modulusLengthVal.ToInteger())
 
 	// 获取 divisorLength (可选) - 严格类型验证
-	divisorLength := 256 // 默认值
+	// Node.js 行为：当未显式提供 divisorLength 时，根据 modulusLength 使用匹配的标准组合：
+	// - 1024 -> 160
+	// - 2048 -> 256
+	// - 3072 -> 256
+	// 仅当用户显式提供 divisorLength 时才覆盖默认值
+	divisorLength := 0
 	divisorLengthVal := options.Get("divisorLength")
 	if divisorLengthVal != nil && !goja.IsUndefined(divisorLengthVal) && !goja.IsNull(divisorLengthVal) {
 		// 验证是否为数字类型
@@ -510,6 +641,18 @@ func GenerateDSAKeyPair(runtime *goja.Runtime, options *goja.Object) (goja.Value
 		// 验证 divisorLength 不能为 0 或负数
 		if divisorLength <= 0 {
 			panic(runtime.NewTypeError(fmt.Sprintf("The value of \"options.divisorLength\" is out of range. It must be > 0. Received %d", divisorLength)))
+		}
+	} else {
+		// 未显式提供 divisorLength，根据 modulusLength 选择标准默认值
+		switch modulusLength {
+		case 1024:
+			divisorLength = 160
+		case 2048, 3072:
+			// Node.js 在 2048/3072 下默认使用 N=256
+			divisorLength = 256
+		default:
+			// 其它 modulusLength 交由后续组合校验抛错
+			divisorLength = 0
 		}
 	}
 
@@ -964,11 +1107,19 @@ func EncodePrivateKey(runtime *goja.Runtime, privateKey interface{}, encoding *g
 			panic(runtime.NewTypeError("pkcs1 编码仅适用于 RSA 密钥"))
 		}
 	} else if encType == "sec1" {
-		// SEC1 适用于 EC
+		// SEC1 仅适用于 EC 私钥
 		if ecPriv, ok := privateKey.(*ecdsa.PrivateKey); ok {
-			derBytes, err = x509.MarshalECPrivateKey(ecPriv)
-			if err != nil {
-				panic(runtime.NewGoError(fmt.Errorf("编码EC私钥失败: %w", err)))
+			// Go 标准库 x509.MarshalECPrivateKey 不支持 secp256k1，需要走自定义编码
+			if ecPriv.Curve == btcec.S256() {
+				derBytes, err = MarshalSecp256k1PrivateKeySEC1(ecPriv)
+				if err != nil {
+					panic(runtime.NewGoError(fmt.Errorf("编码secp256k1 EC私钥失败: %w", err)))
+				}
+			} else {
+				derBytes, err = x509.MarshalECPrivateKey(ecPriv)
+				if err != nil {
+					panic(runtime.NewGoError(fmt.Errorf("编码EC私钥失败: %w", err)))
+				}
 			}
 		} else {
 			panic(runtime.NewTypeError("sec1 编码仅适用于 EC 密钥"))
@@ -1005,16 +1156,23 @@ func EncodePrivateKey(runtime *goja.Runtime, privateKey interface{}, encoding *g
 		cipher := safeGetString(cipherVal, "cipher", runtime)
 		passphrase := safeGetString(passphraseVal, "passphrase", runtime)
 
-		// 验证 cipher 是否有效
-		pemCipher, isValid := CipherToPEMCipher(cipher)
-		if !isValid {
-			panic(runtime.NewGoError(fmt.Errorf("Unknown cipher: %s", cipher)))
-		}
+		if encType == "pkcs8" {
+			// PKCS#8 使用本地 PBES2 加密实现，与 DecryptPKCS8PrivateKeyLocal 完全对齐
+			pemBlock, err = encryptPEMBlock(pemBlock, cipher, passphrase)
+			if err != nil {
+				panic(runtime.NewGoError(err))
+			}
+		} else {
+			// PKCS1/SEC1 仍然使用传统 PEM 加密（Proc-Type + DEK-Info）
+			pemCipher, isValid := CipherToPEMCipher(cipher)
+			if !isValid {
+				panic(runtime.NewGoError(fmt.Errorf("Unknown cipher: %s", cipher)))
+			}
 
-		// 将密码短语转换为字节，使用 ENCRYPTED PRIVATE KEY 作为类型
-		pemBlock, err = x509.EncryptPEMBlock(rand.Reader, "ENCRYPTED PRIVATE KEY", pemBlock.Bytes, []byte(passphrase), pemCipher)
-		if err != nil {
-			panic(runtime.NewGoError(fmt.Errorf("加密私钥失败: %w", err)))
+			pemBlock, err = x509.EncryptPEMBlock(rand.Reader, pemBlock.Type, pemBlock.Bytes, []byte(passphrase), pemCipher)
+			if err != nil {
+				panic(runtime.NewGoError(fmt.Errorf("加密私钥失败: %w", err)))
+			}
 		}
 	}
 
@@ -1258,40 +1416,90 @@ type DHPrivateKey struct {
 	Y          *big.Int // 对应的公钥值
 }
 
-// generateSafePrime 使用标准 DH 参数组（RFC 3526）
-// 这比动态生成 Sophie Germain 素数快得多
+// generateSafePrime 动态生成安全素数（与 Node.js 行为一致）
+// 安全素数：p 是素数，且 (p-1)/2 也是素数（Sophie Germain prime）
 func generateSafePrime(bits int) (*big.Int, error) {
-	// 使用 RFC 3526 定义的标准 DH 参数
-	// 这些是预先计算好的安全素数
+	if bits < 512 {
+		return nil, fmt.Errorf("素数长度必须至少为 512 位")
+	}
+
+	// 对于常用的标准长度，优先使用 RFC 定义的预计算素数（速度更快）
+	if p := getStandardDHPrime(bits); p != nil {
+		return p, nil
+	}
+
+	// 其他长度动态生成安全素数
+	return generateSophieGermainPrime(bits)
+}
+
+// getStandardDHPrime 返回标准 RFC 定义的 DH 素数（如果存在）
+func getStandardDHPrime(bits int) *big.Int {
 	switch bits {
-	case 512:
-		// RFC 2409 - 512-bit MODP Group (Group 1)
-		// 注意：512位密钥安全性较低，不建议在生产环境使用
-		p, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381FFFFFFFFFFFFFFFF", 16)
-		return p, nil
+	case 768:
+		// RFC 2409 - 768-bit MODP Group (Oakley Group 1)
+		p, _ := new(big.Int).SetString("1552518092300708935130918131258481755631334049434514313202351194902966239949102107258669453876591642442910007680288864229150803718918046342632727613031282983744380820890196288509170691316593175367469551763119843371637221007210577919", 10)
+		return p
 	case 1024:
-		// RFC 3526 - 1024-bit MODP Group (Group 2)
-		p, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381FFFFFFFFFFFFFFFF", 16)
-		return p, nil
+		// RFC 2409 - 1024-bit MODP Group (Oakley Group 2)
+		p, _ := new(big.Int).SetString("179769313486231590770839156793787453197860296048756011706444423684197180216158519368947833795864925541502180565485980503646440548199239100050792877003355816639229553136239076508735759914822574862575007425302077447712589550957937778424442426617334727629299387668709205606050270810842907692932019128194467627007", 10)
+		return p
 	case 1536:
 		// RFC 3526 - 1536-bit MODP Group (Group 5)
-		p, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA237327FFFFFFFFFFFFFFFF", 16)
-		return p, nil
+		p, _ := new(big.Int).SetString("2410312426921032588552076022197566074856950548502459942654116941958108831682612228890093858261341614673227141477904012196503648957050582631942730706805009223062734745341073406696246014589361659774041027169249453200378729434170325843778659198143763193776859869524088940195577346119843545301547043747207749969763750084308926339295559968882457872412993810129130294592999947926365264059284647209730384947211681434464714438488520940127459844288859336526896320919633919", 10)
+		return p
 	case 2048:
 		// RFC 3526 - 2048-bit MODP Group (Group 14)
 		p, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF", 16)
-		return p, nil
+		return p
 	case 3072:
 		// RFC 3526 - 3072-bit MODP Group (Group 15)
 		p, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AAAC42DAD33170D04507A33A85521ABDF1CBA64ECFB850458DBEF0A8AEA71575D060C7DB3970F85A6E1E4C7ABF5AE8CDB0933D71E8C94E04A25619DCEE3D2261AD2EE6BF12FFA06D98A0864D87602733EC86A64521F2B18177B200CBBE117577A615D6C770988C0BAD946E208E24FA074E5AB3143DB5BFCE0FD108E4B82D120A93AD2CAFFFFFFFFFFFFFFFF", 16)
-		return p, nil
+		return p
 	case 4096:
 		// RFC 3526 - 4096-bit MODP Group (Group 16)
 		p, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AAAC42DAD33170D04507A33A85521ABDF1CBA64ECFB850458DBEF0A8AEA71575D060C7DB3970F85A6E1E4C7ABF5AE8CDB0933D71E8C94E04A25619DCEE3D2261AD2EE6BF12FFA06D98A0864D87602733EC86A64521F2B18177B200CBBE117577A615D6C770988C0BAD946E208E24FA074E5AB3143DB5BFCE0FD108E4B82D120A92108011A723C12A787E6D788719A10BDBA5B2699C327186AF4E23C1A946834B6150BDA2583E9CA2AD44CE8DBBBC2DB04DE8EF92E8EFC141FBECAA6287C59474E6BC05D99B2964FA090C3A2233BA186515BE7ED1F612970CEE2D7AFB81BDD762170481CD0069127D5B05AA993B4EA988D8FDDC186FFB7DC90A6C08F4DF435C934063199FFFFFFFFFFFFFFFF", 16)
-		return p, nil
+		return p
 	default:
-		return nil, fmt.Errorf("不支持的 DH 素数长度: %d (支持: 512, 1024, 1536, 2048, 3072, 4096)", bits)
+		return nil
 	}
+}
+
+// generateSophieGermainPrime 动态生成 Sophie Germain 素数
+// 这是一个安全素数：p 是素数，且 q = (p-1)/2 也是素数
+func generateSophieGermainPrime(bits int) (*big.Int, error) {
+	if bits < 512 {
+		return nil, fmt.Errorf("素数长度必须至少为 512 位")
+	}
+
+	// 使用 crypto/rand 生成高质量随机数
+	one := big.NewInt(1)
+	two := big.NewInt(2)
+
+	// 最大尝试次数，防止无限循环
+	maxAttempts := bits * 5
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// 生成一个随机的 (bits-1) 位素数 q
+		q, err := rand.Prime(rand.Reader, bits-1)
+		if err != nil {
+			return nil, fmt.Errorf("生成随机素数失败: %w", err)
+		}
+
+		// 计算 p = 2q + 1
+		p := new(big.Int).Mul(q, two)
+		p.Add(p, one)
+
+		// 检查 p 是否是素数
+		// 使用 Miller-Rabin 素性测试，20 轮足够确保准确性
+		if p.ProbablyPrime(20) {
+			// 确保 p 的位数正确
+			if p.BitLen() == bits {
+				return p, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("在 %d 次尝试后未能生成 %d 位安全素数", maxAttempts, bits)
 }
 
 // EncodeDHPublicKey 编码 DH 公钥
@@ -1494,6 +1702,43 @@ func MarshalSecp256k1PublicKeyPKIX(pub *ecdsa.PublicKey) ([]byte, error) {
 	}
 
 	return asn1.Marshal(spki)
+}
+
+// MarshalSecp256k1PrivateKeySEC1 将 secp256k1 私钥编码为 SEC1 ECPrivateKey 格式
+func MarshalSecp256k1PrivateKeySEC1(priv *ecdsa.PrivateKey) ([]byte, error) {
+	// 私钥值（32字节）
+	privKeyBytes := priv.D.FillBytes(make([]byte, 32))
+
+	// 公钥（未压缩格式 04 || X || Y）
+	pubKeyBytes := make([]byte, 65)
+	pubKeyBytes[0] = 0x04
+	priv.X.FillBytes(pubKeyBytes[1:33])
+	priv.Y.FillBytes(pubKeyBytes[33:65])
+
+	// SEC1 ECPrivateKey 结构
+	type ecPrivateKey struct {
+		Version    int
+		PrivateKey []byte
+		Parameters asn1.RawValue  `asn1:"optional,explicit,tag:0"`
+		PublicKey  asn1.BitString `asn1:"optional,explicit,tag:1"`
+	}
+
+	sec1 := ecPrivateKey{
+		Version:    1,
+		PrivateKey: privKeyBytes,
+		Parameters: asn1.RawValue{
+			Class:      2, // Context-specific
+			Tag:        0,
+			IsCompound: true,
+			Bytes:      mustMarshalASN1(oidSecp256k1),
+		},
+		PublicKey: asn1.BitString{
+			Bytes:     pubKeyBytes,
+			BitLength: len(pubKeyBytes) * 8,
+		},
+	}
+
+	return asn1.Marshal(sec1)
 }
 
 // MarshalSecp256k1PrivateKeyPKCS8 将 secp256k1 私钥编码为 PKCS#8 格式
