@@ -987,8 +987,8 @@ func (e *JSExecutor) validateCode(code string) error {
 	// 🔥 统一清理一次（避免重复调用，节省 ~100μs）
 	cleanedCode := e.removeStringsAndComments(code)
 
-	// 2. return 语句检查（使用清理后的代码）
-	if err := e.validateReturnStatementCleaned(cleanedCode); err != nil {
+	// 2. return 语句检查（优先使用清理后的代码，必要时回退到原始代码）
+	if err := e.validateReturnWithFallback(code, cleanedCode); err != nil {
 		return err
 	}
 
@@ -1071,6 +1071,29 @@ func (e *JSExecutor) validateReturnStatementCleaned(cleanedCode string) error {
 	}
 
 	return nil
+}
+
+// validateReturnWithFallback 使用清理后的代码进行 return 校验，必要时回退到原始代码
+// 说明：
+//   - 首选 cleanedCode，避免字符串/注释中的 "return" 误判
+//   - 若 cleanedCode 中未找到 "return"，则在原始 code 中再做一次包含性检查
+//   - 这样可以规避词法清理在正则等复杂语法下的误分段导致的漏检
+func (e *JSExecutor) validateReturnWithFallback(originalCode, cleanedCode string) error {
+	// 首先使用清理后的代码做精确检查
+	if strings.Contains(cleanedCode, "return") {
+		return nil
+	}
+
+	// 若清理后的代码中未发现 "return"，再退回到原始代码做一次保护性检查
+	// 注意：这里可能会放宽到字符串中的 "return"，但后续执行阶段仍会校验实际返回结果
+	if strings.Contains(originalCode, "return") {
+		return nil
+	}
+
+	return &model.ExecutionError{
+		Type:    "ValidationError",
+		Message: "代码中缺少 return 语句",
+	}
 }
 
 // removeStringsAndComments 移除字符串和注释（避免误判）

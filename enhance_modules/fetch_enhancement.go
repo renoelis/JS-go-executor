@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"flow-codeblock-go/utils"
@@ -413,8 +416,9 @@ func NewFetchEnhancerWithConfig(
 			Timeout:   requestTimeout, // 🔥 HTTP 请求超时
 			Transport: transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 10 {
-					return fmt.Errorf("stopped after 10 redirects")
+				// 允许最多 20 次重定向（与主流浏览器行为一致）
+				if len(via) >= 20 {
+					return fmt.Errorf("stopped after 20 redirects")
 				}
 				return nil
 			},
@@ -729,10 +733,17 @@ func (fe *FetchEnhancer) fetch(runtime *goja.Runtime, call goja.FunctionCall) go
 	if signal, ok := options["signal"]; ok && signal != nil {
 		if signalObj, ok := signal.(*goja.Object); ok {
 			// 🔥 修复: 从 signal 对象获取已存在的 abortChannel
-			if chVal := signalObj.Get("__abortChannel"); !goja.IsUndefined(chVal) {
-				if ch, ok := chVal.Export().(chan struct{}); ok {
-					abortCh = ch // 使用 controller 创建的 channel
-				}
+			if chVal := signalObj.Get("__abortChannel"); !goja.IsUndefined(chVal) && !goja.IsNull(chVal) {
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							utils.Error("获取 AbortSignal __abortChannel 失败", zap.Any("recover", r))
+						}
+					}()
+					if ch, ok := chVal.Export().(chan struct{}); ok && ch != nil {
+						abortCh = ch
+					}
+				}()
 			}
 		}
 	}
@@ -1049,10 +1060,16 @@ func (fe *FetchEnhancer) executeRequestAsync(req *FetchRequest) {
 		// ✅ resp.Body 的生命周期由 bodyWrapper 和双重 timer 管理
 		bodyWrapper := fe.createBodyWithCancel(resp.Body, resp.ContentLength, fe.responseReadTimeout, reqCancel)
 
+		// 提取 statusText (去掉状态码前缀，例如 "200 OK" -> "OK")
+		statusText := resp.Status
+		if len(resp.Status) > 4 && resp.Status[3] == ' ' {
+			statusText = resp.Status[4:]
+		}
+
 		req.resultCh <- FetchResult{
 			response: &ResponseData{
 				StatusCode:    resp.StatusCode,
-				Status:        resp.Status,
+				Status:        statusText,
 				Headers:       resp.Header,
 				BodyStream:    bodyWrapper, // 传递包装后的 Body
 				IsStreaming:   true,        // 总是流式
@@ -1157,6 +1174,79 @@ func (fe *FetchEnhancer) createErrorObjectWithName(runtime *goja.Runtime, err er
 	errorMsg := err.Error()
 	errorObj.Set("message", errorMsg)
 	errorObj.Set("name", errorName)
+
+	// 🔥 根据底层错误推断 Node 风格的错误码（用于 axios 网络错误兼容）
+	var code string
+
+	// 1. 超时场景：映射为 ECONNABORTED（与 axios 在 Node 下的行为一致）
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errorMsg, "请求超时") {
+		code = "ECONNABORTED"
+	} else {
+		// 2. 解包底层错误，检查是否为 DNS 错误或连接被拒绝
+		root := err
+		for {
+			unwrapped := errors.Unwrap(root)
+			if unwrapped == nil {
+				break
+			}
+			root = unwrapped
+		}
+
+		// DNS 错误：映射为 ENOTFOUND
+		var dnsErr *net.DNSError
+		if errors.As(root, &dnsErr) {
+			code = "ENOTFOUND"
+		} else {
+			msgLower := strings.ToLower(errorMsg)
+			// 连接被拒绝：优先通过错误消息中的英文提示识别
+			if strings.Contains(msgLower, "connection refused") || strings.Contains(msgLower, "connect: connection refused") {
+				code = "ECONNREFUSED"
+			} else {
+				// 🔥 进一步通过底层错误类型识别 ECONNREFUSED，避免依赖英文文案
+				// 常见结构: *url.Error -> *net.OpError -> *os.SyscallError -> syscall.Errno(ECONNREFUSED)
+				var opErr *net.OpError
+				if errors.As(root, &opErr) {
+					// 先从 OpError.Err 中解析
+					if opErr.Err != nil {
+						// 1) *os.SyscallError 包裹 syscall.Errno
+						var sysErr *os.SyscallError
+						if errors.As(opErr.Err, &sysErr) {
+							if sysErr.Err == syscall.ECONNREFUSED {
+								code = "ECONNREFUSED"
+							}
+						}
+
+						// 2) 直接的 syscall.Errno
+						var errno syscall.Errno
+						if errors.As(opErr.Err, &errno) {
+							if errno == syscall.ECONNREFUSED {
+								code = "ECONNREFUSED"
+							}
+						}
+					}
+				} else {
+					// 没有 net.OpError 包裹时，直接在 root 上尝试解析
+					var sysErr *os.SyscallError
+					if errors.As(root, &sysErr) {
+						if sysErr.Err == syscall.ECONNREFUSED {
+							code = "ECONNREFUSED"
+						}
+					} else {
+						var errno syscall.Errno
+						if errors.As(root, &errno) {
+							if errno == syscall.ECONNREFUSED {
+								code = "ECONNREFUSED"
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if code != "" {
+		errorObj.Set("code", code)
+	}
 
 	// 🔥 添加 toString 方法,确保错误信息正确显示
 	errorObj.Set("toString", func(call goja.FunctionCall) goja.Value {
@@ -2357,11 +2447,14 @@ func (sr *StreamReader) Read(size int) ([]byte, bool, error) {
 	if sr.closed {
 		return nil, true, fmt.Errorf("stream已关闭")
 	}
+	if sr.reader == nil {
+		sr.closed = true
+		return nil, true, fmt.Errorf("stream已关闭")
+	}
 
 	// 如果上次已经到达 EOF，这次直接返回 done=true
 	if sr.reachedEOF {
 		sr.closed = true
-		sr.reader.Close()
 		return nil, true, nil
 	}
 
@@ -2433,6 +2526,9 @@ func (sr *StreamReader) Close() error {
 	}
 
 	sr.closed = true
+	if sr.reader == nil {
+		return nil
+	}
 	return sr.reader.Close()
 }
 
@@ -2552,7 +2648,12 @@ func startNodeStreamReading(runtime *goja.Runtime, streamReader *StreamReader, l
 // readAllDataWithLimit 统一的缓冲读取函数（智能预分配 + 限制检查）
 // 🔥 用于 arrayBuffer(), text(), json(), blob() 等方法
 func readAllDataWithLimit(streamReader *StreamReader, maxBufferSize int64) ([]byte, error) {
-	// 🔥 智能预分配策略：基于 Content-Length + 分层预分配
+	if streamReader == nil {
+		return nil, fmt.Errorf("读取流数据失败: StreamReader 为 nil")
+	}
+	if streamReader.reader == nil {
+		return nil, fmt.Errorf("读取流数据失败: 底层 reader 为 nil")
+	}
 	var initialCapacity int
 	if streamReader.contentLength > 0 {
 		// 场景1：有 Content-Length（最优情况，90% 场景）
@@ -2924,25 +3025,37 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 	response.Set("bodyUsed", runtime.ToValue(false))
 
 	// 通用的数据获取函数：优先使用缓存，缓存不存在时读取流
+	// 🔥 增强：在读取过程中增加 panic recover，避免底层流异常直接导致 Go 进程崩溃
 	getResponseData := func() ([]byte, error) {
 		cacheOnce.Do(func() {
-			allData, err := readAllDataWithLimit(streamReader, fe.maxRespSize)
-
-			cacheMutex.Lock()
-			cachedData = allData
-			cacheError = err
-			cacheMutex.Unlock()
-
-			if err == nil {
-				// 成功读取后，更新原始 ResponseData 为缓冲模式
-				data.Body = allData
-				data.IsStreaming = false
-				data.BodyStream = nil
-			}
+			var allData []byte
+			var err error
+			defer func() {
+				if r := recover(); r != nil {
+					// 将底层 panic 转换为普通错误，交由上层 Promise.reject 处理
+					err = fmt.Errorf("读取响应流时发生内部错误: %v", r)
+					allData = nil
+				}
+				cacheMutex.Lock()
+				cachedData = allData
+				cacheError = err
+				cacheMutex.Unlock()
+				if err == nil {
+					// 成功读取后，更新原始 ResponseData 为缓冲模式
+					data.Body = allData
+					data.IsStreaming = false
+					data.BodyStream = nil
+				}
+			}()
+			allData, err = readAllDataWithLimit(streamReader, fe.maxRespSize)
 		})
 
 		cacheMutex.RLock()
 		defer cacheMutex.RUnlock()
+		if cachedData == nil && cacheError == nil {
+			// 防御性兜底：理论上不会发生，避免出现 nil + nil 的不确定状态
+			return nil, fmt.Errorf("读取响应流失败: 未知内部错误")
+		}
 		return cachedData, cacheError
 	}
 
@@ -3002,6 +3115,13 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 	response.Set("text", func(call goja.FunctionCall) goja.Value {
 		promise, resolve, reject := runtime.NewPromise()
 
+		// 防御性保护：避免 text() 内部任何 panic 直接导致 Go 进程崩溃
+		defer func() {
+			if r := recover(); r != nil {
+				reject(runtime.NewGoError(fmt.Errorf("response.text internal error: %v", r)))
+			}
+		}()
+
 		// 🔥 检查 body 是否已被使用
 		if err := checkAndMarkBodyUsed(); err != nil {
 			reject(runtime.NewTypeError(err.Error()))
@@ -3011,6 +3131,13 @@ func (fe *FetchEnhancer) createStreamingResponse(runtime *goja.Runtime, response
 		setImmediate := runtime.Get("setImmediate")
 		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
 			callback := func(call goja.FunctionCall) goja.Value {
+				// 保护异步 text 回调，防止 panic 直接打崩 go 进程
+				defer func() {
+					if r := recover(); r != nil {
+						reject(runtime.NewGoError(fmt.Errorf("response.text internal error: %v", r)))
+					}
+				}()
+
 				allData, err := getResponseData()
 				if err != nil {
 					reject(runtime.NewGoError(err))

@@ -1,6 +1,7 @@
 package enhance_modules
 
 import (
+	"flow-codeblock-go/assets"
 	"flow-codeblock-go/utils"
 	"fmt"
 	"sync"
@@ -31,6 +32,13 @@ func NewAxiosEnhancer(embeddedCode string) *AxiosEnhancer {
 // RegisterAxiosModule 注册 axios 模块到 require 系统
 func (ae *AxiosEnhancer) RegisterAxiosModule(registry *require.Registry) {
 	registry.RegisterNativeModule("axios", func(runtime *goja.Runtime, module *goja.Object) {
+		// 先加载 axios 重定向辅助模块（定义全局 __AxiosRedirectHelper）
+		if len(assets.AxiosRedirectHelperJS) > 0 {
+			if _, err := runtime.RunString(assets.AxiosRedirectHelperJS); err != nil {
+				panic(runtime.NewGoError(fmt.Errorf("加载 axios_redirect_helper.js 失败: %w", err)))
+			}
+		}
+
 		// 确保 axios 代码已编译
 		ae.compileOnce.Do(func() {
 			var err error
@@ -48,6 +56,13 @@ func (ae *AxiosEnhancer) RegisterAxiosModule(registry *require.Registry) {
 		_, err := runtime.RunProgram(ae.compiledProgram)
 		if err != nil {
 			panic(runtime.NewGoError(fmt.Errorf("加载 axios 模块失败: %w", err)))
+		}
+
+		// 加载 Form 方法补丁（postForm、putForm、patchForm）
+		if len(assets.AxiosFormMethodsJS) > 0 {
+			if _, err := runtime.RunString(assets.AxiosFormMethodsJS); err != nil {
+				panic(runtime.NewGoError(fmt.Errorf("加载 axios_form_methods.js 失败: %w", err)))
+			}
 		}
 
 		// 获取 axios 对象

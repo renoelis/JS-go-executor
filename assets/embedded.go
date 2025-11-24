@@ -10,6 +10,12 @@ var CryptoJS string
 //go:embed axios.js
 var AxiosJS string
 
+//go:embed axios_redirect_helper.js
+var AxiosRedirectHelperJS string
+
+//go:embed axios_form_methods.js
+var AxiosFormMethodsJS string
+
 //go:embed external-libs/dayjs.min.js
 var Dayjs string
 
