@@ -692,14 +692,11 @@ func CreateDOMException(runtime *goja.Runtime, message, name string) *goja.Objec
 
 // SignalState 存储 AbortSignal 的状态
 type SignalState struct {
-	aborted         bool
-	reason          goja.Value
-	abortCh         chan struct{}
-	listeners       []goja.Value            // abort 事件监听器
-	customListeners map[string][]goja.Value // 自定义事件监听器
-	onabort         goja.Value
-	listenerMutex   sync.Mutex
-	abortedMutex    sync.Mutex
+	aborted       bool
+	reason        goja.Value
+	abortCh       chan struct{}
+	listenerMutex sync.Mutex
+	abortedMutex  sync.Mutex
 }
 
 // runtimePrototypes 按 runtime 保存各类原型对象，避免跨 Runtime 污染
@@ -708,6 +705,7 @@ type runtimePrototypes struct {
 	abortControllerPrototype *goja.Object
 	domExceptionPrototype    *goja.Object
 	eventPrototype           *goja.Object
+	eventTargetPrototype     *goja.Object
 }
 
 var (
@@ -736,6 +734,344 @@ func getRuntimePrototypes(runtime *goja.Runtime) *runtimePrototypes {
 type eventOptions struct {
 	bubbles    bool
 	cancelable bool
+}
+
+func setFunctionNameAndLength(runtime *goja.Runtime, fnVal goja.Value, name string, length int) {
+	fnObj := fnVal.ToObject(runtime)
+	if fnObj == nil {
+		return
+	}
+	if name != "" {
+		fnObj.DefineDataProperty("name", runtime.ToValue(name), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+	}
+	if length >= 0 {
+		fnObj.DefineDataProperty("length", runtime.ToValue(length), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+	}
+}
+
+func getSignalStateFromThis(runtime *goja.Runtime, thisVal goja.Value, method string) (*SignalState, *goja.Object) {
+	obj := thisVal.ToObject(runtime)
+	if obj == nil {
+		panic(runtime.NewTypeError("Illegal invocation"))
+	}
+	stateVal := obj.Get("__signalState")
+	if stateVal == nil || goja.IsUndefined(stateVal) || goja.IsNull(stateVal) {
+		panic(runtime.NewTypeError(fmt.Sprintf("%s called on incompatible receiver", method)))
+	}
+	state, ok := stateVal.Export().(*SignalState)
+	if !ok || state == nil {
+		panic(runtime.NewTypeError(fmt.Sprintf("%s called on incompatible receiver", method)))
+	}
+	return state, obj
+}
+
+func shouldStopEvent(ev *goja.Object) bool {
+	stop := ev.Get("__stopImmediate")
+	return stop != nil && !goja.IsUndefined(stop) && stop.ToBoolean()
+}
+
+type eventListenerStore map[string][]goja.Value
+
+type eventListenerData struct {
+	listeners eventListenerStore
+}
+
+func getEventTargetMutex(runtime *goja.Runtime, target *goja.Object) *sync.Mutex {
+	if target == nil {
+		return &sync.Mutex{}
+	}
+	mutexVal := target.Get("__eventListenerMutex")
+	if mutexVal != nil && !goja.IsUndefined(mutexVal) && !goja.IsNull(mutexVal) {
+		if m, ok := mutexVal.Export().(*sync.Mutex); ok && m != nil {
+			return m
+		}
+	}
+	newMutex := &sync.Mutex{}
+	target.Set("__eventListenerMutex", newMutex)
+	return newMutex
+}
+
+func ensureEventListenerStore(runtime *goja.Runtime, target *goja.Object) eventListenerStore {
+	if target == nil {
+		return make(eventListenerStore)
+	}
+	storeVal := target.Get("__eventTargetListeners")
+	if storeVal != nil && !goja.IsUndefined(storeVal) && !goja.IsNull(storeVal) {
+		if data, ok := storeVal.Export().(*eventListenerData); ok && data != nil {
+			if data.listeners == nil {
+				data.listeners = make(eventListenerStore)
+			}
+			return data.listeners
+		}
+	}
+	data := &eventListenerData{
+		listeners: make(eventListenerStore),
+	}
+	target.Set("__eventTargetListeners", data)
+	return data.listeners
+}
+
+func parseListenerOptions(runtime *goja.Runtime, options goja.Value) (bool, *goja.Object) {
+	if options == nil || goja.IsUndefined(options) || goja.IsNull(options) {
+		return false, nil
+	}
+	if obj, ok := options.(*goja.Object); ok {
+		once := false
+		var signalObj *goja.Object
+		if onceVal := obj.Get("once"); onceVal != nil && !goja.IsUndefined(onceVal) && !goja.IsNull(onceVal) {
+			once = onceVal.ToBoolean()
+		}
+		if sigVal := obj.Get("signal"); sigVal != nil && !goja.IsUndefined(sigVal) && !goja.IsNull(sigVal) {
+			so, ok := sigVal.(*goja.Object)
+			if !ok || so == nil {
+				panic(runtime.NewTypeError("signal is not a valid AbortSignal"))
+			}
+			isSignal := so.Get("__isAbortSignal")
+			if isSignal == nil || goja.IsUndefined(isSignal) || goja.IsNull(isSignal) || !isSignal.ToBoolean() {
+				panic(runtime.NewTypeError("signal is not a valid AbortSignal"))
+			}
+			if aborted := so.Get("aborted"); aborted != nil && aborted.ToBoolean() {
+				return false, so
+			}
+			signalObj = so
+		}
+		return once, signalObj
+	}
+	// boolean useCapture
+	return false, nil
+}
+
+func attachSignalCleanup(runtime *goja.Runtime, listener goja.Value, target *goja.Object, eventType string, optionsSignal *goja.Object) {
+	if optionsSignal == nil || listener == nil || goja.IsUndefined(listener) || goja.IsNull(listener) {
+		return
+	}
+	var cleanupCallable goja.Value
+	cleanupFunc := func() {
+		removeEventTargetListenerInternal(runtime, target, eventType, listener)
+		if removeFn, ok := goja.AssertFunction(optionsSignal.Get("removeEventListener")); ok {
+			removeFn(optionsSignal, runtime.ToValue("abort"), cleanupCallable)
+		}
+	}
+	cleanupCallable = runtime.ToValue(func(goja.FunctionCall) goja.Value {
+		cleanupFunc()
+		return goja.Undefined()
+	})
+	listenerObj := listener.ToObject(runtime)
+	listenerObj.Set("__signalCleanup", cleanupCallable)
+	listenerObj.Set("__signalCleanupTarget", optionsSignal)
+
+	if addFn, ok := goja.AssertFunction(optionsSignal.Get("addEventListener")); ok {
+		opts := runtime.NewObject()
+		opts.Set("once", true)
+		addFn(optionsSignal, runtime.ToValue("abort"), cleanupCallable, opts)
+	}
+}
+
+func cleanupListenerSignalBinding(runtime *goja.Runtime, listener goja.Value) {
+	if listener == nil || goja.IsUndefined(listener) || goja.IsNull(listener) {
+		return
+	}
+	obj := listener.ToObject(runtime)
+	if obj == nil {
+		return
+	}
+	cleanup := obj.Get("__signalCleanup")
+	targetVal := obj.Get("__signalCleanupTarget")
+	if cleanup == nil || goja.IsUndefined(cleanup) || goja.IsNull(cleanup) || targetVal == nil || goja.IsUndefined(targetVal) || goja.IsNull(targetVal) {
+		return
+	}
+	targetObj, _ := targetVal.(*goja.Object)
+	if targetObj == nil {
+		return
+	}
+	if removeFn, ok := goja.AssertFunction(targetObj.Get("removeEventListener")); ok {
+		removeFn(targetObj, runtime.ToValue("abort"), cleanup)
+	}
+	obj.Delete("__signalCleanup")
+	obj.Delete("__signalCleanupTarget")
+}
+
+func addEventTargetListener(runtime *goja.Runtime, call goja.FunctionCall, prototype *goja.Object) goja.Value {
+	thisObj := call.This.ToObject(runtime)
+	if thisObj == nil {
+		panic(runtime.NewTypeError("Illegal invocation"))
+	}
+	if len(call.Arguments) < 2 {
+		return goja.Undefined()
+	}
+	eventType := call.Arguments[0].String()
+	listener := call.Arguments[1]
+	if goja.IsUndefined(listener) || goja.IsNull(listener) {
+		return goja.Undefined()
+	}
+	once := false
+	var optionsSignal *goja.Object
+	if len(call.Arguments) >= 3 {
+		once, optionsSignal = parseListenerOptions(runtime, call.Arguments[2])
+	}
+	if optionsSignal != nil {
+		if aborted := optionsSignal.Get("aborted"); aborted != nil && aborted.ToBoolean() {
+			return goja.Undefined()
+		}
+	}
+
+	mutex := getEventTargetMutex(runtime, thisObj)
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	store := ensureEventListenerStore(runtime, thisObj)
+	current := store[eventType]
+	for _, l := range current {
+		if isSameListener(runtime, l, listener) {
+			return goja.Undefined()
+		}
+	}
+
+	var stored goja.Value
+	if once {
+		var wrapped goja.Value
+		wrapped = runtime.ToValue(func(innerCall goja.FunctionCall) goja.Value {
+			removeEventTargetListenerInternal(runtime, thisObj, eventType, wrapped)
+			if fn, ok := goja.AssertFunction(listener); ok {
+				fn(thisObj, innerCall.Arguments...)
+			}
+			return goja.Undefined()
+		})
+		wrapped.ToObject(runtime).Set("__originalListener", listener)
+		stored = wrapped
+	} else {
+		stored = listener
+	}
+
+	current = append(current, stored)
+	store[eventType] = current
+
+	if optionsSignal != nil {
+		attachSignalCleanup(runtime, stored, thisObj, eventType, optionsSignal)
+	}
+
+	return goja.Undefined()
+}
+
+func removeEventTargetListenerInternal(runtime *goja.Runtime, target *goja.Object, eventType string, targetListener goja.Value) {
+	if target == nil || targetListener == nil || eventType == "" {
+		return
+	}
+	mutex := getEventTargetMutex(runtime, target)
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	store := ensureEventListenerStore(runtime, target)
+	current := store[eventType]
+	if len(current) == 0 {
+		return
+	}
+	changed := false
+	for i := 0; i < len(current); i++ {
+		if isSameListener(runtime, current[i], targetListener) {
+			cleanupListenerSignalBinding(runtime, current[i])
+			current = append(current[:i], current[i+1:]...)
+			i--
+			changed = true
+		}
+	}
+	if changed {
+		if len(current) == 0 {
+			delete(store, eventType)
+		} else {
+			store[eventType] = current
+		}
+	}
+}
+
+func removeEventTargetListener(runtime *goja.Runtime, call goja.FunctionCall, prototype *goja.Object) goja.Value {
+	thisObj := call.This.ToObject(runtime)
+	if thisObj == nil {
+		panic(runtime.NewTypeError("Illegal invocation"))
+	}
+	if len(call.Arguments) < 2 {
+		return goja.Undefined()
+	}
+	eventType := call.Arguments[0].String()
+	targetListener := call.Arguments[1]
+	if goja.IsUndefined(targetListener) || goja.IsNull(targetListener) {
+		return goja.Undefined()
+	}
+	removeEventTargetListenerInternal(runtime, thisObj, eventType, targetListener)
+	return goja.Undefined()
+}
+
+func dispatchEventTargetEvent(runtime *goja.Runtime, call goja.FunctionCall, prototype *goja.Object) goja.Value {
+	thisObj := call.This.ToObject(runtime)
+	if thisObj == nil {
+		panic(runtime.NewTypeError("Illegal invocation"))
+	}
+	if len(call.Arguments) == 0 {
+		panic(runtime.NewTypeError("Failed to execute 'dispatchEvent': 1 argument required"))
+	}
+
+	eventVal := call.Arguments[0]
+	eventObj, ok := eventVal.(*goja.Object)
+	if !ok {
+		panic(runtime.NewTypeError("Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'"))
+	}
+
+	eventTypeVal := eventObj.Get("type")
+	if goja.IsUndefined(eventTypeVal) || goja.IsNull(eventTypeVal) {
+		return runtime.ToValue(true)
+	}
+	eventType := eventTypeVal.String()
+	eventObj.Set("target", thisObj)
+	eventObj.Set("currentTarget", thisObj)
+	eventObj.Set("srcElement", thisObj)
+
+	if goja.IsUndefined(eventObj.Get("cancelable")) {
+		eventObj.Set("cancelable", false)
+	}
+	if goja.IsUndefined(eventObj.Get("defaultPrevented")) {
+		eventObj.Set("defaultPrevented", false)
+	}
+	if goja.IsUndefined(eventObj.Get("__stopImmediate")) {
+		eventObj.Set("__stopImmediate", false)
+	}
+
+	mutex := getEventTargetMutex(runtime, thisObj)
+	mutex.Lock()
+	store := ensureEventListenerStore(runtime, thisObj)
+	listenersCopy := make([]goja.Value, len(store[eventType]))
+	copy(listenersCopy, store[eventType])
+	mutex.Unlock()
+
+	handlerName := "on" + eventType
+	if handler := thisObj.Get(handlerName); handler != nil && !goja.IsUndefined(handler) && !goja.IsNull(handler) {
+		if fn, ok := goja.AssertFunction(handler); ok {
+			fn(thisObj, eventObj)
+			if shouldStopEvent(eventObj) {
+				cancelable := eventObj.Get("cancelable").ToBoolean()
+				result := true
+				if cancelable && eventObj.Get("defaultPrevented").ToBoolean() {
+					result = false
+				}
+				return runtime.ToValue(result)
+			}
+		}
+	}
+
+	for _, listener := range listenersCopy {
+		if fn, ok := goja.AssertFunction(listener); ok {
+			fn(thisObj, eventObj)
+		}
+		if shouldStopEvent(eventObj) {
+			break
+		}
+	}
+
+	cancelable := eventObj.Get("cancelable").ToBoolean()
+	result := true
+	if cancelable && eventObj.Get("defaultPrevented").ToBoolean() {
+		result = false
+	}
+	return runtime.ToValue(result)
 }
 
 // isSameListener 判断存量监听器与目标监听器是否相同（支持 once 包装器）
@@ -798,6 +1134,9 @@ func createEventObject(runtime *goja.Runtime, eventType string, opts eventOption
 func CreateEventConstructor(runtime *goja.Runtime) goja.Value {
 	protos := getRuntimePrototypes(runtime)
 	protos.eventPrototype = runtime.NewObject()
+	if protos.eventTargetPrototype == nil {
+		protos.eventTargetPrototype = runtime.NewObject()
+	}
 
 	protos.eventPrototype.Set("preventDefault", func(call goja.FunctionCall) goja.Value {
 		obj := call.This.ToObject(runtime)
@@ -849,7 +1188,44 @@ func CreateEventConstructor(runtime *goja.Runtime) goja.Value {
 	eventCtorObj.Set("prototype", protos.eventPrototype)
 	eventCtorObj.DefineDataProperty("name", runtime.ToValue("Event"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
 
+	eventTargetPrototype := protos.eventTargetPrototype
+	eventTargetPrototype.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
+		return addEventTargetListener(runtime, call, eventTargetPrototype)
+	})
+	setFunctionNameAndLength(runtime, eventTargetPrototype.Get("addEventListener"), "addEventListener", 2)
+
+	eventTargetPrototype.Set("removeEventListener", func(call goja.FunctionCall) goja.Value {
+		return removeEventTargetListener(runtime, call, eventTargetPrototype)
+	})
+	setFunctionNameAndLength(runtime, eventTargetPrototype.Get("removeEventListener"), "removeEventListener", 2)
+
+	eventTargetPrototype.Set("dispatchEvent", func(call goja.FunctionCall) goja.Value {
+		return dispatchEventTargetEvent(runtime, call, eventTargetPrototype)
+	})
+	setFunctionNameAndLength(runtime, eventTargetPrototype.Get("dispatchEvent"), "dispatchEvent", 1)
+
 	return eventConstructor
+}
+
+// CreateEventTargetConstructor 创建 EventTarget 构造函数
+func CreateEventTargetConstructor(runtime *goja.Runtime) goja.Value {
+	protos := getRuntimePrototypes(runtime)
+	if protos.eventTargetPrototype == nil {
+		protos.eventTargetPrototype = runtime.NewObject()
+	}
+
+	eventTargetConstructor := runtime.ToValue(func(call goja.ConstructorCall) *goja.Object {
+		obj := runtime.NewObject()
+		obj.SetPrototype(protos.eventTargetPrototype)
+		obj.Set("__eventListenerMutex", &sync.Mutex{})
+		return obj
+	})
+
+	eventTargetCtorObj := eventTargetConstructor.ToObject(runtime)
+	eventTargetCtorObj.Set("prototype", protos.eventTargetPrototype)
+	eventTargetCtorObj.DefineDataProperty("name", runtime.ToValue("EventTarget"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+
+	return eventTargetConstructor
 }
 
 // CreateAbortSignalObject 创建 AbortSignal 对象
@@ -869,35 +1245,12 @@ func TriggerAbortListeners(runtime *goja.Runtime, signal *goja.Object, state *Si
 	event.Set("target", signal)
 	event.Set("currentTarget", signal)
 	event.Set("srcElement", signal)
+	event.DefineDataProperty("isTrusted", runtime.ToValue(true), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
 
-	// 从 signal 对象读取 onabort（用户可能直接设置了 signal.onabort = fn）
-	onabortHandler := signal.Get("onabort")
-
-	// 获取 addEventListener 注册的监听器
-	state.listenerMutex.Lock()
-	listenersCopy := make([]goja.Value, len(state.listeners))
-	copy(listenersCopy, state.listeners)
-	state.listenerMutex.Unlock()
-
-	// 触发 onabort
-	if onabortHandler != nil && !goja.IsUndefined(onabortHandler) && !goja.IsNull(onabortHandler) {
-		if fn, ok := goja.AssertFunction(onabortHandler); ok {
-			fn(signal, event)
-		}
-		stop := event.Get("__stopImmediate")
-		if stop != nil && stop.ToBoolean() {
-			return
-		}
-	}
-
-	// 触发 addEventListener 注册的监听器
-	for _, listener := range listenersCopy {
-		if listenerFn, ok := goja.AssertFunction(listener); ok {
-			listenerFn(signal, event)
-		}
-		stop := event.Get("__stopImmediate")
-		if stop != nil && stop.ToBoolean() {
-			break
+	dispatchVal := signal.Get("dispatchEvent")
+	if dispatchVal != nil {
+		if dispatchFn, ok := goja.AssertFunction(dispatchVal); ok {
+			dispatchFn(signal, event)
 		}
 	}
 }
@@ -920,7 +1273,7 @@ func TriggerAbortListeners(runtime *goja.Runtime, signal *goja.Object, state *Si
 // - fetch 函数监听该 channel（通过 select）
 // - abort() 关闭 channel 发送取消信号
 // - 事件监听器在 abort() 时被触发（通过 setImmediate 异步执行）
-func CreateAbortControllerConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) *goja.Object {
+func CreateAbortControllerConstructor(runtime *goja.Runtime) goja.Value {
 	// 初始化 AbortController 原型并设置 @@toStringTag（按 runtime 隔离）
 	protos := getRuntimePrototypes(runtime)
 	protos.abortControllerPrototype = runtime.NewObject()
@@ -928,15 +1281,72 @@ func CreateAbortControllerConstructor(runtime *goja.Runtime) func(goja.Construct
 		protos.abortControllerPrototype.SetSymbol(goja.SymToStringTag, runtime.ToValue("AbortController"))
 	}
 
-	return func(call goja.ConstructorCall) *goja.Object {
+	if err := protos.abortControllerPrototype.DefineAccessorProperty("signal",
+		runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+			thisObj := call.This.ToObject(runtime)
+			if thisObj == nil {
+				panic(runtime.NewTypeError("Illegal invocation"))
+			}
+			signal := thisObj.Get("__abortControllerSignal")
+			if signal == nil || goja.IsUndefined(signal) || goja.IsNull(signal) {
+				return goja.Undefined()
+			}
+			return signal
+		}),
+		nil,
+		goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
+		panic(err)
+	}
+
+	protos.abortControllerPrototype.Set("abort", func(call goja.FunctionCall) goja.Value {
+		thisObj := call.This.ToObject(runtime)
+		if thisObj == nil {
+			panic(runtime.NewTypeError("Illegal invocation"))
+		}
+		stateVal := thisObj.Get("__abortControllerState")
+		state, ok := stateVal.Export().(*SignalState)
+		if !ok || state == nil {
+			panic(runtime.NewTypeError("Illegal invocation"))
+		}
+		signalVal := thisObj.Get("__abortControllerSignal")
+		signalObj, _ := signalVal.(*goja.Object)
+		if signalObj == nil {
+			panic(runtime.NewTypeError("Illegal invocation"))
+		}
+
+		state.abortedMutex.Lock()
+		if !state.aborted {
+			state.aborted = true
+
+			if len(call.Arguments) == 0 || goja.IsUndefined(call.Arguments[0]) {
+				state.reason = CreateDOMException(runtime, "This operation was aborted", "AbortError")
+			} else {
+				state.reason = call.Arguments[0]
+			}
+			state.abortedMutex.Unlock()
+
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+					}
+				}()
+				close(state.abortCh)
+			}()
+
+			TriggerAbortListeners(runtime, signalObj, state)
+		} else {
+			state.abortedMutex.Unlock()
+		}
+		return goja.Undefined()
+	})
+	setFunctionNameAndLength(runtime, protos.abortControllerPrototype.Get("abort"), "abort", 0)
+
+	ctor := runtime.ToValue(func(call goja.ConstructorCall) *goja.Object {
 		// 创建信号状态
 		state := &SignalState{
-			aborted:         false,
-			reason:          nil,
-			abortCh:         make(chan struct{}),
-			listeners:       make([]goja.Value, 0),
-			customListeners: make(map[string][]goja.Value),
-			onabort:         nil,
+			aborted: false,
+			reason:  nil,
+			abortCh: make(chan struct{}),
 		}
 
 		// 创建 AbortSignal 对象（使用当前 runtime 的原型）
@@ -946,48 +1356,18 @@ func CreateAbortControllerConstructor(runtime *goja.Runtime) func(goja.Construct
 		// 创建 AbortController 对象
 		controller := runtime.NewObject()
 		controller.SetPrototype(protos.abortControllerPrototype)
-		controller.DefineDataProperty("signal", signal, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
-
-		// abort(reason?) 方法
-		controller.Set("abort", func(call goja.FunctionCall) goja.Value {
-			state.abortedMutex.Lock()
-			if !state.aborted {
-				state.aborted = true
-
-				// 设置 reason
-				if len(call.Arguments) == 0 || goja.IsUndefined(call.Arguments[0]) {
-					// 默认 reason 是 DOMException AbortError（与 Node.js 行为一致）
-					state.reason = CreateDOMException(runtime, "This operation was aborted", "AbortError")
-				} else {
-					state.reason = call.Arguments[0]
-				}
-				state.abortedMutex.Unlock()
-
-				// 🔥 关闭 channel 发送取消信号
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							// channel 已经被关闭,忽略 panic
-						}
-					}()
-					close(state.abortCh)
-				}()
-
-				// 更新 signal 状态
-				signal.DefineDataProperty("aborted", runtime.ToValue(true), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
-				signal.DefineDataProperty("reason", state.reason, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
-
-				// 🔥 同步触发事件监听器（与 Node.js 行为一致）
-				// Node.js 中 abort() 调用后监听器是同步执行的
-				TriggerAbortListeners(runtime, signal, state)
-			} else {
-				state.abortedMutex.Unlock()
-			}
-			return goja.Undefined()
-		})
+		controller.Set("__abortControllerState", state)
+		controller.Set("__abortControllerSignal", signal)
 
 		return controller
+		return controller
+	})
+
+	if ctorObj := ctor.ToObject(runtime); ctorObj != nil {
+		ctorObj.Set("prototype", protos.abortControllerPrototype)
 	}
+
+	return ctor
 }
 
 // WrapAbortController 为 AbortController 构造器增加 new 调用校验
@@ -1045,9 +1425,58 @@ func CreateAbortSignalConstructor(runtime *goja.Runtime) goja.Value {
 	protos := getRuntimePrototypes(runtime)
 	// 创建 AbortSignal 原型对象（按 runtime 隔离）
 	protos.abortSignalPrototype = runtime.NewObject()
+	if protos.eventTargetPrototype == nil {
+		protos.eventTargetPrototype = runtime.NewObject()
+	}
+	protos.abortSignalPrototype.SetPrototype(protos.eventTargetPrototype)
 	if err := protos.abortSignalPrototype.DefineDataPropertySymbol(goja.SymToStringTag, runtime.ToValue("AbortSignal"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
 		protos.abortSignalPrototype.SetSymbol(goja.SymToStringTag, runtime.ToValue("AbortSignal"))
 	}
+
+	if err := protos.abortSignalPrototype.DefineAccessorProperty("aborted",
+		runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+			state, _ := getSignalStateFromThis(runtime, call.This, "aborted")
+			state.abortedMutex.Lock()
+			aborted := state.aborted
+			state.abortedMutex.Unlock()
+			return runtime.ToValue(aborted)
+		}),
+		nil,
+		goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
+		panic(err)
+	}
+
+	if err := protos.abortSignalPrototype.DefineAccessorProperty("reason",
+		runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+			state, _ := getSignalStateFromThis(runtime, call.This, "reason")
+			state.abortedMutex.Lock()
+			reason := state.reason
+			state.abortedMutex.Unlock()
+			if reason == nil {
+				return goja.Undefined()
+			}
+			return reason
+		}),
+		nil,
+		goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
+		panic(err)
+	}
+
+	protos.abortSignalPrototype.Set("throwIfAborted", func(call goja.FunctionCall) goja.Value {
+		state, _ := getSignalStateFromThis(runtime, call.This, "throwIfAborted")
+		state.abortedMutex.Lock()
+		isAborted := state.aborted
+		reason := state.reason
+		state.abortedMutex.Unlock()
+		if isAborted {
+			if reason != nil && !goja.IsUndefined(reason) {
+				panic(reason)
+			}
+			panic(CreateDOMException(runtime, "This operation was aborted", "AbortError"))
+		}
+		return goja.Undefined()
+	})
+	setFunctionNameAndLength(runtime, protos.abortSignalPrototype.Get("throwIfAborted"), "throwIfAborted", 0)
 
 	// 创建 AbortSignal 构造函数（不允许直接 new）
 	abortSignalConstructor := runtime.ToValue(func(call goja.ConstructorCall) *goja.Object {
@@ -1065,11 +1494,8 @@ func CreateAbortSignalConstructor(runtime *goja.Runtime) goja.Value {
 	// AbortSignal.abort(reason?) - 创建已中止的 signal
 	abortSignalFunc.Set("abort", func(call goja.FunctionCall) goja.Value {
 		state := &SignalState{
-			aborted:         true,
-			abortCh:         make(chan struct{}),
-			listeners:       make([]goja.Value, 0),
-			customListeners: make(map[string][]goja.Value),
-			onabort:         nil,
+			aborted: true,
+			abortCh: make(chan struct{}),
 		}
 
 		// 设置 reason
@@ -1083,11 +1509,10 @@ func CreateAbortSignalConstructor(runtime *goja.Runtime) goja.Value {
 		close(state.abortCh)
 
 		signal := CreateAbortSignalObjectWithPrototype(runtime, state, protos.abortSignalPrototype)
-		signal.DefineDataProperty("aborted", runtime.ToValue(true), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
-		signal.DefineDataProperty("reason", state.reason, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
 
 		return signal
 	})
+	setFunctionNameAndLength(runtime, abortSignalFunc.Get("abort"), "abort", 0)
 
 	// AbortSignal.timeout(ms) - 创建超时后中止的 signal
 	abortSignalFunc.Set("timeout", func(call goja.FunctionCall) goja.Value {
@@ -1101,12 +1526,9 @@ func CreateAbortSignalConstructor(runtime *goja.Runtime) goja.Value {
 		}
 
 		state := &SignalState{
-			aborted:         false,
-			reason:          nil,
-			abortCh:         make(chan struct{}),
-			listeners:       make([]goja.Value, 0),
-			customListeners: make(map[string][]goja.Value),
-			onabort:         nil,
+			aborted: false,
+			reason:  nil,
+			abortCh: make(chan struct{}),
 		}
 
 		protos := getRuntimePrototypes(runtime)
@@ -1134,8 +1556,6 @@ func CreateAbortSignalConstructor(runtime *goja.Runtime) goja.Value {
 						}()
 
 						// 更新 signal
-						signal.DefineDataProperty("aborted", runtime.ToValue(true), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
-						signal.DefineDataProperty("reason", state.reason, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
 						TriggerAbortListeners(runtime, signal, state)
 					} else {
 						state.abortedMutex.Unlock()
@@ -1148,6 +1568,7 @@ func CreateAbortSignalConstructor(runtime *goja.Runtime) goja.Value {
 
 		return signal
 	})
+	setFunctionNameAndLength(runtime, abortSignalFunc.Get("timeout"), "timeout", 1)
 
 	// AbortSignal.any(signals) - 创建组合 signal
 	abortSignalFunc.Set("any", func(call goja.FunctionCall) goja.Value {
@@ -1297,12 +1718,9 @@ func CreateAbortSignalConstructor(runtime *goja.Runtime) goja.Value {
 
 		// 创建新的组合 signal
 		state := &SignalState{
-			aborted:         false,
-			reason:          nil,
-			abortCh:         make(chan struct{}),
-			listeners:       make([]goja.Value, 0),
-			customListeners: make(map[string][]goja.Value),
-			onabort:         nil,
+			aborted: false,
+			reason:  nil,
+			abortCh: make(chan struct{}),
 		}
 
 		// 检查是否有已中止的 signal
@@ -1325,10 +1743,6 @@ func CreateAbortSignalConstructor(runtime *goja.Runtime) goja.Value {
 
 		protos := getRuntimePrototypes(runtime)
 		signal := CreateAbortSignalObjectWithPrototype(runtime, state, protos.abortSignalPrototype)
-		if state.aborted {
-			signal.DefineDataProperty("aborted", runtime.ToValue(true), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
-			signal.DefineDataProperty("reason", state.reason, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
-		}
 
 		// 如果还没中止，为每个源 signal 添加 abort 事件监听器
 		if !state.aborted {
@@ -1354,8 +1768,6 @@ func CreateAbortSignalConstructor(runtime *goja.Runtime) goja.Value {
 						}()
 
 						// 更新 signal
-						signal.DefineDataProperty("aborted", runtime.ToValue(true), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
-						signal.DefineDataProperty("reason", state.reason, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
 						TriggerAbortListeners(runtime, signal, state)
 					} else {
 						state.abortedMutex.Unlock()
@@ -1375,6 +1787,7 @@ func CreateAbortSignalConstructor(runtime *goja.Runtime) goja.Value {
 
 		return signal
 	})
+	setFunctionNameAndLength(runtime, abortSignalFunc.Get("any"), "any", 1)
 
 	return abortSignalFunc
 }
@@ -1392,268 +1805,10 @@ func CreateAbortSignalObjectWithPrototype(runtime *goja.Runtime, state *SignalSt
 	signal.Set("__isAbortSignal", true)
 	signal.Set("__signalState", state)
 	signal.Set("__abortChannel", state.abortCh)
-
-	// aborted 属性
-	signal.DefineDataProperty("aborted", runtime.ToValue(state.aborted), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
-
-	// reason 属性
-	if state.reason != nil {
-		signal.DefineDataProperty("reason", state.reason, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
-	} else {
-		signal.DefineDataProperty("reason", goja.Undefined(), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
-	}
-
-	applyAbortSignalEventAPI(runtime, signal, state)
-
-	return signal
-}
-
-// applyAbortSignalEventAPI 统一绑定 AbortSignal 的事件相关 API
-func applyAbortSignalEventAPI(runtime *goja.Runtime, signal *goja.Object, state *SignalState) {
+	signal.Set("__eventListenerMutex", &state.listenerMutex)
 	signal.Set("onabort", goja.Null())
 
-	shouldStop := func(ev *goja.Object) bool {
-		stop := ev.Get("__stopImmediate")
-		return stop != nil && !goja.IsUndefined(stop) && stop.ToBoolean()
-	}
-
-	signal.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) < 2 {
-			return goja.Undefined()
-		}
-
-		eventType := call.Arguments[0].String()
-		listener := call.Arguments[1]
-		if goja.IsUndefined(listener) || goja.IsNull(listener) {
-			return goja.Undefined()
-		}
-
-		once := false
-		var optionsSignal *goja.Object
-		if len(call.Arguments) >= 3 && !goja.IsUndefined(call.Arguments[2]) && !goja.IsNull(call.Arguments[2]) {
-			if optionsObj, ok := call.Arguments[2].(*goja.Object); ok {
-				if onceVal := optionsObj.Get("once"); onceVal != nil && !goja.IsUndefined(onceVal) && !goja.IsNull(onceVal) {
-					once = onceVal.ToBoolean()
-				}
-				if sigVal := optionsObj.Get("signal"); sigVal != nil && !goja.IsUndefined(sigVal) && !goja.IsNull(sigVal) {
-					if sigObj, ok := sigVal.(*goja.Object); ok {
-						isSignal := sigObj.Get("__isAbortSignal")
-						if isSignal == nil || goja.IsUndefined(isSignal) || goja.IsNull(isSignal) || !isSignal.ToBoolean() {
-							panic(runtime.NewTypeError("signal is not a valid AbortSignal"))
-						}
-						if aborted := sigObj.Get("aborted"); aborted != nil && !goja.IsUndefined(aborted) && aborted.ToBoolean() {
-							return goja.Undefined()
-						}
-						optionsSignal = sigObj
-					} else {
-						panic(runtime.NewTypeError("signal is not a valid AbortSignal"))
-					}
-				}
-			} else if call.Arguments[2].ToBoolean() {
-				// boolean useCapture，忽略即可
-			}
-		}
-
-		state.listenerMutex.Lock()
-		defer state.listenerMutex.Unlock()
-
-		if eventType == "abort" {
-			for _, l := range state.listeners {
-				if isSameListener(runtime, l, listener) {
-					return goja.Undefined()
-				}
-			}
-
-			var stored goja.Value
-			if once {
-				var wrapped goja.Value
-				wrapped = runtime.ToValue(func(innerCall goja.FunctionCall) goja.Value {
-					state.listenerMutex.Lock()
-					state.listeners = removeListenerFromSlice(runtime, state.listeners, wrapped)
-					state.listenerMutex.Unlock()
-
-					if fn, ok := goja.AssertFunction(listener); ok {
-						fn(signal, innerCall.Arguments...)
-					}
-					return goja.Undefined()
-				})
-				wrapped.ToObject(runtime).Set("__originalListener", listener)
-				state.listeners = append(state.listeners, wrapped)
-				stored = wrapped
-			} else {
-				state.listeners = append(state.listeners, listener)
-				stored = listener
-			}
-
-			if optionsSignal != nil && !goja.IsUndefined(stored) && !goja.IsNull(stored) {
-				removeOnAbort := runtime.ToValue(func(goja.FunctionCall) goja.Value {
-					state.listenerMutex.Lock()
-					state.listeners = removeListenerFromSlice(runtime, state.listeners, stored)
-					state.listenerMutex.Unlock()
-					return goja.Undefined()
-				})
-				if addFn, ok := goja.AssertFunction(optionsSignal.Get("addEventListener")); ok {
-					addFn(optionsSignal, runtime.ToValue("abort"), removeOnAbort)
-				}
-			}
-		} else {
-			if state.customListeners == nil {
-				state.customListeners = make(map[string][]goja.Value)
-			}
-			current := state.customListeners[eventType]
-			for _, l := range current {
-				if isSameListener(runtime, l, listener) {
-					return goja.Undefined()
-				}
-			}
-
-			var stored goja.Value
-			if once {
-				var wrapped goja.Value
-				wrapped = runtime.ToValue(func(innerCall goja.FunctionCall) goja.Value {
-					state.listenerMutex.Lock()
-					state.customListeners[eventType] = removeListenerFromSlice(runtime, state.customListeners[eventType], wrapped)
-					state.listenerMutex.Unlock()
-
-					if fn, ok := goja.AssertFunction(listener); ok {
-						fn(signal, innerCall.Arguments...)
-					}
-					return goja.Undefined()
-				})
-				wrapped.ToObject(runtime).Set("__originalListener", listener)
-				current = append(current, wrapped)
-				stored = wrapped
-			} else {
-				current = append(current, listener)
-				stored = listener
-			}
-			state.customListeners[eventType] = current
-
-			if optionsSignal != nil && !goja.IsUndefined(stored) && !goja.IsNull(stored) {
-				removeOnAbort := runtime.ToValue(func(goja.FunctionCall) goja.Value {
-					state.listenerMutex.Lock()
-					state.customListeners[eventType] = removeListenerFromSlice(runtime, state.customListeners[eventType], stored)
-					state.listenerMutex.Unlock()
-					return goja.Undefined()
-				})
-				if addFn, ok := goja.AssertFunction(optionsSignal.Get("addEventListener")); ok {
-					addFn(optionsSignal, runtime.ToValue("abort"), removeOnAbort)
-				}
-			}
-		}
-
-		return goja.Undefined()
-	})
-
-	signal.Set("removeEventListener", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) < 2 {
-			return goja.Undefined()
-		}
-		eventType := call.Arguments[0].String()
-		target := call.Arguments[1]
-
-		state.listenerMutex.Lock()
-		defer state.listenerMutex.Unlock()
-
-		if eventType == "abort" {
-			state.listeners = removeListenerFromSlice(runtime, state.listeners, target)
-		} else {
-			if state.customListeners != nil {
-				state.customListeners[eventType] = removeListenerFromSlice(runtime, state.customListeners[eventType], target)
-			}
-		}
-		return goja.Undefined()
-	})
-
-	signal.Set("dispatchEvent", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) == 0 {
-			panic(runtime.NewTypeError("Failed to execute 'dispatchEvent': 1 argument required"))
-		}
-
-		eventVal := call.Arguments[0]
-		eventObj, ok := eventVal.(*goja.Object)
-		if !ok {
-			panic(runtime.NewTypeError("Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'"))
-		}
-
-		eventTypeVal := eventObj.Get("type")
-		if goja.IsUndefined(eventTypeVal) || goja.IsNull(eventTypeVal) {
-			return runtime.ToValue(true)
-		}
-		eventType := eventTypeVal.String()
-
-		eventObj.Set("target", signal)
-		eventObj.Set("currentTarget", signal)
-		eventObj.Set("srcElement", signal)
-
-		cancelable := eventObj.Get("cancelable").ToBoolean()
-		if goja.IsUndefined(eventObj.Get("defaultPrevented")) {
-			eventObj.Set("defaultPrevented", false)
-		}
-		if goja.IsUndefined(eventObj.Get("__stopImmediate")) {
-			eventObj.Set("__stopImmediate", false)
-		}
-
-		state.listenerMutex.Lock()
-		var listenersCopy []goja.Value
-		if eventType == "abort" {
-			listenersCopy = make([]goja.Value, len(state.listeners))
-			copy(listenersCopy, state.listeners)
-		} else {
-			if state.customListeners != nil {
-				listenersCopy = make([]goja.Value, len(state.customListeners[eventType]))
-				copy(listenersCopy, state.customListeners[eventType])
-			}
-		}
-		onabort := goja.Undefined()
-		if eventType == "abort" {
-			onabort = signal.Get("onabort")
-		}
-		state.listenerMutex.Unlock()
-
-		if eventType == "abort" && onabort != nil && !goja.IsUndefined(onabort) && !goja.IsNull(onabort) {
-			if fn, ok := goja.AssertFunction(onabort); ok {
-				fn(signal, eventObj)
-			}
-			if shouldStop(eventObj) {
-				result := true
-				if cancelable && eventObj.Get("defaultPrevented").ToBoolean() {
-					result = false
-				}
-				return runtime.ToValue(result)
-			}
-		}
-
-		for _, listener := range listenersCopy {
-			if fn, ok := goja.AssertFunction(listener); ok {
-				fn(signal, eventObj)
-			}
-			if shouldStop(eventObj) {
-				break
-			}
-		}
-
-		result := true
-		if cancelable && eventObj.Get("defaultPrevented").ToBoolean() {
-			result = false
-		}
-		return runtime.ToValue(result)
-	})
-
-	signal.Set("throwIfAborted", func(call goja.FunctionCall) goja.Value {
-		state.abortedMutex.Lock()
-		isAborted := state.aborted
-		reason := state.reason
-		state.abortedMutex.Unlock()
-
-		if isAborted {
-			if reason != nil && !goja.IsUndefined(reason) {
-				panic(reason)
-			}
-			panic(CreateDOMException(runtime, "This operation was aborted", "AbortError"))
-		}
-		return goja.Undefined()
-	})
+	return signal
 }
 
 // ==================== 注释说明 ====================

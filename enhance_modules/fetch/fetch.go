@@ -152,6 +152,15 @@ func (fe *FetchEnhancer) RegisterFetchAPI(runtime *goja.Runtime) error {
 	// 1. 注册 fetch 主方法
 	runtime.Set("fetch", fe.createFetchFunction(runtime))
 
+	// 注册 Event/EventTarget，确保 AbortSignal 继承关系
+	runtime.Set("EventTarget", CreateEventTargetConstructor(runtime))
+	runtime.Set("Event", CreateEventConstructor(runtime))
+
+	// 确保 queueMicrotask 存在（Node 标准行为）
+	if err := ensureQueueMicrotask(runtime); err != nil {
+		return fmt.Errorf("注册 queueMicrotask 失败: %w", err)
+	}
+
 	// 2. 注册 Headers 构造器
 	runtime.Set("Headers", CreateHeadersConstructor(runtime))
 
@@ -162,29 +171,60 @@ func (fe *FetchEnhancer) RegisterFetchAPI(runtime *goja.Runtime) error {
 	runtime.Set("AbortSignal", CreateAbortSignalConstructor(runtime))
 
 	// 5. 注册 AbortController 构造器
-	nativeAbortController := runtime.ToValue(CreateAbortControllerConstructor(runtime))
+	nativeAbortController := CreateAbortControllerConstructor(runtime)
 	runtime.Set("AbortController", WrapAbortController(runtime, nativeAbortController))
 
 	// 6. 注册 DOMException 构造器
 	runtime.Set("DOMException", CreateDOMExceptionConstructor(runtime))
 
-	// 7. 注册 Event 构造器
-	runtime.Set("Event", CreateEventConstructor(runtime))
-
-	// 8. 注册 FormData 构造器
+	// 7. 注册 FormData 构造器
 	runtime.Set("FormData", CreateFormDataConstructor(runtime))
 
-	// 9. 注册 Blob/File 构造器
+	// 8. 注册 Blob/File 构造器
 	if err := blob.RegisterBlobFileConstructors(runtime, fe.config.MaxBlobFileSize); err != nil {
 		return fmt.Errorf("注册 Blob/File 构造器失败: %w", err)
 	}
 
-	// 10. 注册 URLSearchParams 构造器
+	// 9. 注册 URLSearchParams 构造器
 	if err := url.RegisterURLSearchParams(runtime); err != nil {
 		return fmt.Errorf("注册 URLSearchParams 构造器失败: %w", err)
 	}
 
 	return nil
+}
+
+// ensureQueueMicrotask 注入 queueMicrotask（若宿主环境未提供）
+func ensureQueueMicrotask(runtime *goja.Runtime) error {
+	existing := runtime.Get("queueMicrotask")
+	if existing != nil && !goja.IsUndefined(existing) && !goja.IsNull(existing) {
+		return nil
+	}
+
+	script := `
+(function(global){
+  if (typeof global.queueMicrotask === 'function') {
+    return;
+  }
+  function queueMicrotask(callback) {
+    if (arguments.length === 0) {
+      throw new TypeError("Failed to execute 'queueMicrotask': 1 argument required, but only 0 present.");
+    }
+    if (typeof callback !== 'function') {
+      throw new TypeError("Failed to execute 'queueMicrotask': callback is not a function");
+    }
+    Promise.resolve().then(function () {
+      callback();
+    });
+  }
+  Object.defineProperty(global, 'queueMicrotask', {
+    value: queueMicrotask,
+    configurable: true,
+    writable: true
+  });
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+`
+	_, err := runtime.RunString(script)
+	return err
 }
 
 // ==================== Fetch 主方法 ====================
