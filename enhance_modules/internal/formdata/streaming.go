@@ -1,4 +1,4 @@
-package enhance_modules
+package formdata
 
 import (
 	"bytes"
@@ -11,6 +11,14 @@ import (
 	"sync"
 	"time"
 )
+
+// FormDataEntry 表示单个 FormData 字段
+type FormDataEntry struct {
+	Name        string      // 字段名
+	Value       interface{} // 字段值（string、[]byte、io.Reader）
+	Filename    string      // 文件名（可选，表示文件字段）
+	ContentType string      // Content-Type（可选）
+}
 
 // StreamingFormData 流式 FormData 处理器
 // 🔥 核心优化：使用 io.Pipe 实现真正的流式处理，避免内存累积
@@ -121,6 +129,45 @@ func NewStreamingFormDataWithContext(ctx context.Context, config *FormDataStream
 	return NewStreamingFormData(config)
 }
 
+// ==================== Getter 方法 ====================
+
+// GetBoundary 返回 boundary 字符串（供 Node.js FormData 模块使用）
+func (sfd *StreamingFormData) GetBoundary() string {
+	return sfd.boundary
+}
+
+// GetEntries 返回所有条目（供 Node.js FormData 模块使用）
+func (sfd *StreamingFormData) GetEntries() []FormDataEntry {
+	return sfd.entries
+}
+
+// GetEntriesCount 返回条目数量
+func (sfd *StreamingFormData) GetEntriesCount() int {
+	return len(sfd.entries)
+}
+
+// SetBoundary 设置 boundary 字符串
+func (sfd *StreamingFormData) SetBoundary(boundary string) {
+	sfd.boundary = boundary
+}
+
+// AppendEntry 添加一个条目
+func (sfd *StreamingFormData) AppendEntry(entry FormDataEntry) {
+	if sfd.entries == nil {
+		sfd.entries = make([]FormDataEntry, 0)
+	}
+	sfd.entries = append(sfd.entries, entry)
+}
+
+// AddToTotalSize 增加总大小估算（供 Node.js FormData 模块使用）
+func (sfd *StreamingFormData) AddToTotalSize(size int64) {
+	if sfd != nil {
+		sfd.totalSize += size
+	}
+}
+
+// ==================== 模式检测 ====================
+
 // detectStreamingMode 检测是否为流式上传模式（带缓存）
 // 🔥 关键判断：是否包含真正的 Stream（排除 bytes.Reader）
 // - 缓冲模式：所有数据都是 string、[]byte、bytes.Reader
@@ -159,6 +206,11 @@ func (sfd *StreamingFormData) detectStreamingMode() bool {
 func (sfd *StreamingFormData) CreateReader() (io.Reader, error) {
 	if sfd == nil || sfd.config == nil {
 		return nil, fmt.Errorf("StreamingFormData 或 config 为 nil")
+	}
+
+	// 🔥 如果 totalSize 未设置（浏览器 FormData 路径），则计算它
+	if sfd.totalSize == 0 {
+		sfd.totalSize = sfd.GetTotalSize()
 	}
 
 	// 🔥 检测上传模式
@@ -262,6 +314,12 @@ func (sfd *StreamingFormData) writeEntryBuffered(writer *multipart.Writer, entry
 			return fmt.Errorf("读取 Reader 数据失败: %w", err)
 		}
 		return sfd.writeFileDataBuffered(writer, entry.Name, entry.Filename, entry.ContentType, data)
+	case map[string]interface{}:
+		// 🔥 对象转换为 "[object Object]"（符合浏览器行为，防止循环引用导致栈溢出）
+		return writer.WriteField(entry.Name, "[object Object]")
+	case nil:
+		// 🔥 nil 转换为 "null"
+		return writer.WriteField(entry.Name, "null")
 	default:
 		// 其他类型转为字符串
 		return writer.WriteField(entry.Name, fmt.Sprintf("%v", v))
@@ -416,6 +474,14 @@ func (sfd *StreamingFormData) writeEntryStreaming(writer *multipart.Writer, entr
 		// 用于流式文件上传（axios stream -> FormData）
 		return sfd.writeFileDataStreaming(writer, entry.Name, entry.Filename, entry.ContentType, v, -1)
 
+	case map[string]interface{}:
+		// 🔥 对象转换为 "[object Object]"（符合浏览器行为，防止循环引用导致栈溢出）
+		return writer.WriteField(entry.Name, "[object Object]")
+
+	case nil:
+		// 🔥 nil 转换为 "null"
+		return writer.WriteField(entry.Name, "null")
+
 	default:
 		// 其他类型转为字符串
 		return writer.WriteField(entry.Name, fmt.Sprintf("%v", v))
@@ -510,14 +576,6 @@ func (sfd *StreamingFormData) copyStreaming(dst io.Writer, src io.Reader) (int64
 	}
 
 	return written, nil
-}
-
-// GetBoundary 获取边界字符串
-func (sfd *StreamingFormData) GetBoundary() string {
-	if sfd == nil {
-		return ""
-	}
-	return sfd.boundary
 }
 
 // AddEntry 添加条目并更新总大小
@@ -663,5 +721,22 @@ func removeControlChars(s string) string {
 func (sfd *StreamingFormData) Release() {
 	if sfd != nil {
 		sfd.entries = nil
+	}
+}
+
+// ==================== 访问器方法 ====================
+
+// GetConfig 获取配置（用于外部访问）
+func (sfd *StreamingFormData) GetConfig() *FormDataStreamConfig {
+	if sfd == nil {
+		return nil
+	}
+	return sfd.config
+}
+
+// SetContext 设置 context（用于外部设置超时）
+func (sfd *StreamingFormData) SetContext(ctx context.Context) {
+	if sfd != nil && sfd.config != nil {
+		sfd.config.Context = ctx
 	}
 }

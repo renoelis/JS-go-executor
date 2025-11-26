@@ -203,14 +203,30 @@
   /**
    * 合并 headers（防止原型污染）
    * 支持 common 和 method-specific headers 的深度合并
-   * @param {Object} headers1 - 基础 headers
-   * @param {Object} headers2 - 要合并的 headers
+   * 🔥 修复：大小写不敏感合并，避免重复的 Content-Type 等 headers
+   * @param {Object} headers1 - 基础 headers（默认配置）
+   * @param {Object} headers2 - 要合并的 headers（用户配置）
    * @param {string} method - HTTP 方法（用于合并 method-specific headers）
    * @returns {Object} 合并后的 headers
    */
   function mergeHeaders(headers1, headers2, method) {
     var result = {};
-    
+    // 🔥 用于跟踪已设置的 header keys（小写）
+    var lowerCaseKeyMap = {};
+
+    // 🔥 辅助函数：大小写不敏感地设置 header
+    // 如果已存在相同 key（忽略大小写），用新值覆盖，并保持新 key 的大小写
+    function setHeaderCaseInsensitive(key, value) {
+      var lowerKey = key.toLowerCase();
+      // 如果已存在相同 key（忽略大小写），先删除旧的
+      if (lowerCaseKeyMap[lowerKey]) {
+        delete result[lowerCaseKeyMap[lowerKey]];
+      }
+      // 设置新值，并记录 key 的大小写形式
+      result[key] = value;
+      lowerCaseKeyMap[lowerKey] = key;
+    }
+
     // 🔥 验证 headers 类型：忽略非对象类型（如字符串、数组等）
     if (headers1 != null && (typeof headers1 !== 'object' || Array.isArray(headers1))) {
       headers1 = null;
@@ -218,63 +234,64 @@
     if (headers2 != null && (typeof headers2 !== 'object' || Array.isArray(headers2))) {
       headers2 = null;
     }
-    
+
     // 合并 headers1 的 common
     if (headers1 && headers1.common) {
       for (var key in headers1.common) {
         if (headers1.common.hasOwnProperty(key) && isSafeKey(key)) {
-          result[key] = headers1.common[key];
+          setHeaderCaseInsensitive(key, headers1.common[key]);
         }
       }
     }
-    
+
     // 合并 headers1 的 method-specific headers
     if (method && headers1 && headers1[method]) {
       for (var key in headers1[method]) {
         if (headers1[method].hasOwnProperty(key) && isSafeKey(key)) {
-          result[key] = headers1[method][key];
+          setHeaderCaseInsensitive(key, headers1[method][key]);
         }
       }
     }
-    
+
     // 合并 headers1 的直接属性（非 common 和 method-specific）
+    // 🔥 这里包含用户通过 config.headers 设置的 headers
     for (var key in headers1) {
-      if (headers1.hasOwnProperty(key) && isSafeKey(key) && 
-          key !== 'common' && key !== 'get' && key !== 'post' && 
-          key !== 'put' && key !== 'patch' && key !== 'delete' && 
+      if (headers1.hasOwnProperty(key) && isSafeKey(key) &&
+          key !== 'common' && key !== 'get' && key !== 'post' &&
+          key !== 'put' && key !== 'patch' && key !== 'delete' &&
           key !== 'head' && key !== 'options') {
-        result[key] = headers1[key];
+        setHeaderCaseInsensitive(key, headers1[key]);
       }
     }
-    
+
     // 合并 headers2 的 common
     if (headers2 && headers2.common) {
       for (var key in headers2.common) {
         if (headers2.common.hasOwnProperty(key) && isSafeKey(key)) {
-          result[key] = headers2.common[key];
+          setHeaderCaseInsensitive(key, headers2.common[key]);
         }
       }
     }
-    
+
     // 合并 headers2 的 method-specific headers
     if (method && headers2 && headers2[method]) {
       for (var key in headers2[method]) {
         if (headers2[method].hasOwnProperty(key) && isSafeKey(key)) {
-          result[key] = headers2[method][key];
+          setHeaderCaseInsensitive(key, headers2[method][key]);
         }
       }
     }
-    
+
     // 合并 headers2 的直接属性
     for (var key in headers2) {
-      if (headers2.hasOwnProperty(key) && isSafeKey(key) && 
-          key !== 'common' && key !== 'get' && key !== 'post' && 
-          key !== 'put' && key !== 'patch' && key !== 'delete' && 
+      if (headers2.hasOwnProperty(key) && isSafeKey(key) &&
+          key !== 'common' && key !== 'get' && key !== 'post' &&
+          key !== 'put' && key !== 'patch' && key !== 'delete' &&
           key !== 'head' && key !== 'options') {
-        result[key] = headers2[key];
+        setHeaderCaseInsensitive(key, headers2[key]);
       }
     }
-    
+
     return result;
   }
 
@@ -1351,6 +1368,17 @@
       }
 
       var adapterPromise = Promise.resolve().then(function() {
+        // 在调用自定义 adapter 之前，仅对 AbortSignal 做前置取消检查；
+        // CancelToken 的取消由自定义 adapter 自己处理（通过 cancelToken.promise）。
+        if (config && config.signal && config.signal.aborted) {
+          throw createError(
+            'Request canceled',
+            config,
+            'ERR_CANCELED',
+            undefined,
+            null
+          );
+        }
         return config.adapter(config);
       });
 

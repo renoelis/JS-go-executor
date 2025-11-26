@@ -693,6 +693,40 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 			e.registerTextEncoders(vm) // ✅ 注册 TextEncoder/TextDecoder
 			e.setupGlobalObjectsForEventLoop(vm)
 
+			// 提供不保活事件循环的定时器（等价 Node 的 timer.unref）
+			vm.Set("setTimeoutUnref", func(call goja.FunctionCall) goja.Value {
+				if len(call.Arguments) == 0 {
+					return goja.Undefined()
+				}
+				fn, ok := goja.AssertFunction(call.Argument(0))
+				if !ok {
+					return goja.Undefined()
+				}
+				delay := call.Argument(1).ToInteger()
+				var args []goja.Value
+				if len(call.Arguments) > 2 {
+					args = append(args, call.Arguments[2:]...)
+				}
+
+				timer := time.AfterFunc(time.Duration(delay)*time.Millisecond, func() {
+					// 回到事件循环线程执行回调；如果事件循环已结束则按 unref 语义静默忽略
+					loop.RunOnLoop(func(rt *goja.Runtime) {
+						fn(goja.Undefined(), args...)
+					})
+				})
+				return vm.ToValue(timer)
+			})
+
+			vm.Set("clearTimeoutUnref", func(call goja.FunctionCall) goja.Value {
+				if len(call.Arguments) == 0 {
+					return goja.Undefined()
+				}
+				if timer, ok := call.Argument(0).Export().(*time.Timer); ok && timer != nil {
+					timer.Stop()
+				}
+				return goja.Undefined()
+			})
+
 			// 🔒 步骤2: 禁用危险功能和 constructor
 			vm.Set("eval", goja.Undefined())
 			// vm.Set("Function", goja.Undefined())  // 无法禁用，库需要

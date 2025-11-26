@@ -2,6 +2,8 @@ package enhance_modules
 
 import (
 	"bytes"
+	"flow-codeblock-go/enhance_modules/fetch"
+	"flow-codeblock-go/enhance_modules/internal/formdata"
 	"flow-codeblock-go/utils"
 	"fmt"
 	"io"
@@ -45,11 +47,11 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 		// 创建底层的 StreamingFormData 实例
 		// 🔥 重要：每个 FormData 都应该有独立的 config（深拷贝）
 		// 避免 config.Context 被共享，导致一个 FormData 的 context 取消影响其他 FormData
-		var config *FormDataStreamConfig
-		if nfm.fetchEnhancer != nil && nfm.fetchEnhancer.formDataConfig != nil {
-			// 深拷贝 config，避免共享
-			baseCfg := nfm.fetchEnhancer.formDataConfig
-			config = &FormDataStreamConfig{
+		var config *formdata.FormDataStreamConfig
+		if nfm.fetchEnhancer != nil {
+			// 通过 GetFormDataConfig() 获取配置副本
+			baseCfg := nfm.fetchEnhancer.GetFormDataConfig()
+			config = &formdata.FormDataStreamConfig{
 				MaxBufferedFormDataSize:  baseCfg.MaxBufferedFormDataSize,
 				MaxStreamingFormDataSize: baseCfg.MaxStreamingFormDataSize,
 				EnableChunkedUpload:      baseCfg.EnableChunkedUpload,
@@ -61,7 +63,7 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 				StreamingThreshold:       baseCfg.StreamingThreshold,
 			}
 		} else {
-			config = DefaultFormDataStreamConfig()
+			config = formdata.DefaultFormDataStreamConfig()
 		}
 		streamingFormData := NewStreamingFormData(config)
 		if streamingFormData == nil {
@@ -76,8 +78,8 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 		// 结构约定：按顺序写入 [headerString, value, headerString, value, ...]
 		streamsArray := runtime.NewArray()
 		formDataObj.Set("_streams", streamsArray)
-		// _boundary: 暴露当前 boundary 字符串，供测试判断是否为“Node form-data 实例”
-		formDataObj.Set("_boundary", streamingFormData.boundary)
+		// _boundary: 暴露当前 boundary 字符串，供测试判断是否为"Node form-data 实例"
+		formDataObj.Set("_boundary", streamingFormData.GetBoundary())
 
 		// 设置类型标识（区分 Node.js FormData 和浏览器 FormData）
 		formDataObj.Set("__isNodeFormData", true)
@@ -162,14 +164,14 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 		// getHeaders() - 获取 headers 对象（包含正确的 boundary）
 		formDataObj.Set("getHeaders", func(call goja.FunctionCall) goja.Value {
 			headers := runtime.NewObject()
-			contentType := fmt.Sprintf("multipart/form-data; boundary=%s", streamingFormData.boundary)
+			contentType := fmt.Sprintf("multipart/form-data; boundary=%s", streamingFormData.GetBoundary())
 			headers.Set("content-type", contentType)
 			return headers
 		})
 
 		// getBoundary() - 获取边界字符串
 		formDataObj.Set("getBoundary", func(call goja.FunctionCall) goja.Value {
-			return runtime.ToValue(streamingFormData.boundary)
+			return runtime.ToValue(streamingFormData.GetBoundary())
 		})
 
 		// setBoundary(boundary) - 设置自定义边界
@@ -178,7 +180,7 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 				panic(runtime.NewTypeError("setBoundary 需要一个边界字符串参数"))
 			}
 			boundary := call.Arguments[0].String()
-			streamingFormData.boundary = boundary
+			streamingFormData.SetBoundary(boundary)
 			// 同步更新 _boundary，以兼容测试中对 _boundary 的检查
 			formDataObj.Set("_boundary", boundary)
 			return goja.Undefined()
@@ -188,8 +190,8 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 		formDataObj.Set("hasKnownLength", func(call goja.FunctionCall) goja.Value {
 			// 遍历所有 entries，检查是否有流式数据（io.Reader）
 			hasStream := false
-			if streamingFormData.entries != nil {
-				for _, entry := range streamingFormData.entries {
+			if streamingFormData.GetEntries() != nil {
+				for _, entry := range streamingFormData.GetEntries() {
 					// 检查 Value 是否为 io.Reader（流式数据）
 					if _, isReader := entry.Value.(io.Reader); isReader {
 						// 🔥 进一步排除 bytes.Reader（这是从 []byte 创建的，有已知长度）
@@ -290,12 +292,12 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 			})
 
 			wrapper.Set("getContentType", func(call goja.FunctionCall) goja.Value {
-				contentType := fmt.Sprintf("multipart/form-data; boundary=%s", streamingFormData.boundary)
+				contentType := fmt.Sprintf("multipart/form-data; boundary=%s", streamingFormData.GetBoundary())
 				return runtime.ToValue(contentType)
 			})
 
 			wrapper.Set("getBoundary", func(call goja.FunctionCall) goja.Value {
-				return runtime.ToValue(streamingFormData.boundary)
+				return runtime.ToValue(streamingFormData.GetBoundary())
 			})
 
 			// 存储原始 StreamingFormData 引用（Go 侧访问）
@@ -306,6 +308,117 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 
 		// _getGoStreamingFormData() - 直接返回 Go 对象（供 fetch 使用）
 		formDataObj.Set("__getGoStreamingFormData", streamingFormData)
+
+		// 🔥 为 Node.js 兼容性添加流接口
+		// 使用 FormDataReadable 实现真正的 Node.js Readable Stream 语义
+		// 支持 on/pipe/pause/resume/destroy，按块读取、背压控制、单次消费
+
+		// 创建 FormDataReadable 实例（惰性初始化）
+		var formDataReadable *fetch.FormDataReadable
+
+		// 获取或创建 FormDataReadable
+		getFormDataReadable := func() *fetch.FormDataReadable {
+			if formDataReadable == nil {
+				// 使用工厂函数延迟创建 reader
+				formDataReadable = fetch.NewFormDataReadable(func() (io.ReadCloser, error) {
+					reader, err := streamingFormData.CreateReader()
+					if err != nil {
+						return nil, err
+					}
+					// 使用 io.NopCloser 包装 io.Reader 为 io.ReadCloser
+					return io.NopCloser(reader), nil
+				}, runtime)
+			}
+			return formDataReadable
+		}
+
+		// on(event, callback) - 注册事件监听器
+		// 🔥 支持 data/end/error/close 事件
+		// 🔥 首个 data 监听器注册时开始按块读取
+		formDataObj.Set("on", func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) < 2 {
+				return formDataObj // 返回 this 支持链式调用
+			}
+
+			eventName := call.Arguments[0].String()
+			callback := call.Arguments[1]
+
+			readable := getFormDataReadable()
+			readable.On(eventName, callback)
+
+			return formDataObj // 返回 this 支持链式调用
+		})
+
+		// once(event, callback) - 只触发一次的事件监听
+		// 🔥 使用 FormDataReadable.Once 方法，触发后自动移除
+		formDataObj.Set("once", func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) < 2 {
+				return formDataObj
+			}
+
+			eventName := call.Arguments[0].String()
+			callback := call.Arguments[1]
+
+			readable := getFormDataReadable()
+			readable.Once(eventName, callback)
+			return formDataObj
+		})
+
+		// pipe(destination, options?) - 管道传输到目标流
+		// 🔥 支持背压控制：
+		// - 调用目标的 write(chunk) 方法
+		// - write 返回 false 时暂停读取，等待 drain 事件
+		// - 结束时调用目标的 end() 方法
+		formDataObj.Set("pipe", func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 {
+				return goja.Undefined()
+			}
+
+			destination := call.Arguments[0].ToObject(runtime)
+			if destination == nil {
+				return goja.Undefined()
+			}
+
+			readable := getFormDataReadable()
+
+			// 检查是否已消费
+			if readable.IsConsumed() {
+				panic(runtime.NewTypeError("Cannot pipe after stream has already been consumed"))
+			}
+
+			return readable.Pipe(destination)
+		})
+
+		// pause() - 暂停流读取
+		// 🔥 维护 isPaused 状态，停止调度下一块
+		formDataObj.Set("pause", func(call goja.FunctionCall) goja.Value {
+			readable := getFormDataReadable()
+			readable.Pause()
+			return formDataObj // 返回 this 支持链式调用
+		})
+
+		// resume() - 恢复流读取
+		// 🔥 重新调度读取循环
+		formDataObj.Set("resume", func(call goja.FunctionCall) goja.Value {
+			readable := getFormDataReadable()
+			readable.Resume()
+			return formDataObj // 返回 this 支持链式调用
+		})
+
+		// destroy(error?) - 销毁流
+		// 🔥 关闭底层 reader，触发 error 事件（如果有错误）
+		formDataObj.Set("destroy", func(call goja.FunctionCall) goja.Value {
+			readable := getFormDataReadable()
+			var err error
+			if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) && !goja.IsNull(call.Arguments[0]) {
+				err = fmt.Errorf("%s", call.Arguments[0].String())
+			}
+			readable.Destroy(err)
+			return formDataObj
+		})
+
+		// readable 属性 - 标识这是一个可读流
+		formDataObj.Set("readable", true)
 
 		// submit(url, callback?) - 提交表单到指定 URL
 		// 🔥 使用内部 fetch API 实现
@@ -400,7 +513,7 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 }
 
 // handleAppend 处理 append 方法的不同值类型
-func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingFormData *StreamingFormData, name string, value goja.Value, filename, contentType string) error {
+func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingFormData *formdata.StreamingFormData, name string, value goja.Value, filename, contentType string) error {
 	// 安全检查
 	if nfm == nil {
 		return fmt.Errorf("nfm 为 nil")
@@ -441,7 +554,7 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 				return fmt.Errorf("fetchEnhancer 为 nil")
 			}
 
-			data, contentTypeFromFile, filenameFromFile, err := nfm.fetchEnhancer.extractFileData(obj)
+			data, contentTypeFromFile, filenameFromFile, err := nfm.fetchEnhancer.ExtractFileData(obj)
 			if err == nil {
 				if filename == "" {
 					filename = filenameFromFile
@@ -467,7 +580,7 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 				return fmt.Errorf("fetchEnhancer 为 nil")
 			}
 
-			data, contentTypeFromBlob, err := nfm.fetchEnhancer.extractBlobData(obj)
+			data, contentTypeFromBlob, err := nfm.fetchEnhancer.ExtractBlobData(obj)
 			if err == nil {
 				if filename == "" {
 					filename = "blob"
@@ -565,54 +678,46 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 }
 
 // appendField 添加文本字段到 StreamingFormData
-func (nfm *NodeFormDataModule) appendField(streamingFormData *StreamingFormData, name, value string) {
+func (nfm *NodeFormDataModule) appendField(streamingFormData *formdata.StreamingFormData, name, value string) {
 	if streamingFormData == nil {
 		return
 	}
 
-	entry := FormDataEntry{
+	entry := formdata.FormDataEntry{
 		Name:  name,
 		Value: value,
 	}
 
-	// 检查 entries 是否为 nil
-	if streamingFormData.entries == nil {
-		streamingFormData.entries = make([]FormDataEntry, 0)
-	}
-
-	streamingFormData.entries = append(streamingFormData.entries, entry)
+	// 添加条目
+	streamingFormData.AppendEntry(entry)
 
 	// 更新总大小估算
-	streamingFormData.totalSize += int64(len(name) + len(value) + 100) // 100 字节为 header 开销
+	streamingFormData.AddToTotalSize(int64(len(name) + len(value) + 100)) // 100 字节为 header 开销
 }
 
 // appendFile 添加文件字段到 StreamingFormData
-func (nfm *NodeFormDataModule) appendFile(streamingFormData *StreamingFormData, name, filename, contentType string, data []byte) {
+func (nfm *NodeFormDataModule) appendFile(streamingFormData *formdata.StreamingFormData, name, filename, contentType string, data []byte) {
 	if streamingFormData == nil {
 		return
 	}
 
-	entry := FormDataEntry{
+	entry := formdata.FormDataEntry{
 		Name:        name,
 		Value:       data,
 		Filename:    filename,
 		ContentType: contentType,
 	}
 
-	// 检查 entries 是否为 nil
-	if streamingFormData.entries == nil {
-		streamingFormData.entries = make([]FormDataEntry, 0)
-	}
-
-	streamingFormData.entries = append(streamingFormData.entries, entry)
+	// 添加条目
+	streamingFormData.AppendEntry(entry)
 
 	// 更新总大小估算
-	streamingFormData.totalSize += int64(len(name) + len(filename) + len(contentType) + len(data) + 200) // 200 字节为 header 开销
+	streamingFormData.AddToTotalSize(int64(len(name) + len(filename) + len(contentType) + len(data) + 200)) // 200 字节为 header 开销
 }
 
 // handleReadableStream 处理 ReadableStream 对象（axios stream）
 // 🔥 新增方法：支持直接传入流式响应
-func (nfm *NodeFormDataModule) handleReadableStream(streamingFormData *StreamingFormData, name string, streamObj *goja.Object, filename, contentType string) error {
+func (nfm *NodeFormDataModule) handleReadableStream(streamingFormData *formdata.StreamingFormData, name string, streamObj *goja.Object, filename, contentType string) error {
 	if nfm == nil || streamingFormData == nil || streamObj == nil {
 		return fmt.Errorf("invalid parameters")
 	}
@@ -631,14 +736,15 @@ func (nfm *NodeFormDataModule) handleReadableStream(streamingFormData *Streaming
 		return fmt.Errorf("无法导出 StreamReader")
 	}
 
-	// 类型断言为 *StreamReader
-	streamReader, ok := exported.(*StreamReader)
+	// 类型断言为 *fetch.StreamReader
+	streamReader, ok := exported.(*fetch.StreamReader)
 	if !ok {
 		return fmt.Errorf("__streamReader 不是有效的 StreamReader 类型")
 	}
 
 	// 获取底层的 io.ReadCloser
-	if streamReader.reader == nil {
+	reader := streamReader.GetReader()
+	if reader == nil {
 		return fmt.Errorf("StreamReader 的 reader 为 nil")
 	}
 
@@ -652,34 +758,30 @@ func (nfm *NodeFormDataModule) handleReadableStream(streamingFormData *Streaming
 
 	// 🔥 关键：将 io.ReadCloser 添加到 FormData
 	// StreamingFormData 已经支持 io.Reader 类型
-	nfm.appendStreamFile(streamingFormData, name, filename, contentType, streamReader.reader)
+	nfm.appendStreamFile(streamingFormData, name, filename, contentType, reader)
 
 	return nil
 }
 
 // appendStreamFile 添加流式文件到 StreamingFormData
-func (nfm *NodeFormDataModule) appendStreamFile(streamingFormData *StreamingFormData, name, filename, contentType string, reader io.ReadCloser) {
+func (nfm *NodeFormDataModule) appendStreamFile(streamingFormData *formdata.StreamingFormData, name, filename, contentType string, reader io.ReadCloser) {
 	if streamingFormData == nil {
 		return
 	}
 
-	entry := FormDataEntry{
+	entry := formdata.FormDataEntry{
 		Name:        name,
 		Value:       reader, // io.ReadCloser 实现了 io.Reader 接口
 		Filename:    filename,
 		ContentType: contentType,
 	}
 
-	// 检查 entries 是否为 nil
-	if streamingFormData.entries == nil {
-		streamingFormData.entries = make([]FormDataEntry, 0)
-	}
+	// 添加条目
+	streamingFormData.AppendEntry(entry)
 
-	streamingFormData.entries = append(streamingFormData.entries, entry)
-
-	// 🔥 注意：流式数据的大小未知，不更新 totalSize
+	// 🔥 注意:流式数据的大小未知，不更新 totalSize
 	// 这样会自动触发流式处理模式
-	streamingFormData.totalSize += 1024 * 1024 // 预估 1MB，确保触发流式模式
+	streamingFormData.AddToTotalSize(1024 * 1024) // 预估 1MB，确保触发流式模式
 }
 
 // extractBufferData 从 Buffer 对象提取字节数据

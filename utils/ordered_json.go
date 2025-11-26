@@ -61,8 +61,8 @@ func ExportWithOrder(value goja.Value) interface{} {
 func ExportWithOrderAndLimit(value goja.Value, maxSize int) (interface{}, error) {
 	// 第一遍：快速估算大小（不创建对象，零内存占用）
 	estimatedSize := estimateSizeFromGojaValue(value)
-	if estimatedSize > maxSize {
-		return nil, fmt.Errorf("数据预估大小 %d 字节 > %d 字节限制，请优化返回结构",
+	if maxSize > 0 && estimatedSize > maxSize*2 {
+		return nil, fmt.Errorf("数据预估大小 %d 字节 >  %d 字节限制，请优化返回结构",
 			estimatedSize, maxSize)
 	}
 
@@ -160,10 +160,26 @@ func estimateBasicTypeSize(value goja.Value) int {
 		// 字符串：需要考虑转义字符
 		// 简化处理：实际长度 + 10% 余量 + 引号
 		return len(v) + len(v)/10 + 2
-	case int, int64, int32, int16, int8:
-		return 20 // 整数最多约 20 字节
-	case uint, uint64, uint32, uint16, uint8:
-		return 20
+	case int:
+		return estimateSignedIntJSONSize(int64(v))
+	case int64:
+		return estimateSignedIntJSONSize(v)
+	case int32:
+		return estimateSignedIntJSONSize(int64(v))
+	case int16:
+		return estimateSignedIntJSONSize(int64(v))
+	case int8:
+		return estimateSignedIntJSONSize(int64(v))
+	case uint:
+		return estimateUnsignedIntJSONSize(uint64(v))
+	case uint64:
+		return estimateUnsignedIntJSONSize(v)
+	case uint32:
+		return estimateUnsignedIntJSONSize(uint64(v))
+	case uint16:
+		return estimateUnsignedIntJSONSize(uint64(v))
+	case uint8:
+		return estimateUnsignedIntJSONSize(uint64(v))
 	case float64, float32:
 		return 25 // 浮点数可能更长
 	case bool:
@@ -171,6 +187,45 @@ func estimateBasicTypeSize(value goja.Value) int {
 	default:
 		return 10 // 其他类型保守估计
 	}
+}
+
+// estimateSignedIntJSONSize 估算带符号整数序列化为十进制 JSON 数字时的长度
+func estimateSignedIntJSONSize(n int64) int {
+	if n == 0 {
+		return 1
+	}
+
+	size := 0
+	var u uint64
+	if n < 0 {
+		size++ // 负号
+		u = uint64(-(n + 1))
+		u += 1
+	} else {
+		u = uint64(n)
+	}
+
+	for u != 0 {
+		size++
+		u /= 10
+	}
+
+	return size
+}
+
+// estimateUnsignedIntJSONSize 估算无符号整数序列化为十进制 JSON 数字时的长度
+func estimateUnsignedIntJSONSize(n uint64) int {
+	if n == 0 {
+		return 1
+	}
+
+	size := 0
+	for n != 0 {
+		size++
+		n /= 10
+	}
+
+	return size
 }
 
 // isArray 检查对象是否是数组

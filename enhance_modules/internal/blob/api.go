@@ -1,4 +1,4 @@
-package enhance_modules
+package blob
 
 import (
 	"bytes"
@@ -18,11 +18,31 @@ type JSBlob struct {
 	typ  string // MIME 类型
 }
 
+// GetData 返回 Blob 数据
+func (b *JSBlob) GetData() []byte {
+	return b.data
+}
+
+// GetType 返回 Blob MIME 类型
+func (b *JSBlob) GetType() string {
+	return b.typ
+}
+
 // JSFile File 对象的内部表示（继承 Blob）
 type JSFile struct {
 	JSBlob
 	name         string // 文件名
 	lastModified int64  // 最后修改时间（Unix 毫秒）
+}
+
+// GetName 返回文件名
+func (f *JSFile) GetName() string {
+	return f.name
+}
+
+// GetLastModified 返回最后修改时间
+func (f *JSFile) GetLastModified() int64 {
+	return f.lastModified
 }
 
 // decodeUTF8WithReplacement 解码 UTF-8 字节序列，对不合法序列使用 U+FFFD 替换
@@ -151,7 +171,7 @@ func extractBufferSourceBytes(runtime *goja.Runtime, obj *goja.Object) ([]byte, 
 
 // createBlobConstructor 创建 Blob 构造器
 // 🔥 Goja 约定：构造器中使用 panic(runtime.NewTypeError(...)) 抛出 JavaScript 异常
-// 这些 panic 会被上层的 defer recover 捕获，转换为 JavaScript TypeError
+// 这些 panic 会被上层的 defer recover 捕获,转换为 JavaScript TypeError
 func (fe *FetchEnhancer) createBlobConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) *goja.Object {
 	return func(call goja.ConstructorCall) *goja.Object {
 		// 🔥 安全检查：fe 不能为 nil
@@ -854,4 +874,21 @@ func (fe *FetchEnhancer) extractFileData(obj *goja.Object) ([]byte, string, stri
 	}
 
 	return file.data, file.typ, file.name, nil
+}
+
+// 🔥 关键修复：FetchEnhancer 类型别名，用于避免循环依赖
+// 在 internal/blob 包中，我们不能直接引用 enhance_modules.FetchEnhancer
+// 因此需要定义一个接口或结构体别名
+
+// FetchEnhancer 是 enhance_modules.FetchEnhancer 的精简版本
+// 只包含 Blob/File API 需要的字段
+type FetchEnhancer struct {
+	maxBlobFileSize int64 // Blob/File 最大大小（字节）
+}
+
+// RegisterBlobFileConstructors 注册 Blob 和 File 构造器到 runtime
+// 这是一个独立的函数，不依赖 FetchEnhancer 实例
+func RegisterBlobFileConstructors(runtime *goja.Runtime, maxBlobFileSize int64) error {
+	fe := &FetchEnhancer{maxBlobFileSize: maxBlobFileSize}
+	return fe.RegisterBlobFileAPI(runtime)
 }

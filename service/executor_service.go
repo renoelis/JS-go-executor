@@ -315,33 +315,38 @@ func (e *JSExecutor) registerModules(cfg *config.Config) {
 
 	// 注册 Fetch 模块
 	fetchEnhancer := enhance_modules.NewFetchEnhancerWithConfig(
-		cfg.Fetch.Timeout,                  // 🔥 HTTP 请求超时（30秒）
-		cfg.Fetch.ResponseReadTimeout,      // 🔥 响应读取超时（5分钟）
-		cfg.Fetch.MaxBufferedFormDataSize,  // 🔥 缓冲模式 FormData 限制（Blob/Buffer）
-		cfg.Fetch.MaxStreamingFormDataSize, // 🔥 流式模式 FormData 限制（Stream）
-		cfg.Fetch.EnableChunkedUpload,
-		cfg.Fetch.MaxBlobFileSize,
-		cfg.Fetch.FormDataBufferSize,
-		cfg.Fetch.MaxFileSize,
-		cfg.Fetch.MaxResponseSize,  // 🔥 缓冲读取限制（arrayBuffer/blob/text/json）
-		cfg.Fetch.MaxStreamingSize, // 🔥 流式读取限制（getReader）
-		// 🔥 HTTP Transport 配置（新增，使用环境变量配置）
-		&enhance_modules.HTTPTransportConfig{
-			MaxIdleConns:          cfg.Fetch.HTTPMaxIdleConns,
-			MaxIdleConnsPerHost:   cfg.Fetch.HTTPMaxIdleConnsPerHost,
-			MaxConnsPerHost:       cfg.Fetch.HTTPMaxConnsPerHost,
-			IdleConnTimeout:       cfg.Fetch.HTTPIdleConnTimeout,
-			DialTimeout:           cfg.Fetch.HTTPDialTimeout,
-			KeepAlive:             cfg.Fetch.HTTPKeepAlive,
-			TLSHandshakeTimeout:   cfg.Fetch.HTTPTLSHandshakeTimeout,
-			ExpectContinueTimeout: cfg.Fetch.HTTPExpectContinueTimeout,
-			ForceHTTP2:            cfg.Fetch.HTTPForceHTTP2,
-		},
-		cfg.Fetch.ResponseBodyIdleTimeout, // 🔥 v2.4.3: 响应体空闲超时（防止资源泄漏）
-		&enhance_modules.SSRFProtectionConfig{ // 🛡️ SSRF 防护配置（新增）
-			Enabled:        cfg.Fetch.EnableSSRFProtection,
-			AllowPrivateIP: cfg.Fetch.AllowPrivateIP,
-		},
+		enhance_modules.NewFetchConfig(
+			enhance_modules.WithRequestTimeout(cfg.Fetch.Timeout),
+			enhance_modules.WithResponseReadTimeout(cfg.Fetch.ResponseReadTimeout),
+			enhance_modules.WithResponseBodyIdleTimeout(cfg.Fetch.ResponseBodyIdleTimeout),
+			enhance_modules.WithMaxResponseSize(cfg.Fetch.MaxResponseSize),
+			enhance_modules.WithMaxStreamingSize(cfg.Fetch.MaxStreamingSize),
+			enhance_modules.WithMaxBlobFileSize(cfg.Fetch.MaxBlobFileSize),
+			enhance_modules.WithTransportConfig(&enhance_modules.HTTPTransportConfig{
+				MaxIdleConns:          cfg.Fetch.HTTPMaxIdleConns,
+				MaxIdleConnsPerHost:   cfg.Fetch.HTTPMaxIdleConnsPerHost,
+				MaxConnsPerHost:       cfg.Fetch.HTTPMaxConnsPerHost,
+				IdleConnTimeout:       cfg.Fetch.HTTPIdleConnTimeout,
+				DialTimeout:           cfg.Fetch.HTTPDialTimeout,
+				KeepAlive:             cfg.Fetch.HTTPKeepAlive,
+				TLSHandshakeTimeout:   cfg.Fetch.HTTPTLSHandshakeTimeout,
+				ExpectContinueTimeout: cfg.Fetch.HTTPExpectContinueTimeout,
+				ForceHTTP2:            cfg.Fetch.HTTPForceHTTP2,
+			}),
+			enhance_modules.WithSSRFConfig(&enhance_modules.SSRFProtectionConfig{
+				Enabled:        cfg.Fetch.EnableSSRFProtection,
+				AllowPrivateIP: cfg.Fetch.AllowPrivateIP,
+			}),
+			enhance_modules.WithFormDataConfig(
+				enhance_modules.DefaultFormDataStreamConfigWithBuffer(
+					cfg.Fetch.FormDataBufferSize,
+					cfg.Fetch.MaxBufferedFormDataSize,
+					cfg.Fetch.MaxStreamingFormDataSize,
+					cfg.Fetch.MaxFileSize,
+					cfg.Fetch.Timeout,
+				),
+			),
+		),
 	)
 	e.moduleRegistry.Register(fetchEnhancer)
 

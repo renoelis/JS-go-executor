@@ -1,10 +1,9 @@
-package enhance_modules
+package ssrf
 
 import (
 	"context"
 	"fmt"
 	"net"
-	"strings"
 	"time"
 
 	"flow-codeblock-go/utils"
@@ -155,22 +154,13 @@ func isCloudMetadataIP(ip net.IP) bool {
 	}
 
 	// 检查是否在 100.64.0.0/10 范围内（阿里云 VPC 内网段）
-	if strings.HasPrefix(ipStr, "100.") {
-		octets := strings.Split(ipStr, ".")
-		if len(octets) == 4 {
-			// 100.64.0.0 - 100.127.255.255
-			if octets[0] == "100" {
-				secondOctet := octets[1]
-				// 64-127
-				if len(secondOctet) > 0 && secondOctet[0] >= '6' && secondOctet[0] <= '9' {
-					return true
-				}
-				if len(secondOctet) > 1 && secondOctet[0] == '1' {
-					if secondOctet[1] >= '0' && secondOctet[1] <= '2' {
-						return true
-					}
-				}
-			}
+	// 100.64.0.0 - 100.127.255.255 (第二段: 64-127)
+	// 需要转换为 IPv4 格式（可能是 IPv6 映射的 IPv4）
+	ip4 := ip.To4()
+	if ip4 != nil && ip4[0] == 100 {
+		secondOctet := int(ip4[1])
+		if secondOctet >= 64 && secondOctet <= 127 {
+			return true
 		}
 	}
 
