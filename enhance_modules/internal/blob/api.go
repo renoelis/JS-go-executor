@@ -10,6 +10,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"flow-codeblock-go/enhance_modules/internal/streams"
+
 	"github.com/dop251/goja"
 )
 
@@ -32,8 +34,8 @@ func (b *JSBlob) GetType() string {
 // JSFile File 对象的内部表示（继承 Blob）
 type JSFile struct {
 	JSBlob
-	name         string // 文件名
-	lastModified int64  // 最后修改时间（Unix 毫秒）
+	name         string  // 文件名
+	lastModified float64 // 最后修改时间（Unix 毫秒）
 }
 
 const blobStreamDefaultChunkSize = 64 * 1024
@@ -44,7 +46,7 @@ func (f *JSFile) GetName() string {
 }
 
 // GetLastModified 返回最后修改时间
-func (f *JSFile) GetLastModified() int64 {
+func (f *JSFile) GetLastModified() float64 {
 	return f.lastModified
 }
 
@@ -356,6 +358,7 @@ func createBlobReadableStream(runtime *goja.Runtime, blob *JSBlob, uint8ArrayCon
 	}
 
 	streamObj := runtime.NewObject()
+	streams.AttachReadableStreamPrototype(runtime, streamObj)
 	totalLength := len(blob.data)
 
 	var offset int
@@ -514,13 +517,30 @@ func (fe *FetchEnhancer) createFileConstructor(runtime *goja.Runtime) func(goja.
 			JSBlob: JSBlob{
 				typ: "", // 默认类型为空字符串（符合 Web 标准）
 			},
-			lastModified: time.Now().UnixMilli(),
+			lastModified: float64(time.Now().UnixMilli()),
 		}
 
 		// 🔥 提前获取大小限制（避免内存消耗后才检查）
 		maxFileSize := int64(100 * 1024 * 1024) // 默认 100MB
 		if fe != nil && fe.maxBlobFileSize > 0 {
 			maxFileSize = fe.maxBlobFileSize
+		}
+
+		var optionsObj *goja.Object
+		if len(call.Arguments) > 2 && !goja.IsUndefined(call.Arguments[2]) && !goja.IsNull(call.Arguments[2]) {
+			optionsObj = call.Arguments[2].ToObject(runtime)
+		}
+
+		endings := "transparent"
+		if optionsObj != nil {
+			if endingsVal := optionsObj.Get("endings"); endingsVal != nil && !goja.IsUndefined(endingsVal) && !goja.IsNull(endingsVal) {
+				endingsStr := endingsVal.String()
+				if endingsStr == "native" || endingsStr == "transparent" {
+					endings = endingsStr
+				} else {
+					panic(runtime.NewTypeError(fmt.Sprintf("Failed to construct 'File': option 'endings' must be 'transparent' or 'native', got %s", endingsStr)))
+				}
+			}
 		}
 
 		// 第一个参数：数据parts数组
@@ -586,6 +606,13 @@ func (fe *FetchEnhancer) createFileConstructor(runtime *goja.Runtime) func(goja.
 				if !partBytesSet {
 					// 调用 JS 的 toString 方法
 					str := partVal.String()
+					if endings == "native" {
+						str = strings.ReplaceAll(str, "\r\n", "\n")
+						str = strings.ReplaceAll(str, "\r", "\n")
+						if goRuntime.GOOS == "windows" {
+							str = strings.ReplaceAll(str, "\n", "\r\n")
+						}
+					}
 					partBytes = []byte(str)
 					partBytesSet = true
 				}
@@ -607,23 +634,20 @@ func (fe *FetchEnhancer) createFileConstructor(runtime *goja.Runtime) func(goja.
 			panic(runtime.NewTypeError(fmt.Sprintf("File 大小超过限制：%d > %d 字节", len(file.data), maxFileSize)))
 		}
 
-		// 第二个参数：文件名
+		// 第二个参数：文件名，需要遵循 DOMString 语义（Symbol 需抛错）
+		if _, isSymbol := call.Arguments[1].(*goja.Symbol); isSymbol {
+			panic(runtime.NewTypeError("Cannot convert a Symbol value to a string"))
+		}
 		file.name = call.Arguments[1].String()
 
 		// 第三个参数：options {type, lastModified}
-		if len(call.Arguments) > 2 && !goja.IsUndefined(call.Arguments[2]) && !goja.IsNull(call.Arguments[2]) {
-			if optionsObj := call.Arguments[2].ToObject(runtime); optionsObj != nil {
-				if typeVal := optionsObj.Get("type"); typeVal != nil && !goja.IsUndefined(typeVal) {
-					file.typ = normalizeType(typeVal.String())
-				}
-				if lastModVal := optionsObj.Get("lastModified"); lastModVal != nil && !goja.IsUndefined(lastModVal) {
-					lastMod := lastModVal.ToInteger()
-					// 可选：将负值 clamp 到 0
-					if lastMod < 0 {
-						lastMod = 0
-					}
-					file.lastModified = lastMod
-				}
+		if optionsObj != nil {
+			if typeVal := optionsObj.Get("type"); typeVal != nil && !goja.IsUndefined(typeVal) {
+				file.typ = normalizeType(typeVal.String())
+			}
+			if lastModVal := optionsObj.Get("lastModified"); lastModVal != nil && !goja.IsUndefined(lastModVal) {
+				// 与 Node 行为保持一致：允许 NaN/Infinity，并按 JS Number 语义保留
+				file.lastModified = lastModVal.ToFloat()
 			}
 		}
 
@@ -1124,12 +1148,7 @@ func normalizeSliceIndex(value goja.Value, dataLen int64, defaultValue int64) in
 		return defaultValue
 	}
 
-	num := value.ToFloat()
-	if math.IsNaN(num) || math.IsInf(num, 0) {
-		num = 0
-	}
-
-	relative := int64(math.Trunc(num))
+	relative := convertToInt64(value)
 	return clampIndex(relative, dataLen)
 }
 
@@ -1144,4 +1163,28 @@ func clampIndex(val int64, dataLen int64) int64 {
 		return dataLen
 	}
 	return val
+}
+
+func convertToInt64(value goja.Value) int64 {
+	const bitLength = 64.0
+
+	num := value.ToFloat()
+	if math.IsNaN(num) || num == 0 || math.IsInf(num, 0) {
+		return 0
+	}
+
+	num = math.Trunc(num)
+
+	modulus := math.Exp2(bitLength)
+	remainder := math.Mod(num, modulus)
+	if remainder == 0 {
+		remainder = 0
+	}
+
+	signBoundary := math.Exp2(bitLength - 1)
+	if remainder >= signBoundary {
+		remainder -= modulus
+	}
+
+	return int64(remainder)
 }

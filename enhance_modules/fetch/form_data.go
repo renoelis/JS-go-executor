@@ -262,7 +262,7 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 	return func(call goja.ConstructorCall) *goja.Object {
 		formData := NewFormData(runtime)
 
-		obj := runtime.NewObject()
+		obj := ensureConstructorThis(runtime, "FormData", call.This)
 
 		// 保存 FormData 实例到对象（用于内部访问）
 		obj.Set("__formDataInstance", formData)
@@ -335,6 +335,52 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 			obj.Set("dataSize", overheadLen+valueLen)
 		}
 
+		// 🔧 将 Blob/File 重命名为指定文件名（用于 append/set 的 filename 参数）
+		cloneBlobAsNamedFile := func(source *goja.Object, filename string) *goja.Object {
+			if source == nil || filename == "" {
+				return nil
+			}
+
+			fileCtorVal := runtime.Get("File")
+			fileCtorObj, ok := fileCtorVal.(*goja.Object)
+			if !ok || fileCtorObj == nil || goja.IsUndefined(fileCtorVal) {
+				return nil
+			}
+
+			partsArray := runtime.NewArray()
+			partsArray.Set("0", source)
+
+			args := []goja.Value{
+				partsArray,
+				runtime.ToValue(filename),
+			}
+
+			options := runtime.NewObject()
+			hasOptions := false
+
+			if typeVal := source.Get("type"); typeVal != nil && !goja.IsUndefined(typeVal) && !goja.IsNull(typeVal) {
+				options.Set("type", typeVal)
+				hasOptions = true
+			}
+
+			if isFileVal := source.Get("__isFile"); isFileVal != nil && !goja.IsUndefined(isFileVal) && isFileVal.ToBoolean() {
+				if lastModifiedVal := source.Get("lastModified"); lastModifiedVal != nil && !goja.IsUndefined(lastModifiedVal) && !goja.IsNull(lastModifiedVal) {
+					options.Set("lastModified", lastModifiedVal)
+					hasOptions = true
+				}
+			}
+
+			if hasOptions {
+				args = append(args, options)
+			}
+
+			if newFileObj, err := runtime.New(fileCtorObj, args...); err == nil {
+				return newFileObj
+			}
+
+			return nil
+		}
+
 		// append(name, value[, filename])
 		obj.Set("append", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) < 2 {
@@ -345,19 +391,25 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 			valueArg := call.Arguments[1]
 
 			// 🔥 类型转换：非 Blob/File 值转换为字符串（符合 Web FormData API）
-			var value interface{}
-			if valueObj, ok := valueArg.(*goja.Object); ok {
+			var (
+				value        interface{}
+				valueObj     *goja.Object
+				isBlobOrFile bool
+			)
+
+			if obj, ok := valueArg.(*goja.Object); ok {
+				valueObj = obj
 				// 检查是否是 Blob/File 对象
 				isBlob := valueObj.Get("__isBlob")
 				isFile := valueObj.Get("__isFile")
-				isBlobOrFile := (isBlob != nil && !goja.IsUndefined(isBlob) && !goja.IsNull(isBlob) && isBlob.ToBoolean()) ||
+				isBlobOrFile = (isBlob != nil && !goja.IsUndefined(isBlob) && !goja.IsNull(isBlob) && isBlob.ToBoolean()) ||
 					(isFile != nil && !goja.IsUndefined(isFile) && !goja.IsNull(isFile) && isFile.ToBoolean())
 				if isBlobOrFile {
 					// Blob/File 保留原对象
 					value = valueArg
 				} else {
-					// 其他对象转换为 "[object Object]"
-					value = "[object Object]"
+					// 其他对象按照 JS 语义转换为字符串（Array => "1,2,3" 等）
+					value = valueArg.String()
 				}
 			} else if goja.IsNull(valueArg) {
 				value = "null"
@@ -371,6 +423,14 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 			var filename string
 			if len(call.Arguments) > 2 {
 				filename = call.Arguments[2].String()
+			}
+
+			// ✅ Node/WHATWG 行为：提供 filename 时，Blob/File 会被包装成新的 File，name = filename
+			if filename != "" && isBlobOrFile && valueObj != nil {
+				if renamed := cloneBlobAsNamedFile(valueObj, filename); renamed != nil {
+					value = renamed
+					valueObj = renamed
+				}
 			}
 
 			if filename != "" {
@@ -395,19 +455,25 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 			valueArg := call.Arguments[1]
 
 			// 🔥 类型转换：非 Blob/File 值转换为字符串（符合 Web FormData API）
-			var value interface{}
-			if valueObj, ok := valueArg.(*goja.Object); ok {
+			var (
+				value        interface{}
+				valueObj     *goja.Object
+				isBlobOrFile bool
+			)
+
+			if obj, ok := valueArg.(*goja.Object); ok {
+				valueObj = obj
 				// 检查是否是 Blob/File 对象
 				isBlob := valueObj.Get("__isBlob")
 				isFile := valueObj.Get("__isFile")
-				isBlobOrFile := (isBlob != nil && !goja.IsUndefined(isBlob) && !goja.IsNull(isBlob) && isBlob.ToBoolean()) ||
+				isBlobOrFile = (isBlob != nil && !goja.IsUndefined(isBlob) && !goja.IsNull(isBlob) && isBlob.ToBoolean()) ||
 					(isFile != nil && !goja.IsUndefined(isFile) && !goja.IsNull(isFile) && isFile.ToBoolean())
 				if isBlobOrFile {
 					// Blob/File 保留原对象
 					value = valueArg
 				} else {
-					// 其他对象转换为 "[object Object]"
-					value = "[object Object]"
+					// 其他对象按照 JS 语义转换为字符串（Array => "1,2,3" 等）
+					value = valueArg.String()
 				}
 			} else if goja.IsNull(valueArg) {
 				value = "null"
@@ -421,6 +487,14 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 			var filename string
 			if len(call.Arguments) > 2 {
 				filename = call.Arguments[2].String()
+			}
+
+			// ✅ Node/WHATWG 行为：set(name, blob, filename) 时同样需要包装新的 File
+			if filename != "" && isBlobOrFile && valueObj != nil {
+				if renamed := cloneBlobAsNamedFile(valueObj, filename); renamed != nil {
+					value = renamed
+					valueObj = renamed
+				}
 			}
 
 			if filename != "" {
@@ -698,6 +772,36 @@ func setFormDataDefaultIterator(runtime *goja.Runtime, obj *goja.Object) {
 		}
 		return goja.Undefined()
 	}))
+}
+
+func ensureFormDataPrototypeToStringTag(runtime *goja.Runtime) {
+	if runtime == nil {
+		return
+	}
+
+	constructorVal := runtime.Get("FormData")
+	if constructorVal == nil || goja.IsUndefined(constructorVal) || goja.IsNull(constructorVal) {
+		return
+	}
+
+	constructorObj := constructorVal.ToObject(runtime)
+	if constructorObj == nil {
+		return
+	}
+
+	prototypeVal := constructorObj.Get("prototype")
+	if prototypeVal == nil || goja.IsUndefined(prototypeVal) || goja.IsNull(prototypeVal) {
+		return
+	}
+
+	prototype := prototypeVal.ToObject(runtime)
+	if prototype == nil {
+		return
+	}
+
+	if err := prototype.DefineDataPropertySymbol(goja.SymToStringTag, runtime.ToValue("FormData"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
+		prototype.SetSymbol(goja.SymToStringTag, runtime.ToValue("FormData"))
+	}
 }
 
 // ==================== 注释说明 ====================

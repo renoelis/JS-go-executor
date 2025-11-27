@@ -72,6 +72,9 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 
 		// 创建 FormData 对象
 		formDataObj := runtime.NewObject()
+		if err := formDataObj.DefineDataPropertySymbol(goja.SymToStringTag, runtime.ToValue("FormData"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
+			formDataObj.SetSymbol(goja.SymToStringTag, runtime.ToValue("FormData"))
+		}
 
 		// 为兼容 Node.js form-data 的测试用内部字段，提供 _streams 和 _boundary
 		// _streams: 近似模拟 form-data 的内部 streams 结构，方便 JS 辅助函数 parseFormData 解析字段

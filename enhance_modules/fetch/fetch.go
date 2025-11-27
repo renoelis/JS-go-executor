@@ -18,6 +18,7 @@ import (
 	"flow-codeblock-go/enhance_modules/internal/body"
 	"flow-codeblock-go/enhance_modules/internal/formdata"
 	"flow-codeblock-go/enhance_modules/internal/ssrf"
+	"flow-codeblock-go/enhance_modules/internal/streams"
 	"flow-codeblock-go/enhance_modules/internal/transport"
 	"flow-codeblock-go/enhance_modules/internal/url"
 
@@ -178,6 +179,11 @@ func (fe *FetchEnhancer) RegisterFetchAPI(runtime *goja.Runtime) error {
 		return fmt.Errorf("注册 queueMicrotask 失败: %w", err)
 	}
 
+	// ReadableStream 是 Blob/Response.body 所依赖的全局构造器，Goja 需要手动补齐
+	if err := streams.EnsureReadableStream(runtime); err != nil {
+		return fmt.Errorf("注册 ReadableStream 失败: %w", err)
+	}
+
 	// 2. 注册 Headers 构造器
 	runtime.Set("Headers", CreateHeadersConstructor(runtime))
 
@@ -202,6 +208,7 @@ func (fe *FetchEnhancer) RegisterFetchAPI(runtime *goja.Runtime) error {
 
 	// 7. 注册 FormData 构造器
 	runtime.Set("FormData", CreateFormDataConstructor(runtime))
+	ensureFormDataPrototypeToStringTag(runtime)
 
 	// 8. 注册 Blob/File 构造器
 	if err := blob.RegisterBlobFileConstructors(runtime, fe.config.MaxBlobFileSize); err != nil {
@@ -1490,6 +1497,7 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 
 	// 🔥 创建自定义 body 对象（包装 StreamingResponse.GetReader()）
 	bodyObj := runtime.NewObject()
+	streams.AttachReadableStreamPrototype(runtime, bodyObj)
 	innerReader := streamingResponse.GetReader()
 
 	// getReader() 方法
@@ -2057,6 +2065,7 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 	// 🔥 body 属性（ReadableStream 对象，支持 cancel 和 getReader）
 	// Web API 标准：response.body 应该是 ReadableStream，不是 null
 	bodyObj := runtime.NewObject()
+	streams.AttachReadableStreamPrototype(runtime, bodyObj)
 
 	// getReader() 方法
 	bodyObj.Set("getReader", func(call goja.FunctionCall) goja.Value {
