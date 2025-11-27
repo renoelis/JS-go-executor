@@ -11,23 +11,27 @@ import (
 	"github.com/dop251/goja"
 )
 
-func setHeaderWithValidation(headers map[string]string, runtime *goja.Runtime, ctx, name, value string) {
+func setHeaderWithValidation(headers map[string]string, runtime *goja.Runtime, ctx, name, value string) string {
 	ensureValidHeaderName(runtime, ctx, name)
 	normalized := normalizeHeaderValue(value)
 	ensureValidHeaderValue(runtime, ctx, normalized)
+	ensureASCIIHeaderValue(runtime, normalized)
 	headers[strings.ToLower(name)] = normalized
+	return normalized
 }
 
-func appendHeaderWithValidation(headers map[string]string, runtime *goja.Runtime, ctx, name, value string) {
+func appendHeaderWithValidation(headers map[string]string, runtime *goja.Runtime, ctx, name, value string) string {
 	ensureValidHeaderName(runtime, ctx, name)
 	normalized := normalizeHeaderValue(value)
 	ensureValidHeaderValue(runtime, ctx, normalized)
+	ensureASCIIHeaderValue(runtime, normalized)
 	key := strings.ToLower(name)
-	if existing, ok := headers[key]; ok && existing != "" {
+	if existing, ok := headers[key]; ok {
 		headers[key] = existing + ", " + normalized
 	} else {
 		headers[key] = normalized
 	}
+	return normalized
 }
 
 // sortedHeaderKeys 返回按字母顺序排序的 header 名称列表
@@ -54,12 +58,29 @@ func sortedHeaderKeys(headers map[string]string) []string {
 func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) *goja.Object {
 	return func(call goja.ConstructorCall) *goja.Object {
 		headers := make(map[string]string)
+		setCookieKey := strings.ToLower("Set-Cookie")
+		var setCookieValues []string
+
+		setSetCookie := func(values []string) {
+			if values == nil {
+				setCookieValues = nil
+				return
+			}
+			setCookieValues = append([]string(nil), values...)
+		}
+
+		appendSetCookie := func(value string) {
+			setCookieValues = append(setCookieValues, value)
+		}
 
 		// 从参数初始化 Headers
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) && !goja.IsNull(call.Arguments[0]) {
 			if normalized, err := normalizeHeadersInit(runtime, call.Arguments[0], "Headers.append"); err == nil {
 				for key, value := range normalized {
-					headers[strings.ToLower(key)] = normalizeHeaderValue(fmt.Sprintf("%v", value))
+					norm := setHeaderWithValidation(headers, runtime, "Headers.append", key, fmt.Sprintf("%v", value))
+					if strings.EqualFold(key, "Set-Cookie") {
+						setSetCookie([]string{norm})
+					}
 				}
 			} else {
 				panic(runtime.NewTypeError("初始化 Headers 失败: " + err.Error()))
@@ -73,7 +94,9 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			if len(call.Arguments) == 0 {
 				return goja.Null()
 			}
-			name := strings.ToLower(call.Arguments[0].String())
+			nameRaw := call.Arguments[0].String()
+			ensureValidHeaderName(runtime, "Headers.get", nameRaw)
+			name := strings.ToLower(nameRaw)
 			if value, ok := headers[name]; ok {
 				return runtime.ToValue(value)
 			}
@@ -87,7 +110,10 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			}
 			name := call.Arguments[0].String()
 			value := call.Arguments[1].String()
-			setHeaderWithValidation(headers, runtime, "Headers.set", name, value)
+			normalized := setHeaderWithValidation(headers, runtime, "Headers.set", name, value)
+			if strings.EqualFold(name, "Set-Cookie") {
+				setSetCookie([]string{normalized})
+			}
 			return goja.Undefined()
 		})
 
@@ -96,7 +122,9 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			if len(call.Arguments) == 0 {
 				return runtime.ToValue(false)
 			}
-			name := strings.ToLower(call.Arguments[0].String())
+			nameRaw := call.Arguments[0].String()
+			ensureValidHeaderName(runtime, "Headers.has", nameRaw)
+			name := strings.ToLower(nameRaw)
 			_, ok := headers[name]
 			return runtime.ToValue(ok)
 		})
@@ -106,8 +134,13 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			if len(call.Arguments) == 0 {
 				return goja.Undefined()
 			}
-			name := strings.ToLower(call.Arguments[0].String())
+			nameRaw := call.Arguments[0].String()
+			ensureValidHeaderName(runtime, "Headers.delete", nameRaw)
+			name := strings.ToLower(nameRaw)
 			delete(headers, name)
+			if name == setCookieKey {
+				setSetCookie(nil)
+			}
 			return goja.Undefined()
 		})
 
@@ -118,11 +151,14 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			}
 			name := call.Arguments[0].String()
 			value := call.Arguments[1].String()
-			appendHeaderWithValidation(headers, runtime, "Headers.append", name, value)
+			normalized := appendHeaderWithValidation(headers, runtime, "Headers.append", name, value)
+			if strings.EqualFold(name, "Set-Cookie") {
+				appendSetCookie(normalized)
+			}
 			return goja.Undefined()
 		})
 
-		// forEach(callback) - 遍历所有头部（字母序）
+		// forEach(callback[, thisArg]) - 遍历所有头部（字母序）
 		obj.Set("forEach", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
 				return goja.Undefined()
@@ -132,9 +168,16 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 				return goja.Undefined()
 			}
 
+			var thisArg goja.Value = goja.Undefined()
+			if len(call.Arguments) > 1 {
+				thisArg = call.Arguments[1]
+			}
+
 			for _, key := range sortedHeaderKeys(headers) {
 				value := headers[key]
-				callback(goja.Undefined(), runtime.ToValue(value), runtime.ToValue(key), obj)
+				if _, err := callback(thisArg, runtime.ToValue(value), runtime.ToValue(key), obj); err != nil {
+					panic(err)
+				}
 			}
 			return goja.Undefined()
 		})
@@ -228,7 +271,63 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			return iterator
 		})
 
+		// Symbol.iterator - 与 entries() 等价
+		obj.SetSymbol(goja.SymIterator, func(call goja.FunctionCall) goja.Value {
+			entries := obj.Get("entries")
+			if entries == nil || goja.IsUndefined(entries) {
+				return goja.Undefined()
+			}
+			if fn, ok := goja.AssertFunction(entries); ok {
+				iter, err := fn(obj)
+				if err != nil {
+					panic(err)
+				}
+				return iter
+			}
+			return goja.Undefined()
+		})
+
+		// getSetCookie() - 返回 Set-Cookie 数组（Node fetch 扩展）
+		obj.Set("getSetCookie", func(call goja.FunctionCall) goja.Value {
+			if len(setCookieValues) == 0 {
+				return runtime.ToValue([]string{})
+			}
+			copyVals := append([]string(nil), setCookieValues...)
+			return runtime.ToValue(copyVals)
+		})
+
 		return obj
+	}
+}
+
+// ensureHeadersPrototypeToStringTag 确保 Headers.prototype 暴露 @@toStringTag
+func ensureHeadersPrototypeToStringTag(runtime *goja.Runtime) {
+	if runtime == nil {
+		return
+	}
+
+	constructorVal := runtime.Get("Headers")
+	if constructorVal == nil || goja.IsUndefined(constructorVal) || goja.IsNull(constructorVal) {
+		return
+	}
+
+	constructorObj := constructorVal.ToObject(runtime)
+	if constructorObj == nil {
+		return
+	}
+
+	prototypeVal := constructorObj.Get("prototype")
+	if prototypeVal == nil || goja.IsUndefined(prototypeVal) || goja.IsNull(prototypeVal) {
+		return
+	}
+
+	prototypeObj := prototypeVal.ToObject(runtime)
+	if prototypeObj == nil {
+		return
+	}
+
+	if err := prototypeObj.DefineDataPropertySymbol(goja.SymToStringTag, runtime.ToValue("Headers"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
+		prototypeObj.SetSymbol(goja.SymToStringTag, runtime.ToValue("Headers"))
 	}
 }
 
@@ -272,20 +371,20 @@ func attachConstructorPrototype(runtime *goja.Runtime, constructorName string, t
 }
 
 type requestCloneContext struct {
-	url                string
-	method             string
-	body               interface{}
-	headers            map[string]string
-	cacheValue         string
-	credentialsValue   string
-	modeValue          string
-	redirectValue      string
-	referrerValue      string
+	url                 string
+	method              string
+	body                interface{}
+	headers             map[string]string
+	cacheValue          string
+	credentialsValue    string
+	modeValue           string
+	redirectValue       string
+	referrerValue       string
 	referrerPolicyValue string
-	integrityValue     string
-	keepaliveValue     bool
-	destinationValue   string
-	signal             goja.Value
+	integrityValue      string
+	keepaliveValue      bool
+	destinationValue    string
+	signal              goja.Value
 }
 
 func defineRequestReadonlyProperty(runtime *goja.Runtime, obj *goja.Object, name string, value interface{}) {

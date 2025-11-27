@@ -31,8 +31,8 @@ func (e *AbortError) Error() string {
 
 // ensureASCIIHeaderValue 校验 header 值是否为 ASCII，违反时抛出 TypeError
 func ensureASCIIHeaderValue(runtime *goja.Runtime, value string) {
-	for i := 0; i < len(value); i++ {
-		if value[i] >= 0x80 {
+	for _, r := range value {
+		if r > 0xFF {
 			panic(runtime.NewTypeError("Invalid character in header value"))
 		}
 	}

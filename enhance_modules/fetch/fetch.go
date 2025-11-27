@@ -186,6 +186,7 @@ func (fe *FetchEnhancer) RegisterFetchAPI(runtime *goja.Runtime) error {
 
 	// 2. 注册 Headers 构造器
 	runtime.Set("Headers", CreateHeadersConstructor(runtime))
+	ensureHeadersPrototypeToStringTag(runtime)
 
 	// 3. 注册 Request 构造器
 	runtime.Set("Request", CreateRequestConstructor(runtime))
@@ -312,7 +313,7 @@ func isValidResponseRedirectStatus(status int) bool {
 func (fe *FetchEnhancer) buildResponseDataFromConstructor(runtime *goja.Runtime, call goja.ConstructorCall) (*ResponseData, error) {
 	status := 200
 	statusText := ""
-	headers := http.Header{}
+	headers := make(http.Header)
 	var bodyBytes []byte
 	var contentType string
 	var hasBody bool
@@ -329,21 +330,26 @@ func (fe *FetchEnhancer) buildResponseDataFromConstructor(runtime *goja.Runtime,
 			bodyInput = bodyVal.Export()
 		}
 
-		if fe.bodyHandler == nil {
-			return nil, fmt.Errorf("bodyHandler 为 nil")
-		}
+		var (
+			data   []byte
+			reader io.Reader
+			ct     string
+			err    error
+		)
 
-		data, reader, ct, err := fe.bodyHandler.ProcessBody(runtime, bodyInput)
-		if err != nil {
-			return nil, fmt.Errorf("处理 Response body 失败: %w", err)
-		}
-
-		if reader != nil {
-			buffer, err := io.ReadAll(reader)
+		if fe.bodyHandler != nil {
+			data, reader, ct, err = fe.bodyHandler.ProcessBody(runtime, bodyInput)
 			if err != nil {
-				return nil, fmt.Errorf("读取 Response body 失败: %w", err)
+				return nil, fmt.Errorf("处理 Response body 失败: %w", err)
 			}
-			data = buffer
+
+			if reader != nil {
+				buffer, err := io.ReadAll(reader)
+				if err != nil {
+					return nil, fmt.Errorf("读取 Response body 失败: %w", err)
+				}
+				data = buffer
+			}
 		}
 
 		switch {
@@ -362,7 +368,7 @@ func (fe *FetchEnhancer) buildResponseDataFromConstructor(runtime *goja.Runtime,
 			return nil, fmt.Errorf("Response init 必须是对象")
 		}
 
-		if statusVal := initObj.Get("status"); !goja.IsUndefined(statusVal) && !goja.IsNull(statusVal) {
+		if statusVal := initObj.Get("status"); statusVal != nil && !goja.IsUndefined(statusVal) && !goja.IsNull(statusVal) {
 			parsed := int(statusVal.ToInteger())
 			if parsed < 200 || parsed > 599 || parsed == 101 {
 				return nil, fmt.Errorf("Response status 必须在 200-599 且不能为 101")
@@ -370,11 +376,11 @@ func (fe *FetchEnhancer) buildResponseDataFromConstructor(runtime *goja.Runtime,
 			status = parsed
 		}
 
-		if statusTextVal := initObj.Get("statusText"); !goja.IsUndefined(statusTextVal) && !goja.IsNull(statusTextVal) {
+		if statusTextVal := initObj.Get("statusText"); statusTextVal != nil && !goja.IsUndefined(statusTextVal) && !goja.IsNull(statusTextVal) {
 			statusText = statusTextVal.String()
 		}
 
-		if headersVal := initObj.Get("headers"); !goja.IsUndefined(headersVal) && !goja.IsNull(headersVal) {
+		if headersVal := initObj.Get("headers"); headersVal != nil && !goja.IsUndefined(headersVal) && !goja.IsNull(headersVal) {
 			if err := populateHeadersFromValue(runtime, headers, headersVal); err != nil {
 				return nil, fmt.Errorf("解析 Response headers 失败: %w", err)
 			}
@@ -409,13 +415,20 @@ func populateHeadersFromValue(runtime *goja.Runtime, headers http.Header, value 
 		return nil
 	}
 
+	opCtx := "Headers.append"
+
 	if obj, ok := value.(*goja.Object); ok {
+		if obj.ClassName() == "Array" {
+			appendHTTPHeaderTuplesFromArray(runtime, opCtx, obj, headers)
+			return nil
+		}
+
 		if forEach := obj.Get("forEach"); forEach != nil && !goja.IsUndefined(forEach) {
 			if fn, ok := goja.AssertFunction(forEach); ok {
 				callback := func(call goja.FunctionCall) goja.Value {
 					if len(call.Arguments) >= 2 {
 						name := call.Argument(1).String()
-						headers.Add(name, call.Argument(0).String())
+						addHTTPHeaderEntry(runtime, opCtx, headers, name, call.Argument(0).String())
 					}
 					return goja.Undefined()
 				}
@@ -427,7 +440,7 @@ func populateHeadersFromValue(runtime *goja.Runtime, headers http.Header, value 
 		}
 
 		for _, key := range obj.Keys() {
-			headers.Add(key, obj.Get(key).String())
+			addHTTPHeaderEntry(runtime, opCtx, headers, key, obj.Get(key).String())
 		}
 		return nil
 	}
@@ -436,18 +449,84 @@ func populateHeadersFromValue(runtime *goja.Runtime, headers http.Header, value 
 		switch h := exported.(type) {
 		case map[string]interface{}:
 			for key, val := range h {
-				headers.Add(key, fmt.Sprintf("%v", val))
+				addHTTPHeaderEntry(runtime, opCtx, headers, key, fmt.Sprintf("%v", val))
 			}
 		case []interface{}:
-			for _, entry := range h {
-				if tuple, ok := entry.([]interface{}); ok && len(tuple) >= 2 {
-					headers.Add(fmt.Sprintf("%v", tuple[0]), fmt.Sprintf("%v", tuple[1]))
-				}
-			}
+			appendHTTPHeaderTuplesFromSlice(runtime, opCtx, h, headers)
 		}
 	}
 
 	return nil
+}
+
+func addHTTPHeaderEntry(runtime *goja.Runtime, ctx string, headers http.Header, name, value string) {
+	if headers == nil {
+		return
+	}
+	ensureValidHeaderName(runtime, ctx, name)
+	normalized := normalizeHeaderValue(value)
+	ensureValidHeaderValue(runtime, ctx, normalized)
+	ensureASCIIHeaderValue(runtime, normalized)
+	headers.Add(name, normalized)
+}
+
+func appendHTTPHeaderTuplesFromArray(runtime *goja.Runtime, ctx string, arrayObj *goja.Object, headers http.Header) {
+	if arrayObj == nil {
+		return
+	}
+	lengthVal := arrayObj.Get("length")
+	length := int(lengthVal.ToInteger())
+	for i := 0; i < length; i++ {
+		entryVal := arrayObj.Get(fmt.Sprintf("%d", i))
+		addHTTPHeaderTupleValue(runtime, ctx, entryVal, headers)
+	}
+}
+
+func appendHTTPHeaderTuplesFromSlice(runtime *goja.Runtime, ctx string, entries []interface{}, headers http.Header) {
+	for _, entry := range entries {
+		addHTTPHeaderTupleFromExport(runtime, ctx, entry, headers)
+	}
+}
+
+func addHTTPHeaderTupleValue(runtime *goja.Runtime, ctx string, val goja.Value, headers http.Header) {
+	if val == nil || goja.IsUndefined(val) || goja.IsNull(val) {
+		return
+	}
+	if obj, ok := val.(*goja.Object); ok && obj.ClassName() == "Array" {
+		lengthVal := obj.Get("length")
+		length := int(lengthVal.ToInteger())
+		if length != 2 {
+			panic(runtime.NewTypeError(fmt.Sprintf("%s: header entry must contain exactly two items", ctx)))
+		}
+		key := obj.Get("0").String()
+		value := obj.Get("1").String()
+		addHTTPHeaderEntry(runtime, ctx, headers, key, value)
+		return
+	}
+	addHTTPHeaderTupleFromExport(runtime, ctx, val.Export(), headers)
+}
+
+func addHTTPHeaderTupleFromExport(runtime *goja.Runtime, ctx string, entry interface{}, headers http.Header) {
+	if entry == nil {
+		return
+	}
+	if tuple, ok := entry.([]string); ok {
+		if len(tuple) != 2 {
+			panic(runtime.NewTypeError(fmt.Sprintf("%s: header entry must contain exactly two items", ctx)))
+		}
+		addHTTPHeaderEntry(runtime, ctx, headers, tuple[0], tuple[1])
+		return
+	}
+	if tuple, ok := entry.([]interface{}); ok {
+		if len(tuple) != 2 {
+			panic(runtime.NewTypeError(fmt.Sprintf("%s: header entry must contain exactly two items", ctx)))
+		}
+		key := fmt.Sprintf("%v", tuple[0])
+		value := fmt.Sprintf("%v", tuple[1])
+		addHTTPHeaderEntry(runtime, ctx, headers, key, value)
+		return
+	}
+	panic(runtime.NewTypeError(fmt.Sprintf("%s: Invalid header entry", ctx)))
 }
 
 func normalizeHeadersInit(runtime *goja.Runtime, value goja.Value, opCtx string) (map[string]interface{}, error) {
@@ -477,16 +556,21 @@ func normalizeHeadersInit(runtime *goja.Runtime, value goja.Value, opCtx string)
 		case []interface{}:
 			appendHeaderTuplesFromSlice(runtime, opCtx, h, result)
 			return result, nil
+		case string, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+			return nil, fmt.Errorf("%s: Invalid Headers init input", opCtx)
 		}
 	}
 
 	if obj, ok := value.(*goja.Object); ok {
-		for _, key := range obj.Keys() {
-			addNormalizedHeaderEntry(runtime, opCtx, key, obj.Get(key).String(), result)
+		if obj.ClassName() == "Object" {
+			for _, key := range obj.Keys() {
+				addNormalizedHeaderEntry(runtime, opCtx, key, obj.Get(key).String(), result)
+			}
+			return result, nil
 		}
 	}
 
-	return result, nil
+	return nil, fmt.Errorf("%s: Invalid Headers init input", opCtx)
 }
 
 func populateHeadersFromObject(runtime *goja.Runtime, value goja.Value, target map[string]interface{}, opCtx string) (bool, error) {
@@ -497,7 +581,7 @@ func populateHeadersFromObject(runtime *goja.Runtime, value goja.Value, target m
 
 	if obj.ClassName() == "Array" {
 		appendHeaderTuplesFromArray(runtime, opCtx, obj, target)
-		return len(target) > 0, nil
+		return true, nil
 	}
 
 	if forEach := obj.Get("forEach"); forEach != nil && !goja.IsUndefined(forEach) {
@@ -512,9 +596,7 @@ func populateHeadersFromObject(runtime *goja.Runtime, value goja.Value, target m
 			if _, err := fn(obj, runtime.ToValue(callback)); err != nil {
 				return false, err
 			}
-			if len(target) > 0 {
-				return true, nil
-			}
+			return true, nil
 		}
 	}
 
@@ -527,9 +609,7 @@ func populateHeadersFromObject(runtime *goja.Runtime, value goja.Value, target m
 			if err := iterateHeaderIterator(runtime, iterVal, target, opCtx); err != nil {
 				return false, err
 			}
-			if len(target) > 0 {
-				return true, nil
-			}
+			return true, nil
 		}
 	}
 
@@ -547,9 +627,7 @@ func populateHeadersFromObject(runtime *goja.Runtime, value goja.Value, target m
 								if err := iterateHeaderIterator(runtime, iterVal, target, opCtx); err != nil {
 									return false, err
 								}
-								if len(target) > 0 {
-									return true, nil
-								}
+								return true, nil
 							}
 						}
 					}
@@ -624,14 +702,11 @@ func appendHeaderTupleValue(runtime *goja.Runtime, opCtx string, val goja.Value,
 	if obj, ok := val.(*goja.Object); ok && obj.ClassName() == "Array" {
 		lengthVal := obj.Get("length")
 		length := int(lengthVal.ToInteger())
-		if length == 0 {
-			return
+		if length != 2 {
+			panic(runtime.NewTypeError(fmt.Sprintf("%s: header entry must contain exactly two items", opCtx)))
 		}
 		key := obj.Get("0").String()
-		value := ""
-		if length > 1 {
-			value = obj.Get("1").String()
-		}
+		value := obj.Get("1").String()
 		addNormalizedHeaderEntry(runtime, opCtx, key, value, target)
 		return
 	}
@@ -643,22 +718,22 @@ func appendHeaderTupleFromExport(runtime *goja.Runtime, opCtx string, entry inte
 		return
 	}
 	if tuple, ok := entry.([]string); ok && len(tuple) >= 1 {
-		key := tuple[0]
-		value := ""
-		if len(tuple) > 1 {
-			value = tuple[1]
+		if len(tuple) != 2 {
+			panic(runtime.NewTypeError(fmt.Sprintf("%s: header entry must contain exactly two items", opCtx)))
 		}
-		addNormalizedHeaderEntry(runtime, opCtx, key, value, target)
+		addNormalizedHeaderEntry(runtime, opCtx, tuple[0], tuple[1], target)
 		return
 	}
 	if tuple, ok := entry.([]interface{}); ok && len(tuple) >= 1 {
-		key := fmt.Sprintf("%v", tuple[0])
-		value := ""
-		if len(tuple) > 1 {
-			value = fmt.Sprintf("%v", tuple[1])
+		if len(tuple) != 2 {
+			panic(runtime.NewTypeError(fmt.Sprintf("%s: header entry must contain exactly two items", opCtx)))
 		}
+		key := fmt.Sprintf("%v", tuple[0])
+		value := fmt.Sprintf("%v", tuple[1])
 		addNormalizedHeaderEntry(runtime, opCtx, key, value, target)
+		return
 	}
+	panic(runtime.NewTypeError(fmt.Sprintf("%s: Invalid header entry", opCtx)))
 }
 
 func addNormalizedHeaderEntry(runtime *goja.Runtime, opCtx, name, value string, target map[string]interface{}) {
@@ -668,7 +743,20 @@ func addNormalizedHeaderEntry(runtime *goja.Runtime, opCtx, name, value string, 
 	ensureValidHeaderName(runtime, opCtx, name)
 	normalized := normalizeHeaderValue(value)
 	ensureValidHeaderValue(runtime, opCtx, normalized)
-	target[name] = normalized
+	ensureASCIIHeaderValue(runtime, normalized)
+	lowerName := strings.ToLower(name)
+	if existing, ok := target[lowerName]; ok {
+		existingStr := fmt.Sprintf("%v", existing)
+		if existingStr == "" {
+			target[lowerName] = normalized
+		} else if normalized == "" {
+			target[lowerName] = existingStr
+		} else {
+			target[lowerName] = existingStr + ", " + normalized
+		}
+	} else {
+		target[lowerName] = normalized
+	}
 }
 
 func (fe *FetchEnhancer) createBlobFromBytes(runtime *goja.Runtime, data []byte, contentType string) (*goja.Object, error) {
@@ -1393,6 +1481,15 @@ func sortedHTTPHeaderMapping(httpHeaders http.Header) ([]string, map[string]stri
 func (fe *FetchEnhancer) createResponseHeaders(runtime *goja.Runtime, httpHeaders http.Header) *goja.Object {
 	headersObj := runtime.NewObject()
 
+	setCookieValues := make([]string, 0)
+	for key, values := range httpHeaders {
+		if strings.EqualFold(key, "set-cookie") {
+			for _, v := range values {
+				setCookieValues = append(setCookieValues, v)
+			}
+		}
+	}
+
 	// get(name) - 获取指定头部值
 	headersObj.Set("get", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
@@ -1452,6 +1549,15 @@ func (fe *FetchEnhancer) createResponseHeaders(runtime *goja.Runtime, httpHeader
 			}
 		}
 		return goja.Undefined()
+	})
+
+	// getSetCookie() - Node fetch 扩展：返回 Set-Cookie 数组
+	headersObj.Set("getSetCookie", func(call goja.FunctionCall) goja.Value {
+		if len(setCookieValues) == 0 {
+			return runtime.ToValue([]string{})
+		}
+		copyVals := append([]string(nil), setCookieValues...)
+		return runtime.ToValue(copyVals)
 	})
 
 	attachConstructorPrototype(runtime, "Headers", headersObj)
