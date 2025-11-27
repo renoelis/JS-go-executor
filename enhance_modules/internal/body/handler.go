@@ -136,6 +136,15 @@ func (h *BodyTypeHandler) ProcessBody(runtime *goja.Runtime, body interface{}) (
 			return bytes, nil, "application/octet-stream", nil
 		}
 
+		// 4.25 检查是否是 DataView
+		if h.isDataView(obj) {
+			bytes, err := h.dataViewToBytes(obj)
+			if err != nil {
+				return nil, nil, "", fmt.Errorf("转换 DataView 失败: %w", err)
+			}
+			return bytes, nil, "application/octet-stream", nil
+		}
+
 		// 4.3 检查是否是 URLSearchParams
 		if h.isURLSearchParams(obj) {
 			str, err := h.urlSearchParamsToString(obj)
@@ -190,6 +199,60 @@ func (h *BodyTypeHandler) isArrayBuffer(obj *goja.Object) bool {
 		}
 	}
 	return false
+}
+
+// isDataView 检查对象是否是 DataView
+func (h *BodyTypeHandler) isDataView(obj *goja.Object) bool {
+	if obj == nil {
+		return false
+	}
+	if constructor := obj.Get("constructor"); !goja.IsUndefined(constructor) {
+		if constructorObj, ok := constructor.(*goja.Object); ok {
+			if nameVal := constructorObj.Get("name"); !goja.IsUndefined(nameVal) {
+				return nameVal.String() == "DataView"
+			}
+		}
+	}
+	return false
+}
+
+// dataViewToBytes 将 DataView 转换为字节数组
+func (h *BodyTypeHandler) dataViewToBytes(obj *goja.Object) ([]byte, error) {
+	if obj == nil {
+		return nil, fmt.Errorf("DataView 对象为 nil")
+	}
+
+	bufferVal := obj.Get("buffer")
+	if goja.IsUndefined(bufferVal) || goja.IsNull(bufferVal) {
+		return nil, fmt.Errorf("DataView 缺少 buffer 属性")
+	}
+	bufferObj, ok := bufferVal.(*goja.Object)
+	if !ok {
+		return nil, fmt.Errorf("DataView buffer 类型非法")
+	}
+
+	rawBytes, err := h.arrayBufferToBytes(bufferObj)
+	if err != nil {
+		return nil, err
+	}
+
+	offset := 0
+	if offsetVal := obj.Get("byteOffset"); !goja.IsUndefined(offsetVal) && !goja.IsNull(offsetVal) {
+		offset = int(offsetVal.ToInteger())
+	}
+
+	viewLength := len(rawBytes) - offset
+	if lengthVal := obj.Get("byteLength"); !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
+		viewLength = int(lengthVal.ToInteger())
+	}
+
+	if offset < 0 || viewLength < 0 || offset+viewLength > len(rawBytes) {
+		return nil, fmt.Errorf("DataView 范围非法")
+	}
+
+	view := make([]byte, viewLength)
+	copy(view, rawBytes[offset:offset+viewLength])
+	return view, nil
 }
 
 // isBuffer 检查对象是否是 Buffer（Node.js 环境）
@@ -413,12 +476,12 @@ func (h *BodyTypeHandler) blobToBytes(obj *goja.Object) ([]byte, string, error) 
 
 		// 尝试类型断言为 blob.JSBlob
 		if jsBlob, ok := blobData.(*blob.JSBlob); ok {
-			return jsBlob.GetData(), jsBlob.GetType(), nil
+			return ensureNonNilBodyBytes(jsBlob.GetData()), jsBlob.GetType(), nil
 		}
 
 		// 尝试类型断言为 blob.JSFile
 		if jsFile, ok := blobData.(*blob.JSFile); ok {
-			return jsFile.GetData(), jsFile.GetType(), nil
+			return ensureNonNilBodyBytes(jsFile.GetData()), jsFile.GetType(), nil
 		}
 	}
 
@@ -433,11 +496,18 @@ func (h *BodyTypeHandler) blobToBytes(obj *goja.Object) ([]byte, string, error) 
 			if typeVal != nil && !goja.IsUndefined(typeVal) && !goja.IsNull(typeVal) {
 				contentType = typeVal.String()
 			}
-			return data, contentType, nil
+			return ensureNonNilBodyBytes(data), contentType, nil
 		}
 	}
 
 	return nil, "", fmt.Errorf("无法提取 Blob/File 数据: 无效类型")
+}
+
+func ensureNonNilBodyBytes(data []byte) []byte {
+	if data != nil {
+		return data
+	}
+	return []byte{}
 }
 
 // urlSearchParamsToString 将 URLSearchParams 转换为字符串

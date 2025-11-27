@@ -37,6 +37,8 @@ type ResponseData struct {
 	BodyStream    io.ReadCloser // 流式模式使用（流式读取）
 	IsStreaming   bool          // 是否为流式模式
 	FinalURL      string        // 最终 URL（重定向后）
+	Redirected    bool          // 是否跟随过重定向
+	ResponseType  string        // WHATWG Response.type
 	ContentLength int64         // 响应的 Content-Length（用于智能预分配，-1表示未知）
 	AbortCh       chan struct{} // 🔥 关联的 abort channel（用于流式读取时中止）
 	Signal        *goja.Object  // 🔥 原始 AbortSignal 对象（用于获取 reason）
@@ -126,6 +128,8 @@ func NewResponseData(statusCode int, status string, headers http.Header, body []
 		BodyStream:    nil,
 		IsStreaming:   false,
 		FinalURL:      finalURL,
+		Redirected:    false,
+		ResponseType:  "default",
 		ContentLength: contentLength,
 		AbortCh:       nil,
 		Signal:        nil,
@@ -142,6 +146,8 @@ func NewStreamingResponseData(statusCode int, status string, headers http.Header
 		BodyStream:    bodyStream,
 		IsStreaming:   true,
 		FinalURL:      finalURL,
+		Redirected:    false,
+		ResponseType:  "default",
 		ContentLength: contentLength,
 		AbortCh:       nil,
 		Signal:        nil,

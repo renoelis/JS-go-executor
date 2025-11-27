@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"flow-codeblock-go/enhance_modules/internal/formdata"
@@ -129,6 +130,9 @@ func ExecuteRequestAsync(
 		case string:
 			body = strings.NewReader(v)
 			contentLength = int64(len(v))
+			if contentType == "" {
+				contentType = "text/plain;charset=UTF-8"
+			}
 		case []byte:
 			body = bytes.NewReader(v)
 			contentLength = int64(len(v))
@@ -250,6 +254,11 @@ func ExecuteRequestAsync(
 	if mode, ok := req.options["redirect"].(string); ok {
 		redirectMode = mode
 	}
+	requestMode := "cors"
+	if modeVal, ok := req.options["mode"].(string); ok && modeVal != "" {
+		requestMode = strings.ToLower(modeVal)
+	}
+	var redirectedFlag atomic.Bool
 
 	// 🔥 如果有白名单配置，需要在 redirect 时验证目标域名
 	needsRedirectCheck := len(config.AllowedDomains) > 0
@@ -315,6 +324,9 @@ func ExecuteRequestAsync(
 						return fmt.Errorf("redirect target not in whitelist: %w", err)
 					}
 
+					if len(via) > 0 {
+						redirectedFlag.Store(true)
+					}
 					// 🔥 3. 默认最多跟随 10 次重定向（Go 标准库的默认值）
 					// 🔥 注意：via 包含之前所有请求，len(via) > 10 表示已完成 10 次重定向
 					if len(via) > 10 {
@@ -332,6 +344,9 @@ func ExecuteRequestAsync(
 					// 验证协议安全
 					if err := CheckProtocol(redirectReq.URL.Scheme); err != nil {
 						return fmt.Errorf("redirect protocol not allowed: %w", err)
+					}
+					if len(via) > 0 {
+						redirectedFlag.Store(true)
 					}
 					// 默认最多跟随 10 次重定向
 					// 🔥 注意：via 包含之前所有请求，len(via) > 10 表示已完成 10 次重定向
@@ -415,6 +430,8 @@ func ExecuteRequestAsync(
 			return
 		}
 
+		normalizeContentEncodingHeader(resp)
+
 		// 🔥 优化：提前检查 Content-Length（节省带宽）
 		// 检查是否超过流式限制（绝对上限）
 		if resp.ContentLength > 0 && config.MaxStreamingSize > 0 && resp.ContentLength > config.MaxStreamingSize {
@@ -448,6 +465,9 @@ func ExecuteRequestAsync(
 		// ✅ uploadCtx 会在 defer 中取消（防止泄漏）
 		// ✅ reqCancel 传递给 bodyWrapper，在 body.Close() 时调用（流式模式）
 		// ✅ resp.Body 的生命周期由 bodyWrapper 和双重 timer 管理（流式模式）
+
+		redirected := redirectedFlag.Load()
+		responseType := determineResponseTypeForNode(requestMode)
 
 		if shouldTryBuffering {
 			// 尝试缓冲模式：读取最多 MaxResponseSize+1 字节
@@ -487,6 +507,8 @@ func ExecuteRequestAsync(
 					Body:          bodyBytes,
 					IsStreaming:   false, // 缓冲模式
 					FinalURL:      resp.Request.URL.String(),
+					Redirected:    redirected,
+					ResponseType:  responseType,
 					ContentLength: int64(len(bodyBytes)),
 					AbortCh:       req.abortCh,
 					Signal:        req.signalObj,
@@ -517,6 +539,8 @@ func ExecuteRequestAsync(
 					BodyStream:    bodyWrapper,
 					IsStreaming:   true, // 流式模式
 					FinalURL:      resp.Request.URL.String(),
+					Redirected:    redirected,
+					ResponseType:  responseType,
 					ContentLength: resp.ContentLength,
 					AbortCh:       req.abortCh,
 					Signal:        req.signalObj,
@@ -578,6 +602,33 @@ func applyDefaultRequestHeaders(httpReq *http.Request) {
 	}
 }
 
+func normalizeContentEncodingHeader(resp *http.Response) {
+	if resp == nil {
+		return
+	}
+	if !resp.Uncompressed {
+		return
+	}
+	if resp.Header == nil {
+		resp.Header = http.Header{}
+	}
+	if resp.Header.Get("Content-Encoding") == "" {
+		resp.Header.Set("Content-Encoding", "gzip")
+	}
+}
+
+func determineResponseTypeForNode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "", "cors":
+		return "cors"
+	case "same-origin", "navigate", "no-cors":
+		return "basic"
+	default:
+		return "cors"
+	}
+}
+
 // ==================== Promise 轮询和错误处理 ====================
 
 // PollResult 使用 setImmediate 轮询请求结果 (EventLoop 模式)
@@ -636,63 +687,96 @@ func CreateAbortErrorObject(runtime *goja.Runtime, err error) goja.Value {
 // CreateErrorObjectWithName 创建指定类型的 Error 对象
 // 🔥 根据底层错误推断 Node 风格的错误码（用于 axios 网络错误兼容）
 func CreateErrorObjectWithName(runtime *goja.Runtime, err error, errorName string) goja.Value {
-	errorObj := runtime.NewObject()
 	errorMsg := err.Error()
-	errorObj.Set("message", errorMsg)
-	errorObj.Set("name", errorName)
 
-	// 🔥 根据底层错误推断 Node 风格的错误码（用于 axios 网络错误兼容）
-	var code string
+	// 1. 推断错误码、主机名、系统调用信息
+	var (
+		code     string
+		hostname string
+		syscall  string
+	)
 
-	// 1. 超时场景：映射为 ECONNABORTED（与 axios 在 Node 下的行为一致）
-	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errorMsg, "请求超时") {
+	lowerMsg := strings.ToLower(errorMsg)
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), strings.Contains(lowerMsg, "请求超时"):
 		code = "ECONNABORTED"
-	} else {
-		// 2. 协议/URL 错误：映射为 ERR_INVALID_URL（与 axios/node 行为对齐）
-		lowerMsg := strings.ToLower(errorMsg)
-		if strings.Contains(lowerMsg, "unsupported protocol") || strings.Contains(lowerMsg, "invalid url") || strings.Contains(errorMsg, "不允许的协议") {
-			code = "ERR_INVALID_URL"
-		} else {
-			// 3. 解包底层错误，检查是否为 DNS 错误或连接被拒绝
-			root := err
-			for {
-				unwrapped := errors.Unwrap(root)
-				if unwrapped == nil {
-					break
-				}
-				root = unwrapped
+	case strings.Contains(lowerMsg, "unsupported protocol"),
+		strings.Contains(lowerMsg, "invalid url"),
+		strings.Contains(lowerMsg, "不允许的协议"):
+		code = "ERR_INVALID_URL"
+	default:
+		root := err
+		for {
+			unwrapped := errors.Unwrap(root)
+			if unwrapped == nil {
+				break
 			}
+			root = unwrapped
+		}
 
-			// DNS 错误：映射为 ENOTFOUND
-			var dnsErr *net.DNSError
-			if errors.As(root, &dnsErr) {
-				code = "ENOTFOUND"
+		var dnsErr *net.DNSError
+		if errors.As(root, &dnsErr) {
+			code = "ENOTFOUND"
+			if dnsErr.Name != "" {
+				hostname = dnsErr.Name
 			}
+		}
 
-			// 连接被拒绝：映射为 ECONNREFUSED
-			var opErr *net.OpError
-			if errors.As(root, &opErr) {
-				if opErr.Op == "dial" || strings.Contains(opErr.Error(), "connection refused") {
-					code = "ECONNREFUSED"
-				}
+		var opErr *net.OpError
+		if errors.As(root, &opErr) {
+			syscall = opErr.Op
+			if opErr.Op == "dial" || strings.Contains(opErr.Error(), "connection refused") {
+				code = "ECONNREFUSED"
 			}
+		}
 
-			// 其他网络错误：映射为 ERR_NETWORK（通用网络错误）
-			if code == "" && (strings.Contains(errorMsg, "网络错误") || strings.Contains(errorMsg, "network")) {
-				code = "ERR_NETWORK"
-			}
+		if code == "" && (strings.Contains(lowerMsg, "网络错误") || strings.Contains(lowerMsg, "network")) {
+			code = "ERR_NETWORK"
 		}
 	}
 
-	// 设置错误码（如果推断成功）
+	// 2. 通过 JS 构造函数创建真实的 Error 实例（确保 instanceof 检查成立）
+	createErrorObject := func(name string) *goja.Object {
+		ctorVal := runtime.Get(name)
+		if ctorVal == nil || goja.IsUndefined(ctorVal) || goja.IsNull(ctorVal) {
+			ctorVal = runtime.Get("Error")
+		}
+		if ctor, ok := goja.AssertFunction(ctorVal); ok {
+			value, callErr := ctor(goja.Undefined(), runtime.ToValue(errorMsg))
+			if callErr == nil {
+				if obj := value.ToObject(runtime); obj != nil {
+					return obj
+				}
+			}
+		}
+		// 兜底：直接构造普通对象
+		obj := runtime.NewObject()
+		obj.Set("message", errorMsg)
+		obj.Set("name", name)
+		return obj
+	}
+
+	errorObj := createErrorObject(errorName)
+	errorObj.Set("name", errorName)
+
+	// 3. 附加 Node 风格的信息
 	if code != "" {
 		errorObj.Set("code", code)
 	}
 
-	// toString 方法
-	errorObj.Set("toString", func(call goja.FunctionCall) goja.Value {
-		return runtime.ToValue(fmt.Sprintf("%s: %s", errorName, errorMsg))
-	})
+	// Node fetch 会将底层错误暴露在 cause 属性中
+	causeObj := runtime.NewObject()
+	causeObj.Set("message", errorMsg)
+	if code != "" {
+		causeObj.Set("code", code)
+	}
+	if hostname != "" {
+		causeObj.Set("hostname", hostname)
+	}
+	if syscall != "" {
+		causeObj.Set("syscall", syscall)
+	}
+	errorObj.Set("cause", causeObj)
 
 	return errorObj
 }

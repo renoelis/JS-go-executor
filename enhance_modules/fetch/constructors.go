@@ -2,12 +2,43 @@ package fetch
 
 import (
 	"fmt"
+	neturl "net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/dop251/goja"
 )
+
+func setHeaderWithValidation(headers map[string]string, runtime *goja.Runtime, ctx, name, value string) {
+	ensureValidHeaderName(runtime, ctx, name)
+	normalized := normalizeHeaderValue(value)
+	ensureValidHeaderValue(runtime, ctx, normalized)
+	headers[strings.ToLower(name)] = normalized
+}
+
+func appendHeaderWithValidation(headers map[string]string, runtime *goja.Runtime, ctx, name, value string) {
+	ensureValidHeaderName(runtime, ctx, name)
+	normalized := normalizeHeaderValue(value)
+	ensureValidHeaderValue(runtime, ctx, normalized)
+	key := strings.ToLower(name)
+	if existing, ok := headers[key]; ok && existing != "" {
+		headers[key] = existing + ", " + normalized
+	} else {
+		headers[key] = normalized
+	}
+}
+
+// sortedHeaderKeys 返回按字母顺序排序的 header 名称列表
+func sortedHeaderKeys(headers map[string]string) []string {
+	keys := make([]string, 0, len(headers))
+	for key := range headers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 // ==================== Headers 构造器 ====================
 
@@ -25,16 +56,17 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 		headers := make(map[string]string)
 
 		// 从参数初始化 Headers
-		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			init := call.Arguments[0].Export()
-			if initMap, ok := init.(map[string]interface{}); ok {
-				for key, value := range initMap {
-					headers[strings.ToLower(key)] = fmt.Sprintf("%v", value)
+		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) && !goja.IsNull(call.Arguments[0]) {
+			if normalized, err := normalizeHeadersInit(runtime, call.Arguments[0], "Headers.append"); err == nil {
+				for key, value := range normalized {
+					headers[strings.ToLower(key)] = normalizeHeaderValue(fmt.Sprintf("%v", value))
 				}
+			} else {
+				panic(runtime.NewTypeError("初始化 Headers 失败: " + err.Error()))
 			}
 		}
 
-		obj := runtime.NewObject()
+		obj := ensureConstructorThis(runtime, "Headers", call.This)
 
 		// get(name) - 获取头部值
 		obj.Set("get", func(call goja.FunctionCall) goja.Value {
@@ -53,9 +85,9 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			if len(call.Arguments) < 2 {
 				return goja.Undefined()
 			}
-			name := strings.ToLower(call.Arguments[0].String())
+			name := call.Arguments[0].String()
 			value := call.Arguments[1].String()
-			headers[name] = value
+			setHeaderWithValidation(headers, runtime, "Headers.set", name, value)
 			return goja.Undefined()
 		})
 
@@ -84,17 +116,13 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			if len(call.Arguments) < 2 {
 				return goja.Undefined()
 			}
-			name := strings.ToLower(call.Arguments[0].String())
+			name := call.Arguments[0].String()
 			value := call.Arguments[1].String()
-			if existing, ok := headers[name]; ok {
-				headers[name] = existing + ", " + value
-			} else {
-				headers[name] = value
-			}
+			appendHeaderWithValidation(headers, runtime, "Headers.append", name, value)
 			return goja.Undefined()
 		})
 
-		// forEach(callback) - 遍历所有头部
+		// forEach(callback) - 遍历所有头部（字母序）
 		obj.Set("forEach", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
 				return goja.Undefined()
@@ -104,7 +132,8 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 				return goja.Undefined()
 			}
 
-			for key, value := range headers {
+			for _, key := range sortedHeaderKeys(headers) {
+				value := headers[key]
 				callback(goja.Undefined(), runtime.ToValue(value), runtime.ToValue(key), obj)
 			}
 			return goja.Undefined()
@@ -113,8 +142,8 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 		// entries() - 返回 [key, value] 迭代器
 		obj.Set("entries", func(call goja.FunctionCall) goja.Value {
 			entries := make([]interface{}, 0, len(headers))
-			for key, value := range headers {
-				entries = append(entries, []interface{}{key, value})
+			for _, key := range sortedHeaderKeys(headers) {
+				entries = append(entries, []interface{}{key, headers[key]})
 			}
 
 			iterator := runtime.NewObject()
@@ -143,10 +172,7 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 
 		// keys() - 返回 key 迭代器
 		obj.Set("keys", func(call goja.FunctionCall) goja.Value {
-			keys := make([]string, 0, len(headers))
-			for key := range headers {
-				keys = append(keys, key)
-			}
+			keys := sortedHeaderKeys(headers)
 
 			iterator := runtime.NewObject()
 			index := 0
@@ -171,11 +197,12 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			return iterator
 		})
 
-		// values() - 返回 value 迭代器
+		// values() - 返回 value 迭代器（字母序）
 		obj.Set("values", func(call goja.FunctionCall) goja.Value {
-			values := make([]string, 0, len(headers))
-			for _, value := range headers {
-				values = append(values, value)
+			keys := sortedHeaderKeys(headers)
+			values := make([]string, 0, len(keys))
+			for _, key := range keys {
+				values = append(values, headers[key])
 			}
 
 			iterator := runtime.NewObject()
@@ -205,6 +232,147 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 	}
 }
 
+// ensureConstructorThis 确保构造函数返回带有正确原型的 this 对象
+func ensureConstructorThis(runtime *goja.Runtime, constructorName string, thisObj *goja.Object) *goja.Object {
+	if runtime == nil {
+		return thisObj
+	}
+	if thisObj != nil && thisObj != runtime.GlobalObject() {
+		return thisObj
+	}
+	obj := runtime.NewObject()
+	attachConstructorPrototype(runtime, constructorName, obj)
+	return obj
+}
+
+// attachConstructorPrototype 将指定构造函数的 prototype 关联到对象
+func attachConstructorPrototype(runtime *goja.Runtime, constructorName string, target *goja.Object) {
+	if runtime == nil || target == nil || constructorName == "" {
+		return
+	}
+
+	constructorVal := runtime.Get(constructorName)
+	if constructorVal == nil || goja.IsUndefined(constructorVal) || goja.IsNull(constructorVal) {
+		return
+	}
+
+	constructorObj := constructorVal.ToObject(runtime)
+	if constructorObj == nil {
+		return
+	}
+
+	prototypeVal := constructorObj.Get("prototype")
+	if prototypeVal == nil || goja.IsUndefined(prototypeVal) || goja.IsNull(prototypeVal) {
+		return
+	}
+
+	if protoObj := prototypeVal.ToObject(runtime); protoObj != nil {
+		target.SetPrototype(protoObj)
+	}
+}
+
+type requestCloneContext struct {
+	url                string
+	method             string
+	body               interface{}
+	headers            map[string]string
+	cacheValue         string
+	credentialsValue   string
+	modeValue          string
+	redirectValue      string
+	referrerValue      string
+	referrerPolicyValue string
+	integrityValue     string
+	keepaliveValue     bool
+	destinationValue   string
+	signal             goja.Value
+}
+
+func defineRequestReadonlyProperty(runtime *goja.Runtime, obj *goja.Object, name string, value interface{}) {
+	if runtime == nil || obj == nil {
+		return
+	}
+	obj.DefineDataProperty(name, runtime.ToValue(value), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
+}
+
+func attachRequestCloneMethod(runtime *goja.Runtime, requestObj *goja.Object, ctx *requestCloneContext) {
+	if runtime == nil || requestObj == nil || ctx == nil {
+		return
+	}
+
+	requestObj.Set("clone", func(call goja.FunctionCall) goja.Value {
+		clonedHeaders := make(map[string]string, len(ctx.headers))
+		for k, v := range ctx.headers {
+			clonedHeaders[k] = v
+		}
+
+		clonedRequest := runtime.NewObject()
+		attachConstructorPrototype(runtime, "Request", clonedRequest)
+		clonedRequest.Set("url", runtime.ToValue(ctx.url))
+		clonedRequest.Set("method", runtime.ToValue(ctx.method))
+
+		if gojaVal, ok := ctx.body.(goja.Value); ok {
+			clonedRequest.Set("body", gojaVal)
+		} else if ctx.body != nil {
+			clonedRequest.Set("body", runtime.ToValue(ctx.body))
+		} else {
+			clonedRequest.Set("body", goja.Null())
+		}
+
+		clonedRequest.Set("headers", createHeadersObject(runtime, clonedHeaders))
+		clonedRequest.Set("bodyUsed", runtime.ToValue(false))
+
+		defineRequestReadonlyProperty(runtime, clonedRequest, "cache", ctx.cacheValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "credentials", ctx.credentialsValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "mode", ctx.modeValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "redirect", ctx.redirectValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "referrer", ctx.referrerValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "referrerPolicy", ctx.referrerPolicyValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "integrity", ctx.integrityValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "keepalive", ctx.keepaliveValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "destination", ctx.destinationValue)
+
+		var clonedSignal goja.Value
+		if ctx.signal != nil && !goja.IsUndefined(ctx.signal) && !goja.IsNull(ctx.signal) {
+			if signalObj, ok := ctx.signal.(*goja.Object); ok {
+				if stateVal := signalObj.Get("__signalState"); stateVal != nil && !goja.IsUndefined(stateVal) {
+					if st, ok := stateVal.Export().(*SignalState); ok {
+						if protos := getRuntimePrototypes(runtime); protos != nil && protos.abortSignalPrototype != nil {
+							clonedSignal = CreateAbortSignalObjectWithPrototype(runtime, st, protos.abortSignalPrototype)
+						}
+					}
+				}
+			}
+			if clonedSignal == nil {
+				clonedSignal = ctx.signal
+			}
+			clonedRequest.DefineDataProperty("signal", clonedSignal, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
+		} else {
+			clonedSignal = goja.Null()
+			clonedRequest.DefineDataProperty("signal", clonedSignal, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
+		}
+
+		cloneCtx := &requestCloneContext{
+			url:                 ctx.url,
+			method:              ctx.method,
+			body:                ctx.body,
+			headers:             clonedHeaders,
+			cacheValue:          ctx.cacheValue,
+			credentialsValue:    ctx.credentialsValue,
+			modeValue:           ctx.modeValue,
+			redirectValue:       ctx.redirectValue,
+			referrerValue:       ctx.referrerValue,
+			referrerPolicyValue: ctx.referrerPolicyValue,
+			integrityValue:      ctx.integrityValue,
+			keepaliveValue:      ctx.keepaliveValue,
+			destinationValue:    ctx.destinationValue,
+			signal:              clonedSignal,
+		}
+		attachRequestCloneMethod(runtime, clonedRequest, cloneCtx)
+		return clonedRequest
+	})
+}
+
 // createHeadersObject 创建一个带有完整 Headers 接口方法的对象
 // 这个辅助函数用于为 Request/Response 对象创建 headers 属性
 func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja.Object {
@@ -227,9 +395,9 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 		if len(call.Arguments) < 2 {
 			return goja.Undefined()
 		}
-		name := strings.ToLower(call.Arguments[0].String())
+		name := call.Arguments[0].String()
 		value := call.Arguments[1].String()
-		headers[name] = value
+		setHeaderWithValidation(headers, runtime, "Headers.set", name, value)
 		return goja.Undefined()
 	})
 
@@ -258,17 +426,13 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 		if len(call.Arguments) < 2 {
 			return goja.Undefined()
 		}
-		name := strings.ToLower(call.Arguments[0].String())
+		name := call.Arguments[0].String()
 		value := call.Arguments[1].String()
-		if existing, ok := headers[name]; ok {
-			headers[name] = existing + ", " + value
-		} else {
-			headers[name] = value
-		}
+		appendHeaderWithValidation(headers, runtime, "Headers.append", name, value)
 		return goja.Undefined()
 	})
 
-	// forEach(callback) - 遍历所有头部
+	// forEach(callback) - 遍历所有头部（字母序）
 	obj.Set("forEach", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
 			return goja.Undefined()
@@ -278,7 +442,8 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 			return goja.Undefined()
 		}
 
-		for key, value := range headers {
+		for _, key := range sortedHeaderKeys(headers) {
+			value := headers[key]
 			callback(goja.Undefined(), runtime.ToValue(value), runtime.ToValue(key), obj)
 		}
 		return goja.Undefined()
@@ -287,8 +452,8 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 	// entries() - 返回 [key, value] 迭代器
 	obj.Set("entries", func(call goja.FunctionCall) goja.Value {
 		entries := make([]interface{}, 0, len(headers))
-		for key, value := range headers {
-			entries = append(entries, []interface{}{key, value})
+		for _, key := range sortedHeaderKeys(headers) {
+			entries = append(entries, []interface{}{key, headers[key]})
 		}
 
 		iterator := runtime.NewObject()
@@ -314,12 +479,9 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 		return iterator
 	})
 
-	// keys() - 返回 key 迭代器
+	// keys() - 返回 key 迭代器（字母序）
 	obj.Set("keys", func(call goja.FunctionCall) goja.Value {
-		keys := make([]string, 0, len(headers))
-		for key := range headers {
-			keys = append(keys, key)
-		}
+		keys := sortedHeaderKeys(headers)
 
 		iterator := runtime.NewObject()
 		index := 0
@@ -344,11 +506,12 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 		return iterator
 	})
 
-	// values() - 返回 value 迭代器
+	// values() - 返回 value 迭代器（字母序对应）
 	obj.Set("values", func(call goja.FunctionCall) goja.Value {
-		values := make([]string, 0, len(headers))
-		for _, value := range headers {
-			values = append(values, value)
+		keys := sortedHeaderKeys(headers)
+		values := make([]string, 0, len(keys))
+		for _, key := range keys {
+			values = append(values, headers[key])
 		}
 
 		iterator := runtime.NewObject()
@@ -373,6 +536,8 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 
 		return iterator
 	})
+
+	attachConstructorPrototype(runtime, "Headers", obj)
 
 	return obj
 }
@@ -422,6 +587,33 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 				signalVal = s
 				options["signal"] = s
 			}
+			if cacheVal := inputObj.Get("cache"); cacheVal != nil && !goja.IsUndefined(cacheVal) && !goja.IsNull(cacheVal) {
+				options["cache"] = cacheVal.String()
+			}
+			if credentialsVal := inputObj.Get("credentials"); credentialsVal != nil && !goja.IsUndefined(credentialsVal) && !goja.IsNull(credentialsVal) {
+				options["credentials"] = credentialsVal.String()
+			}
+			if modeVal := inputObj.Get("mode"); modeVal != nil && !goja.IsUndefined(modeVal) && !goja.IsNull(modeVal) {
+				options["mode"] = modeVal.String()
+			}
+			if redirectVal := inputObj.Get("redirect"); redirectVal != nil && !goja.IsUndefined(redirectVal) && !goja.IsNull(redirectVal) {
+				options["redirect"] = redirectVal.String()
+			}
+			if referrerVal := inputObj.Get("referrer"); referrerVal != nil && !goja.IsUndefined(referrerVal) && !goja.IsNull(referrerVal) {
+				options["referrer"] = referrerVal.String()
+			}
+			if referrerPolicyVal := inputObj.Get("referrerPolicy"); referrerPolicyVal != nil && !goja.IsUndefined(referrerPolicyVal) && !goja.IsNull(referrerPolicyVal) {
+				options["referrerPolicy"] = referrerPolicyVal.String()
+			}
+			if integrityVal := inputObj.Get("integrity"); integrityVal != nil && !goja.IsUndefined(integrityVal) && !goja.IsNull(integrityVal) {
+				options["integrity"] = integrityVal.String()
+			}
+			if keepaliveVal := inputObj.Get("keepalive"); keepaliveVal != nil && !goja.IsUndefined(keepaliveVal) && !goja.IsNull(keepaliveVal) {
+				options["keepalive"] = keepaliveVal.ToBoolean()
+			}
+			if destinationVal := inputObj.Get("destination"); destinationVal != nil && !goja.IsUndefined(destinationVal) && !goja.IsNull(destinationVal) {
+				options["destination"] = destinationVal.String()
+			}
 		}
 
 		// 处理 init 参数（第二个参数）
@@ -454,12 +646,30 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 		if u, ok := options["url"].(string); ok && u != "" {
 			url = u
 		}
+		if parsed, err := neturl.ParseRequestURI(url); err != nil || parsed == nil || parsed.Scheme == "" {
+			panic(runtime.NewTypeError(fmt.Sprintf("Failed to parse URL from %s", url)))
+		}
 
 		// 方法
-		method := "GET"
-		if m, ok := options["method"].(string); ok && m != "" {
-			method = strings.ToUpper(m)
+		methodSource := "GET"
+		if rawMethod, ok := options["method"]; ok {
+			switch v := rawMethod.(type) {
+			case string:
+				if v != "" {
+					methodSource = v
+				}
+			case goja.Value:
+				if !goja.IsUndefined(v) && !goja.IsNull(v) {
+					methodSource = v.String()
+				}
+			default:
+				if rawMethod != nil {
+					methodSource = fmt.Sprintf("%v", rawMethod)
+				}
+			}
 		}
+		validateHTTPMethod(runtime, methodSource)
+		method := strings.ToUpper(methodSource)
 
 		// 解析 headers
 		headers := make(map[string]string)
@@ -467,36 +677,20 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			if val == nil || goja.IsUndefined(val) || goja.IsNull(val) {
 				return false
 			}
-			if obj, ok := val.(*goja.Object); ok {
-				// 优先使用 forEach
-				if forEach := obj.Get("forEach"); forEach != nil && !goja.IsUndefined(forEach) {
-					if forEachFn, ok := goja.AssertFunction(forEach); ok {
-						callback := func(cbCall goja.FunctionCall) goja.Value {
-							if len(cbCall.Arguments) >= 2 {
-								key := strings.ToLower(cbCall.Argument(1).String())
-								headers[key] = cbCall.Argument(0).String()
-							}
-							return goja.Undefined()
-						}
-						if _, err := forEachFn(obj, runtime.ToValue(callback)); err == nil {
-							return true
-						}
-					}
-				}
-
-				// 回退：枚举对象键
-				for _, key := range obj.Keys() {
-					headers[strings.ToLower(key)] = obj.Get(key).String()
-				}
-				return len(obj.Keys()) > 0
+			normalized, err := normalizeHeadersInit(runtime, val, "Headers.append")
+			if err != nil {
+				panic(runtime.NewTypeError("解析 headers 失败: " + err.Error()))
 			}
-			return false
+			for key, value := range normalized {
+				headers[strings.ToLower(key)] = normalizeHeaderValue(fmt.Sprintf("%v", value))
+			}
+			return len(normalized) > 0
 		}
 
 		if !parseHeaders(headersVal) {
 			if h, ok := options["headers"].(map[string]interface{}); ok {
 				for key, value := range h {
-					headers[strings.ToLower(key)] = fmt.Sprintf("%v", value)
+					headers[strings.ToLower(key)] = normalizeHeaderValue(fmt.Sprintf("%v", value))
 				}
 			}
 		}
@@ -509,6 +703,9 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 		var body interface{}
 		if b, ok := options["body"]; ok && b != nil {
 			body = b
+		}
+		if (method == "GET" || method == "HEAD") && hasUsableBodyValue(body) {
+			panic(runtime.NewTypeError("Request with GET/HEAD method cannot have body."))
 		}
 
 		// 提取并验证 signal
@@ -529,8 +726,18 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			}
 		}
 
+		cacheValue := requestStringOptionValue(options, "cache", "default")
+		credentialsValue := requestStringOptionValue(options, "credentials", "same-origin")
+		modeValue := requestStringOptionValue(options, "mode", "cors")
+		redirectValue := requestStringOptionValue(options, "redirect", "follow")
+		referrerValue := requestStringOptionValue(options, "referrer", "about:client")
+		referrerPolicyValue := requestStringOptionValue(options, "referrerPolicy", "")
+		integrityValue := requestStringOptionValue(options, "integrity", "")
+		destinationValue := requestStringOptionValue(options, "destination", "")
+		keepaliveValue := requestBoolOptionValue(options, "keepalive", false)
+
 		// 创建 Request 对象
-		requestObj := runtime.NewObject()
+		requestObj := ensureConstructorThis(runtime, "Request", call.This)
 		requestObj.Set("url", runtime.ToValue(url))
 		requestObj.Set("method", runtime.ToValue(method))
 
@@ -541,6 +748,7 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 		} else {
 			requestObj.Set("body", goja.Null())
 		}
+		requestObj.Set("bodyUsed", runtime.ToValue(false))
 
 		// headers 对象
 		headersObj := createHeadersObject(runtime, headers)
@@ -553,43 +761,90 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			requestObj.DefineDataProperty("signal", goja.Null(), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
 		}
 
-		// clone 方法
-		requestObj.Set("clone", func(call goja.FunctionCall) goja.Value {
-			clonedHeaders := make(map[string]string)
-			for k, v := range headers {
-				clonedHeaders[k] = v
-			}
+		defineRequestReadonlyProperty(runtime, requestObj, "cache", cacheValue)
+		defineRequestReadonlyProperty(runtime, requestObj, "credentials", credentialsValue)
+		defineRequestReadonlyProperty(runtime, requestObj, "mode", modeValue)
+		defineRequestReadonlyProperty(runtime, requestObj, "redirect", redirectValue)
+		defineRequestReadonlyProperty(runtime, requestObj, "referrer", referrerValue)
+		defineRequestReadonlyProperty(runtime, requestObj, "referrerPolicy", referrerPolicyValue)
+		defineRequestReadonlyProperty(runtime, requestObj, "integrity", integrityValue)
+		defineRequestReadonlyProperty(runtime, requestObj, "keepalive", keepaliveValue)
+		defineRequestReadonlyProperty(runtime, requestObj, "destination", destinationValue)
 
-			clonedRequest := runtime.NewObject()
-			clonedRequest.Set("url", runtime.ToValue(url))
-			clonedRequest.Set("method", runtime.ToValue(method))
-			clonedRequest.Set("body", runtime.ToValue(body))
-			clonedRequest.Set("headers", createHeadersObject(runtime, clonedHeaders))
-
-			// clone 时创建新的 signal 实例（共享同一 state）
-			if signalObj, ok := signal.(*goja.Object); ok {
-				if stateVal := signalObj.Get("__signalState"); stateVal != nil && !goja.IsUndefined(stateVal) {
-					if st, ok := stateVal.Export().(*SignalState); ok {
-						protos := getRuntimePrototypes(runtime)
-						clonedSignal := CreateAbortSignalObjectWithPrototype(runtime, st, protos.abortSignalPrototype)
-						clonedRequest.DefineDataProperty("signal", clonedSignal, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
-					}
-				}
-			}
-
-			if clonedRequest.Get("signal") == nil || goja.IsUndefined(clonedRequest.Get("signal")) {
-				if signal != nil && !goja.IsUndefined(signal) && !goja.IsNull(signal) {
-					clonedRequest.DefineDataProperty("signal", signal, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
-				} else {
-					clonedRequest.DefineDataProperty("signal", goja.Null(), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
-				}
-			}
-
-			return clonedRequest
-		})
+		initialCtx := &requestCloneContext{
+			url:                 url,
+			method:              method,
+			body:                body,
+			headers:             headers,
+			cacheValue:          cacheValue,
+			credentialsValue:    credentialsValue,
+			modeValue:           modeValue,
+			redirectValue:       redirectValue,
+			referrerValue:       referrerValue,
+			referrerPolicyValue: referrerPolicyValue,
+			integrityValue:      integrityValue,
+			keepaliveValue:      keepaliveValue,
+			destinationValue:    destinationValue,
+			signal:              requestObj.Get("signal"),
+		}
+		attachRequestCloneMethod(runtime, requestObj, initialCtx)
 
 		return requestObj
 	}
+}
+
+func requestStringOptionValue(options map[string]interface{}, key, defaultValue string) string {
+	if options == nil {
+		return defaultValue
+	}
+	if raw, ok := options[key]; ok {
+		switch v := raw.(type) {
+		case string:
+			return v
+		case goja.Value:
+			if goja.IsUndefined(v) || goja.IsNull(v) {
+				return defaultValue
+			}
+			return v.String()
+		case fmt.Stringer:
+			return v.String()
+		default:
+			return fmt.Sprintf("%v", raw)
+		}
+	}
+	return defaultValue
+}
+
+func requestBoolOptionValue(options map[string]interface{}, key string, defaultValue bool) bool {
+	if options == nil {
+		return defaultValue
+	}
+	if raw, ok := options[key]; ok {
+		switch v := raw.(type) {
+		case bool:
+			return v
+		case goja.Value:
+			if goja.IsUndefined(v) || goja.IsNull(v) {
+				return defaultValue
+			}
+			return v.ToBoolean()
+		case string:
+			lower := strings.ToLower(strings.TrimSpace(v))
+			if lower == "true" {
+				return true
+			}
+			if lower == "false" {
+				return false
+			}
+		case int:
+			return v != 0
+		case int64:
+			return v != 0
+		case float64:
+			return v != 0
+		}
+	}
+	return defaultValue
 }
 
 // ==================== DOMException 构造器 ====================

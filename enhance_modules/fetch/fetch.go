@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	neturl "net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -185,6 +186,9 @@ func (fe *FetchEnhancer) RegisterFetchAPI(runtime *goja.Runtime) error {
 
 	// 3.5 注册 Response 构造器
 	runtime.Set("Response", fe.createResponseConstructor(runtime))
+	if err := fe.attachResponseStaticMethods(runtime); err != nil {
+		return fmt.Errorf("注册 Response 静态方法失败: %w", err)
+	}
 
 	// 4. 注册 AbortSignal 构造函数（必须在 AbortController 之前，因为需要初始化 prototype）
 	runtime.Set("AbortSignal", CreateAbortSignalConstructor(runtime))
@@ -221,6 +225,80 @@ func (fe *FetchEnhancer) createResponseConstructor(runtime *goja.Runtime) func(g
 		}
 		respVal := fe.recreateResponse(runtime, responseData)
 		return respVal.ToObject(runtime)
+	}
+}
+
+func (fe *FetchEnhancer) attachResponseStaticMethods(runtime *goja.Runtime) error {
+	constructorVal := runtime.Get("Response")
+	if constructorVal == nil || goja.IsUndefined(constructorVal) || goja.IsNull(constructorVal) {
+		return fmt.Errorf("Response 构造器未注册")
+	}
+
+	constructorObj := constructorVal.ToObject(runtime)
+	if constructorObj == nil {
+		return fmt.Errorf("Response 构造器不可用")
+	}
+
+	constructorObj.Set("error", func(call goja.FunctionCall) goja.Value {
+		data := &ResponseData{
+			StatusCode:    0,
+			Status:        "",
+			Headers:       http.Header{},
+			Body:          []byte{},
+			IsStreaming:   false,
+			FinalURL:      "",
+			Redirected:    false,
+			ResponseType:  "error",
+			ContentLength: 0,
+		}
+		return fe.recreateResponse(runtime, data)
+	})
+
+	constructorObj.Set("redirect", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 || goja.IsUndefined(call.Arguments[0]) || goja.IsNull(call.Arguments[0]) {
+			panic(runtime.NewTypeError("Response.redirect 需要 url 参数"))
+		}
+
+		location := call.Arguments[0].String()
+		if location == "" {
+			panic(runtime.NewTypeError("Response.redirect 需要有效的 url"))
+		}
+
+		status := 302
+		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) && !goja.IsNull(call.Arguments[1]) {
+			status = int(call.Arguments[1].ToInteger())
+		}
+
+		if !isValidResponseRedirectStatus(status) {
+			panic(runtime.NewTypeError(fmt.Sprintf("Response.redirect: %d is not a redirect status", status)))
+		}
+
+		headers := http.Header{}
+		headers.Set("Location", location)
+
+		data := &ResponseData{
+			StatusCode:    status,
+			Status:        "",
+			Headers:       headers,
+			Body:          []byte{},
+			IsStreaming:   false,
+			FinalURL:      "",
+			Redirected:    false,
+			ResponseType:  "default",
+			ContentLength: 0,
+		}
+		return fe.recreateResponse(runtime, data)
+	})
+
+	return nil
+}
+
+func isValidResponseRedirectStatus(status int) bool {
+	switch status {
+	case 301, 302, 303, 307, 308:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -311,6 +389,8 @@ func (fe *FetchEnhancer) buildResponseDataFromConstructor(runtime *goja.Runtime,
 		Body:          bodyBytes,
 		IsStreaming:   false,
 		FinalURL:      "",
+		Redirected:    false,
+		ResponseType:  "default",
 		ContentLength: int64(len(bodyBytes)),
 	}
 
@@ -361,6 +441,227 @@ func populateHeadersFromValue(runtime *goja.Runtime, headers http.Header, value 
 	}
 
 	return nil
+}
+
+func normalizeHeadersInit(runtime *goja.Runtime, value goja.Value, opCtx string) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+	if runtime == nil || value == nil || goja.IsUndefined(value) || goja.IsNull(value) {
+		return result, nil
+	}
+
+	if handled, err := populateHeadersFromObject(runtime, value, result, opCtx); err != nil {
+		return nil, err
+	} else if handled {
+		return result, nil
+	}
+
+	if exported := value.Export(); exported != nil {
+		switch h := exported.(type) {
+		case map[string]interface{}:
+			for key, val := range h {
+				addNormalizedHeaderEntry(runtime, opCtx, key, fmt.Sprintf("%v", val), result)
+			}
+			return result, nil
+		case map[string]string:
+			for key, val := range h {
+				addNormalizedHeaderEntry(runtime, opCtx, key, val, result)
+			}
+			return result, nil
+		case []interface{}:
+			appendHeaderTuplesFromSlice(runtime, opCtx, h, result)
+			return result, nil
+		}
+	}
+
+	if obj, ok := value.(*goja.Object); ok {
+		for _, key := range obj.Keys() {
+			addNormalizedHeaderEntry(runtime, opCtx, key, obj.Get(key).String(), result)
+		}
+	}
+
+	return result, nil
+}
+
+func populateHeadersFromObject(runtime *goja.Runtime, value goja.Value, target map[string]interface{}, opCtx string) (bool, error) {
+	obj, ok := value.(*goja.Object)
+	if !ok || obj == nil {
+		return false, nil
+	}
+
+	if obj.ClassName() == "Array" {
+		appendHeaderTuplesFromArray(runtime, opCtx, obj, target)
+		return len(target) > 0, nil
+	}
+
+	if forEach := obj.Get("forEach"); forEach != nil && !goja.IsUndefined(forEach) {
+		if fn, ok := goja.AssertFunction(forEach); ok {
+			callback := func(cbCall goja.FunctionCall) goja.Value {
+				if len(cbCall.Arguments) >= 2 {
+					key := cbCall.Argument(1).String()
+					addNormalizedHeaderEntry(runtime, opCtx, key, cbCall.Argument(0).String(), target)
+				}
+				return goja.Undefined()
+			}
+			if _, err := fn(obj, runtime.ToValue(callback)); err != nil {
+				return false, err
+			}
+			if len(target) > 0 {
+				return true, nil
+			}
+		}
+	}
+
+	if entries := obj.Get("entries"); entries != nil && !goja.IsUndefined(entries) {
+		if fn, ok := goja.AssertFunction(entries); ok {
+			iterVal, err := fn(obj)
+			if err != nil {
+				return false, err
+			}
+			if err := iterateHeaderIterator(runtime, iterVal, target, opCtx); err != nil {
+				return false, err
+			}
+			if len(target) > 0 {
+				return true, nil
+			}
+		}
+	}
+
+	if runtime != nil {
+		if symbolVal := runtime.Get("Symbol"); symbolVal != nil && !goja.IsUndefined(symbolVal) {
+			if symbolObj := symbolVal.ToObject(runtime); symbolObj != nil {
+				if iteratorSymVal := symbolObj.Get("iterator"); iteratorSymVal != nil {
+					if sym, ok := iteratorSymVal.(*goja.Symbol); ok {
+						if iterFunc := obj.GetSymbol(sym); iterFunc != nil && !goja.IsUndefined(iterFunc) {
+							if fn, ok := goja.AssertFunction(iterFunc); ok {
+								iterVal, err := fn(obj)
+								if err != nil {
+									return false, err
+								}
+								if err := iterateHeaderIterator(runtime, iterVal, target, opCtx); err != nil {
+									return false, err
+								}
+								if len(target) > 0 {
+									return true, nil
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return false, nil
+}
+
+func iterateHeaderIterator(runtime *goja.Runtime, iteratorVal goja.Value, target map[string]interface{}, opCtx string) error {
+	if iteratorVal == nil || goja.IsUndefined(iteratorVal) || goja.IsNull(iteratorVal) {
+		return nil
+	}
+
+	iterObj := iteratorVal.ToObject(runtime)
+	if iterObj == nil {
+		return nil
+	}
+
+	nextVal := iterObj.Get("next")
+	nextFn, ok := goja.AssertFunction(nextVal)
+	if !ok {
+		return nil
+	}
+
+	for {
+		resultVal, err := nextFn(iterObj)
+		if err != nil {
+			return err
+		}
+		resultObj := resultVal.ToObject(runtime)
+		if resultObj == nil {
+			break
+		}
+		doneVal := resultObj.Get("done")
+		if !goja.IsUndefined(doneVal) && doneVal.ToBoolean() {
+			break
+		}
+		valueVal := resultObj.Get("value")
+		appendHeaderTupleValue(runtime, opCtx, valueVal, target)
+	}
+	return nil
+}
+
+func appendHeaderTuplesFromArray(runtime *goja.Runtime, opCtx string, arrayObj *goja.Object, target map[string]interface{}) {
+	if arrayObj == nil || target == nil {
+		return
+	}
+	lengthVal := arrayObj.Get("length")
+	length := int(lengthVal.ToInteger())
+	for i := 0; i < length; i++ {
+		entryVal := arrayObj.Get(fmt.Sprintf("%d", i))
+		appendHeaderTupleValue(runtime, opCtx, entryVal, target)
+	}
+}
+
+func appendHeaderTuplesFromSlice(runtime *goja.Runtime, opCtx string, entries []interface{}, target map[string]interface{}) {
+	if target == nil {
+		return
+	}
+	for _, entry := range entries {
+		appendHeaderTupleFromExport(runtime, opCtx, entry, target)
+	}
+}
+
+func appendHeaderTupleValue(runtime *goja.Runtime, opCtx string, val goja.Value, target map[string]interface{}) {
+	if target == nil || val == nil || goja.IsUndefined(val) || goja.IsNull(val) {
+		return
+	}
+	if obj, ok := val.(*goja.Object); ok && obj.ClassName() == "Array" {
+		lengthVal := obj.Get("length")
+		length := int(lengthVal.ToInteger())
+		if length == 0 {
+			return
+		}
+		key := obj.Get("0").String()
+		value := ""
+		if length > 1 {
+			value = obj.Get("1").String()
+		}
+		addNormalizedHeaderEntry(runtime, opCtx, key, value, target)
+		return
+	}
+	appendHeaderTupleFromExport(runtime, opCtx, val.Export(), target)
+}
+
+func appendHeaderTupleFromExport(runtime *goja.Runtime, opCtx string, entry interface{}, target map[string]interface{}) {
+	if target == nil || entry == nil {
+		return
+	}
+	if tuple, ok := entry.([]string); ok && len(tuple) >= 1 {
+		key := tuple[0]
+		value := ""
+		if len(tuple) > 1 {
+			value = tuple[1]
+		}
+		addNormalizedHeaderEntry(runtime, opCtx, key, value, target)
+		return
+	}
+	if tuple, ok := entry.([]interface{}); ok && len(tuple) >= 1 {
+		key := fmt.Sprintf("%v", tuple[0])
+		value := ""
+		if len(tuple) > 1 {
+			value = fmt.Sprintf("%v", tuple[1])
+		}
+		addNormalizedHeaderEntry(runtime, opCtx, key, value, target)
+	}
+}
+
+func addNormalizedHeaderEntry(runtime *goja.Runtime, opCtx, name, value string, target map[string]interface{}) {
+	if target == nil {
+		return
+	}
+	ensureValidHeaderName(runtime, opCtx, name)
+	normalized := normalizeHeaderValue(value)
+	ensureValidHeaderValue(runtime, opCtx, normalized)
+	target[name] = normalized
 }
 
 func (fe *FetchEnhancer) createBlobFromBytes(runtime *goja.Runtime, data []byte, contentType string) (*goja.Object, error) {
@@ -471,13 +772,24 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 			// 🔥 先检查是否是 URL 对象（有 href 属性且 href 是字符串）
 			hrefVal := obj.Get("href")
 			if hrefVal != nil && !goja.IsUndefined(hrefVal) && !goja.IsNull(hrefVal) {
-				// 尝试获取 href 值
-				if hrefStr, ok := hrefVal.Export().(string); ok && hrefStr != "" {
-					// 这是一个 URL 对象，使用其 href 属性作为 URL
-					url = hrefStr
-				} else {
-					// href 不是有效字符串，尝试使用对象的 toString()
-					url = firstArg.String()
+				// 优先调用对象自身的 toString，防止 href 属性未及时同步 searchParams
+				if toStringVal := obj.Get("toString"); toStringVal != nil && !goja.IsUndefined(toStringVal) {
+					if toStringFn, ok := goja.AssertFunction(toStringVal); ok {
+						if strVal, err := toStringFn(obj); err == nil {
+							str := strVal.String()
+							if str != "" {
+								url = str
+							}
+						}
+					}
+				}
+				if url == "" {
+					hrefStr := hrefVal.String()
+					if hrefStr != "" {
+						url = hrefStr
+					} else {
+						url = firstArg.String()
+					}
 				}
 			} else if requestURL := obj.Get("url"); requestURL != nil && !goja.IsUndefined(requestURL) {
 				// 这是一个 Request 对象
@@ -485,17 +797,21 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 
 				// 从 Request 对象提取 options
 				options = make(map[string]interface{})
+				copyStringProp := func(prop string) {
+					if value := obj.Get(prop); value != nil && !goja.IsUndefined(value) && !goja.IsNull(value) {
+						options[prop] = value.String()
+					}
+				}
 				if method := obj.Get("method"); !goja.IsUndefined(method) {
 					options["method"] = method.String()
 				}
-				if headers := obj.Get("headers"); !goja.IsUndefined(headers) {
-					if headersObj, ok := headers.(*goja.Object); ok {
-						// 转换 headers 对象为 map
-						headersMap := make(map[string]interface{})
-						for _, key := range headersObj.Keys() {
-							headersMap[key] = headersObj.Get(key).String()
-						}
-						options["headers"] = headersMap
+				if headers := obj.Get("headers"); !goja.IsUndefined(headers) && !goja.IsNull(headers) {
+					normalizedHeaders, err := normalizeHeadersInit(runtime, headers, "Headers.append")
+					if err != nil {
+						panic(runtime.NewTypeError("解析 Request headers 失败: " + err.Error()))
+					}
+					if len(normalizedHeaders) > 0 {
+						options["headers"] = normalizedHeaders
 					}
 				}
 				if bodyVal := obj.Get("body"); !goja.IsUndefined(bodyVal) && !goja.IsNull(bodyVal) {
@@ -513,6 +829,16 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 						options["signal"] = signalObj
 					}
 				}
+				copyStringProp("cache")
+				copyStringProp("credentials")
+				copyStringProp("mode")
+				copyStringProp("redirect")
+				copyStringProp("referrer")
+				copyStringProp("referrerPolicy")
+				copyStringProp("integrity")
+				if keepaliveVal := obj.Get("keepalive"); !goja.IsUndefined(keepaliveVal) && !goja.IsNull(keepaliveVal) {
+					options["keepalive"] = keepaliveVal.ToBoolean()
+				}
 			} else {
 				// 既不是 URL 对象也不是 Request 对象，尝试调用 toString()
 				url = firstArg.String()
@@ -528,14 +854,29 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 					options = make(map[string]interface{})
 				}
 
-				// 🔥 先保存 signal 和 body 对象（保持原始类型）
-				var signalVal, bodyVal goja.Value
+				// 🔥 先保存 signal、headers 和 body 对象（保持原始类型）
+				var signalVal, bodyVal, headersVal goja.Value
+				var methodVal, modeVal, credentialsVal, redirectVal goja.Value
+				var cacheVal, referrerVal, referrerPolicyVal, integrityVal goja.Value
+				var keepaliveVal goja.Value
 				if sv := optionsArg.Get("signal"); !goja.IsUndefined(sv) && sv != nil {
 					signalVal = sv
 				}
 				if bv := optionsArg.Get("body"); !goja.IsUndefined(bv) && bv != nil {
 					bodyVal = bv
 				}
+				if hv := optionsArg.Get("headers"); !goja.IsUndefined(hv) && hv != nil && !goja.IsNull(hv) {
+					headersVal = hv
+				}
+				methodVal = optionsArg.Get("method")
+				modeVal = optionsArg.Get("mode")
+				credentialsVal = optionsArg.Get("credentials")
+				redirectVal = optionsArg.Get("redirect")
+				cacheVal = optionsArg.Get("cache")
+				referrerVal = optionsArg.Get("referrer")
+				referrerPolicyVal = optionsArg.Get("referrerPolicy")
+				integrityVal = optionsArg.Get("integrity")
+				keepaliveVal = optionsArg.Get("keepalive")
 
 				// Export 其他选项
 				exportedOptions := call.Arguments[1].Export()
@@ -554,6 +895,74 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 				if bodyVal != nil && !goja.IsUndefined(bodyVal) {
 					if bodyObj, ok := bodyVal.(*goja.Object); ok {
 						options["__rawBodyObject"] = bodyObj
+					} else {
+						options["body"] = bodyVal.Export()
+					}
+				}
+				if headersVal != nil && !goja.IsUndefined(headersVal) {
+					normalizedHeaders, err := normalizeHeadersInit(runtime, headersVal, "Headers.append")
+					if err != nil {
+						panic(runtime.NewTypeError("解析 headers 失败: " + err.Error()))
+					}
+					options["headers"] = normalizedHeaders
+				}
+				if methodVal != nil && !goja.IsUndefined(methodVal) {
+					options["method"] = methodVal.String()
+				}
+				if modeVal != nil {
+					if goja.IsUndefined(modeVal) {
+						delete(options, "mode")
+					} else {
+						options["mode"] = modeVal.String()
+					}
+				}
+				if credentialsVal != nil {
+					if goja.IsUndefined(credentialsVal) {
+						delete(options, "credentials")
+					} else {
+						options["credentials"] = credentialsVal.String()
+					}
+				}
+				if redirectVal != nil {
+					if goja.IsUndefined(redirectVal) {
+						delete(options, "redirect")
+					} else {
+						options["redirect"] = redirectVal.String()
+					}
+				}
+				if cacheVal != nil {
+					if goja.IsUndefined(cacheVal) {
+						delete(options, "cache")
+					} else {
+						options["cache"] = cacheVal.String()
+					}
+				}
+				if referrerVal != nil {
+					if goja.IsUndefined(referrerVal) {
+						delete(options, "referrer")
+					} else {
+						options["referrer"] = referrerVal.String()
+					}
+				}
+				if referrerPolicyVal != nil {
+					if goja.IsUndefined(referrerPolicyVal) {
+						delete(options, "referrerPolicy")
+					} else {
+						options["referrerPolicy"] = referrerPolicyVal.String()
+					}
+				}
+				if integrityVal != nil {
+					if goja.IsUndefined(integrityVal) {
+						delete(options, "integrity")
+					} else {
+						options["integrity"] = integrityVal.String()
+					}
+				}
+				if keepaliveVal != nil {
+					if goja.IsUndefined(keepaliveVal) {
+						delete(options, "keepalive")
+					} else {
+						options["keepalive"] = keepaliveVal.ToBoolean()
 					}
 				}
 			}
@@ -783,7 +1192,9 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 			}
 			// 清理临时字段
 			delete(options, "__rawBodyObject")
+
 		}
+		options = normalizeRequestOptions(runtime, options)
 
 		// 5. 检查是否有 AbortSignal
 		var abortCh chan struct{}
@@ -828,7 +1239,7 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 
 		// 先验证 URL 是否有效（即便 signal 已经 aborted 也要抛出 TypeError）
 		if parsed, err := neturl.ParseRequestURI(url); err != nil || parsed.Scheme == "" {
-			panic(runtime.NewTypeError("Invalid URL"))
+			panic(runtime.NewTypeError(fmt.Sprintf("Failed to parse URL from %s", url)))
 		}
 
 		// header 值 ASCII 校验
@@ -932,7 +1343,14 @@ func (fe *FetchEnhancer) recreateResponse(runtime *goja.Runtime, data *ResponseD
 	respObj.Set("url", runtime.ToValue(data.FinalURL))
 
 	// 🔥 支持 redirected 属性（检测是否发生重定向）
-	respObj.Set("redirected", runtime.ToValue(false)) // 简化实现，可扩展
+	respObj.Set("redirected", runtime.ToValue(data.Redirected))
+
+	// WHATWG Response 默认类型（Node 默认返回 default）
+	responseType := data.ResponseType
+	if responseType == "" {
+		responseType = "default"
+	}
+	respObj.Set("type", runtime.ToValue(responseType))
 
 	// Headers 对象
 	respObj.Set("headers", fe.createResponseHeaders(runtime, data.Headers))
@@ -948,6 +1366,20 @@ func (fe *FetchEnhancer) recreateResponse(runtime *goja.Runtime, data *ResponseD
 	}
 
 	return respObj
+}
+
+func sortedHTTPHeaderMapping(httpHeaders http.Header) ([]string, map[string]string) {
+	keys := make([]string, 0, len(httpHeaders))
+	original := make(map[string]string, len(httpHeaders))
+	for key := range httpHeaders {
+		lower := strings.ToLower(key)
+		keys = append(keys, lower)
+		if _, exists := original[lower]; !exists {
+			original[lower] = key
+		}
+	}
+	sort.Strings(keys)
+	return keys, original
 }
 
 // createResponseHeaders 创建响应 Headers 对象
@@ -996,26 +1428,36 @@ func (fe *FetchEnhancer) createResponseHeaders(runtime *goja.Runtime, httpHeader
 			return goja.Undefined()
 		}
 
-		for key, values := range httpHeaders {
+		sortedKeys, originalKeys := sortedHTTPHeaderMapping(httpHeaders)
+		for _, lowerKey := range sortedKeys {
+			originalKey := originalKeys[lowerKey]
+			values := httpHeaders[originalKey]
 			if len(values) == 0 {
 				continue
 			}
 
-			keyLower := strings.ToLower(key)
+			keyLower := strings.ToLower(originalKey)
 			if keyLower == "set-cookie" && len(values) > 1 {
 				// Set-Cookie 返回数组
-				callback(goja.Undefined(), runtime.ToValue(values), runtime.ToValue(key), headersObj)
+				callback(goja.Undefined(), runtime.ToValue(values), runtime.ToValue(originalKey), headersObj)
 			} else {
-				callback(goja.Undefined(), runtime.ToValue(values[0]), runtime.ToValue(key), headersObj)
+				callback(goja.Undefined(), runtime.ToValue(values[0]), runtime.ToValue(originalKey), headersObj)
 			}
 		}
 		return goja.Undefined()
 	})
 
+	attachConstructorPrototype(runtime, "Headers", headersObj)
+
 	return headersObj
 }
 
 // ==================== 流式响应处理 ====================
+
+const (
+	bodyAlreadyUsedErrorMessage  = "Body is unusable: Body has already been read"
+	responseCloneConsumedMessage = "Response.clone: Body has already been consumed."
+)
 
 // attachStreamingBodyMethods 附加流式 Body 方法
 // 🔥 支持：text(), json(), arrayBuffer(), body.getReader()
@@ -1156,7 +1598,7 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 	}
 
 	// 🔥 bodyUsed 状态
-	var bodyUsed bool
+	var bodyConsumed bool
 	var bodyUsedMutex sync.Mutex
 
 	// 🔥 P1 优化: 自动清理机制 - 使用可停止的 timer
@@ -1228,12 +1670,18 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 		bodyUsedMutex.Lock()
 		defer bodyUsedMutex.Unlock()
 
-		if bodyUsed {
-			return fmt.Errorf("响应体已被消费")
+		if bodyConsumed {
+			return errors.New(bodyAlreadyUsedErrorMessage)
 		}
-		bodyUsed = true
+		bodyConsumed = true
 		respObj.Set("bodyUsed", runtime.ToValue(true))
 		return nil
+	}
+
+	isBodyConsumed := func() bool {
+		bodyUsedMutex.Lock()
+		defer bodyUsedMutex.Unlock()
+		return bodyConsumed
 	}
 
 	// text() - 读取为文本
@@ -1294,6 +1742,14 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 			return runtime.ToValue(promise)
 		}
 
+		rejectJSONError := func(parseErr error) {
+			if exc, ok := parseErr.(*goja.Exception); ok {
+				reject(exc.Value())
+			} else {
+				reject(runtime.NewGoError(parseErr))
+			}
+		}
+
 		setImmediate := runtime.Get("setImmediate")
 		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
 			callback := func(call goja.FunctionCall) goja.Value {
@@ -1308,12 +1764,11 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 					return goja.Undefined()
 				}
 
-				var jsonData interface{}
-				err = json.Unmarshal(allData, &jsonData)
-				if err != nil {
-					reject(runtime.NewTypeError(fmt.Sprintf("无效的 JSON: %v", err)))
+				parsedVal, parseErr := parseJSONBytes(runtime, allData)
+				if parseErr != nil {
+					rejectJSONError(parseErr)
 				} else {
-					resolve(runtime.ToValue(jsonData))
+					resolve(parsedVal)
 				}
 				return goja.Undefined()
 			}
@@ -1325,12 +1780,11 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 				return runtime.ToValue(promise)
 			}
 
-			var jsonData interface{}
-			err = json.Unmarshal(allData, &jsonData)
-			if err != nil {
-				reject(runtime.NewTypeError(fmt.Sprintf("无效的 JSON: %v", err)))
+			parsedVal, parseErr := parseJSONBytes(runtime, allData)
+			if parseErr != nil {
+				rejectJSONError(parseErr)
 			} else {
-				resolve(runtime.ToValue(jsonData))
+				resolve(parsedVal)
 			}
 		}
 
@@ -1449,6 +1903,9 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 
 	// 🔥 clone() 方法 - 使用缓存机制（性能优化：共享缓存，避免深拷贝）
 	respObj.Set("clone", func(call goja.FunctionCall) goja.Value {
+		if isBodyConsumed() {
+			panic(runtime.NewTypeError(responseCloneConsumedMessage))
+		}
 		// 🔥 先读取并缓存数据（确保原始和克隆都能读取）
 		localData, err := getResponseData()
 		if err != nil {
@@ -1463,6 +1920,8 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 			Body:          localData, // 共享缓存，避免深拷贝
 			IsStreaming:   false,     // 克隆为非流式
 			FinalURL:      data.FinalURL,
+			Redirected:    data.Redirected,
+			ResponseType:  data.ResponseType,
 			ContentLength: int64(len(localData)),
 			AbortCh:       data.AbortCh,
 			Signal:        data.Signal,
@@ -1478,7 +1937,7 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 	bodyData := data.Body
 
 	// 🔥 bodyUsed 状态管理
-	var bodyUsed bool
+	var bodyConsumed bool
 	var bodyUsedMutex sync.Mutex
 
 	// 🔥 取消状态（与流式模式保持一致）
@@ -1508,12 +1967,18 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 		bodyUsedMutex.Lock()
 		defer bodyUsedMutex.Unlock()
 
-		if bodyUsed {
-			return fmt.Errorf("响应体已被消费")
+		if bodyConsumed {
+			return errors.New(bodyAlreadyUsedErrorMessage)
 		}
-		bodyUsed = true
+		bodyConsumed = true
 		respObj.Set("bodyUsed", runtime.ToValue(true))
 		return nil
+	}
+
+	isBodyConsumed := func() bool {
+		bodyUsedMutex.Lock()
+		defer bodyUsedMutex.Unlock()
+		return bodyConsumed
 	}
 
 	// text() - 返回文本
@@ -1538,12 +2003,15 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 			return runtime.ToValue(promise)
 		}
 
-		jsonStr := string(getBodyData())
-		jsonVal, err := runtime.RunString("(" + jsonStr + ")")
+		parsedVal, err := parseJSONBytes(runtime, getBodyData())
 		if err != nil {
-			reject(runtime.NewTypeError("无效的 JSON: " + err.Error()))
+			if exc, ok := err.(*goja.Exception); ok {
+				reject(exc.Value())
+			} else {
+				reject(runtime.NewGoError(err))
+			}
 		} else {
-			resolve(jsonVal)
+			resolve(parsedVal)
 		}
 		return runtime.ToValue(promise)
 	})
@@ -1660,6 +2128,9 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 
 	// 🔥 clone() 方法 - 缓冲响应克隆（共享数据，避免深拷贝）
 	respObj.Set("clone", func(call goja.FunctionCall) goja.Value {
+		if isBodyConsumed() {
+			panic(runtime.NewTypeError(responseCloneConsumedMessage))
+		}
 		// 🔥 创建克隆的 ResponseData（共享缓存数据）
 		localData := getBodyData()
 		clonedData := &ResponseData{
@@ -1669,6 +2140,8 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 			Body:          localData, // 共享缓存，避免深拷贝
 			IsStreaming:   false,
 			FinalURL:      data.FinalURL,
+			Redirected:    data.Redirected,
+			ResponseType:  data.ResponseType,
 			ContentLength: int64(len(localData)),
 			AbortCh:       data.AbortCh,
 			Signal:        data.Signal,
@@ -1676,6 +2149,26 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 
 		return fe.recreateResponse(runtime, clonedData)
 	})
+}
+
+func parseJSONBytes(runtime *goja.Runtime, data []byte) (goja.Value, error) {
+	if runtime == nil {
+		return goja.Undefined(), fmt.Errorf("runtime is nil")
+	}
+	jsonVal := runtime.Get("JSON")
+	if jsonVal == nil || goja.IsUndefined(jsonVal) {
+		return goja.Undefined(), fmt.Errorf("JSON is not available")
+	}
+	jsonObj := jsonVal.ToObject(runtime)
+	if jsonObj == nil {
+		return goja.Undefined(), fmt.Errorf("JSON object is not available")
+	}
+	parseVal := jsonObj.Get("parse")
+	parseFn, ok := goja.AssertFunction(parseVal)
+	if !ok {
+		return goja.Undefined(), fmt.Errorf("JSON.parse is not a function")
+	}
+	return parseFn(jsonObj, runtime.ToValue(string(data)))
 }
 
 // ==================== FormData 提取 ====================

@@ -508,6 +508,8 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				return result
 			})
 
+			attachIteratorSymbol(runtime, iterator)
+
 			return iterator
 		})
 
@@ -530,6 +532,8 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				}
 				return result
 			})
+
+			attachIteratorSymbol(runtime, iterator)
 
 			return iterator
 		})
@@ -554,6 +558,8 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				return result
 			})
 
+			attachIteratorSymbol(runtime, iterator)
+
 			return iterator
 		})
 
@@ -574,6 +580,8 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 
 			return goja.Undefined()
 		})
+
+		setFormDataDefaultIterator(runtime, obj)
 
 		return obj
 	}
@@ -636,6 +644,60 @@ func FormatFormDataForDebug(fd *FormData) string {
 	}
 
 	return "FormData {\n" + strings.Join(parts, "\n") + "\n}"
+}
+
+func attachIteratorSymbol(runtime *goja.Runtime, iterator *goja.Object) {
+	symbolVal := runtime.Get("Symbol")
+	if symbolVal == nil || goja.IsUndefined(symbolVal) || goja.IsNull(symbolVal) {
+		return
+	}
+
+	symbolObj := symbolVal.ToObject(runtime)
+	if symbolObj == nil {
+		return
+	}
+
+	iteratorSym := symbolObj.Get("iterator")
+	if iteratorSym == nil {
+		return
+	}
+
+	if sym, ok := iteratorSym.(*goja.Symbol); ok {
+		iterator.SetSymbol(sym, runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+			return iterator
+		}))
+	}
+}
+
+func setFormDataDefaultIterator(runtime *goja.Runtime, obj *goja.Object) {
+	symbolVal := runtime.Get("Symbol")
+	if symbolVal == nil || goja.IsUndefined(symbolVal) || goja.IsNull(symbolVal) {
+		return
+	}
+
+	symbolObj := symbolVal.ToObject(runtime)
+	if symbolObj == nil {
+		return
+	}
+
+	iteratorSym := symbolObj.Get("iterator")
+	if iteratorSym == nil {
+		return
+	}
+
+	sym, ok := iteratorSym.(*goja.Symbol)
+	if !ok {
+		return
+	}
+
+	obj.SetSymbol(sym, runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+		if entriesFunc, ok := goja.AssertFunction(obj.Get("entries")); ok {
+			if iterator, err := entriesFunc(obj); err == nil {
+				return iterator
+			}
+		}
+		return goja.Undefined()
+	}))
 }
 
 // ==================== 注释说明 ====================
