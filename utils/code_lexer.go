@@ -145,7 +145,7 @@ func (cl *CodeLexer) scanString(start int, quote byte) Token {
 		}
 
 		// 模板字符串的特殊处理
-		// 注意：当前简化实现，将 ${...} 视为字符串的一部分
+		// 注意：当前实现，将 ${...} 视为字符串的一部分
 		// 已完整实现需要递归解析 ${} 内的表达式
 
 		cl.pos++

@@ -404,7 +404,8 @@ func NewStreamingResponseFromCache(cachedData []byte, runtime *goja.Runtime) *St
 	reader := io.NopCloser(bytes.NewReader(cachedData))
 
 	// 创建 StreamReader（不限制大小，因为数据已缓存）
-	streamReader := NewStreamReader(reader, runtime, 0, int64(len(cachedData)), nil, nil)
+	// 🔥 P2: 缓存数据不需要超时保护,传入 0
+	streamReader := NewStreamReader(reader, runtime, 0, int64(len(cachedData)), nil, nil, 0)
 
 	// 创建 StreamingResponse（不需要再次缓存）
 	return &StreamingResponse{
@@ -422,6 +423,7 @@ func NewStreamingResponseFromCache(cachedData []byte, runtime *goja.Runtime) *St
 func (sr *StreamingResponse) Close() error {
 	// 更新 closed 状态，并在需要时触发 closed Promise
 	var resolver func(interface{}) error
+	var reader *StreamReader
 
 	sr.closedMutex.Lock()
 	if sr.closed {
@@ -431,17 +433,29 @@ func (sr *StreamingResponse) Close() error {
 	sr.closed = true
 	resolver = sr.resolveClosedFunc
 	sr.resolveClosedFunc = nil
+	reader = sr.reader
+	sr.reader = nil
 	sr.closedMutex.Unlock()
 
 	if resolver != nil {
 		_ = resolver(goja.Undefined())
 	}
 
-	if sr.reader != nil {
-		return sr.reader.Close()
+	if reader != nil {
+		if err := reader.Close(); err != nil {
+			sr.clearCachedData()
+			return err
+		}
 	}
 
+	sr.clearCachedData()
 	return nil
+}
+
+func (sr *StreamingResponse) clearCachedData() {
+	sr.cloneMutex.Lock()
+	defer sr.cloneMutex.Unlock()
+	sr.cachedData = nil
 }
 
 // IsClosed 返回是否已关闭

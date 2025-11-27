@@ -158,7 +158,7 @@ func estimateBasicTypeSize(value goja.Value) int {
 	switch v := exported.(type) {
 	case string:
 		// 字符串：需要考虑转义字符
-		// 简化处理：实际长度 + 10% 余量 + 引号
+		//处理：实际长度 + 10% 余量 + 引号
 		return len(v) + len(v)/10 + 2
 	case int:
 		return estimateSignedIntJSONSize(int64(v))

@@ -713,6 +713,16 @@ var (
 	runtimeProtoByVM = make(map[*goja.Runtime]*runtimePrototypes)
 )
 
+// ClearRuntimePrototypes 移除与 runtime 关联的原型缓存，避免长期持有已销毁的 runtime
+func ClearRuntimePrototypes(runtime *goja.Runtime) {
+	if runtime == nil {
+		return
+	}
+	prototypesMu.Lock()
+	delete(runtimeProtoByVM, runtime)
+	prototypesMu.Unlock()
+}
+
 // getRuntimePrototypes 返回指定 runtime 的 prototype 容器（若不存在则创建）
 func getRuntimePrototypes(runtime *goja.Runtime) *runtimePrototypes {
 	prototypesMu.RLock()
@@ -809,6 +819,28 @@ func ensureEventListenerStore(runtime *goja.Runtime, target *goja.Object) eventL
 	}
 	target.Set("__eventTargetListeners", data)
 	return data.listeners
+}
+
+func clearEventListenerStore(runtime *goja.Runtime, target *goja.Object) {
+	if target == nil {
+		return
+	}
+	storeVal := target.Get("__eventTargetListeners")
+	if storeVal == nil || goja.IsUndefined(storeVal) || goja.IsNull(storeVal) {
+		return
+	}
+	data, ok := storeVal.Export().(*eventListenerData)
+	if !ok || data == nil {
+		return
+	}
+	if data.listeners != nil {
+		for _, list := range data.listeners {
+			for _, listener := range list {
+				cleanupListenerSignalBinding(runtime, listener)
+			}
+		}
+	}
+	target.Delete("__eventTargetListeners")
 }
 
 func parseListenerOptions(runtime *goja.Runtime, options goja.Value) (bool, *goja.Object) {
@@ -1253,6 +1285,9 @@ func TriggerAbortListeners(runtime *goja.Runtime, signal *goja.Object, state *Si
 			dispatchFn(signal, event)
 		}
 	}
+
+	// 🔥 abort 事件只会触发一次，触发后立即清理所有监听器，避免闭包长驻
+	clearEventListenerStore(runtime, signal)
 }
 
 // ==================== AbortController 构造器 ====================

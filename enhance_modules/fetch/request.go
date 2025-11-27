@@ -63,9 +63,26 @@ func ExecuteRequestAsync(
 	req *FetchRequest,
 	createBodyWrapper func(body io.ReadCloser, contentLength int64, timeout time.Duration, cancel context.CancelFunc) io.ReadCloser,
 ) {
+	// 🔥 在函数顶部声明 context 相关变量，便于在 defer 中安全访问
+	var (
+		reqCtx       context.Context
+		reqCancel    context.CancelFunc
+		uploadCtx    context.Context
+		uploadCancel context.CancelFunc
+	)
+
 	// 🔥 兜底：捕获所有 panic，防止进程崩溃
+	// 同时在异常路径上兜底取消 context，避免少数极端场景下的 context 泄漏
 	defer func() {
 		if r := recover(); r != nil {
+			// 兜底取消 context（如果已创建）
+			if uploadCancel != nil {
+				uploadCancel()
+			}
+			if reqCancel != nil {
+				reqCancel()
+			}
+
 			// 将 panic 转为错误写回 resultCh
 			select {
 			case req.resultCh <- FetchResult{nil, fmt.Errorf("fetch 内部错误: %v", r), nil}:
@@ -147,12 +164,10 @@ func ExecuteRequestAsync(
 	// 为什么不能在请求完成后立即 cancel：
 	//   - resp.Body 底层仍依赖 request context（特别是 HTTP/2）
 	//   - 过早 cancel 会导致 body 读取失败（context canceled 错误）
-	reqCtx, reqCancel := context.WithTimeout(context.Background(), config.RequestTimeout)
+	reqCtx, reqCancel = context.WithTimeout(context.Background(), config.RequestTimeout)
 
 	// 🔥 v2.4.2: 为上传 FormData 创建独立的 context
 	// 注意：这是上传阶段的 context，与下载响应的 context 独立
-	var uploadCtx context.Context
-	var uploadCancel context.CancelFunc
 
 	if _, ok := req.options["__formDataBody"]; ok {
 		if streamingFormData, ok := req.options["__streamingFormData"].(*formdata.StreamingFormData); ok {

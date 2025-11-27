@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/dop251/goja"
 )
@@ -124,7 +125,8 @@ func (fdr *FormDataReadable) ensureReader() error {
 
 	fdr.reader = reader
 	// 创建 StreamReader 包装（不限制大小）
-	fdr.streamReader = NewStreamReader(reader, fdr.runtime, 0, -1, nil, nil)
+	// 🔥 P2: FormData 流式读取使用 5 分钟超时保护
+	fdr.streamReader = NewStreamReader(reader, fdr.runtime, 0, -1, nil, nil, 5*time.Minute)
 	return nil
 }
 

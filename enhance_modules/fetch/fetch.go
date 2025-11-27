@@ -127,8 +127,24 @@ func (fe *FetchEnhancer) Setup(runtime *goja.Runtime) error {
 // Close 关闭模块并释放资源（ModuleEnhancer 接口）
 // 🔥 Fetch 模块使用共享的 HTTP Client，不需要主动关闭
 func (fe *FetchEnhancer) Close() error {
-	// HTTP Client 会在进程退出时自动清理连接池
+	// 主动关闭空闲连接，避免长时间测试场景下连接池占用内存不释放
+	if fe != nil && fe.client != nil {
+		if transport, ok := fe.client.Transport.(*http.Transport); ok && transport != nil {
+			transport.CloseIdleConnections()
+		}
+	}
 	return nil
+}
+
+// CleanupIdleConnections 主动清理底层 HTTP Client 的空闲连接
+// 可在高频执行场景下按需调用，稳定容器内存占用
+func (fe *FetchEnhancer) CleanupIdleConnections() {
+	if fe == nil || fe.client == nil {
+		return
+	}
+	if transport, ok := fe.client.Transport.(*http.Transport); ok && transport != nil {
+		transport.CloseIdleConnections()
+	}
 }
 
 // GetFormDataConfig 返回 FormData 配置（供 Node.js FormData 模块使用）
@@ -167,6 +183,9 @@ func (fe *FetchEnhancer) RegisterFetchAPI(runtime *goja.Runtime) error {
 	// 3. 注册 Request 构造器
 	runtime.Set("Request", CreateRequestConstructor(runtime))
 
+	// 3.5 注册 Response 构造器
+	runtime.Set("Response", fe.createResponseConstructor(runtime))
+
 	// 4. 注册 AbortSignal 构造函数（必须在 AbortController 之前，因为需要初始化 prototype）
 	runtime.Set("AbortSignal", CreateAbortSignalConstructor(runtime))
 
@@ -191,6 +210,212 @@ func (fe *FetchEnhancer) RegisterFetchAPI(runtime *goja.Runtime) error {
 	}
 
 	return nil
+}
+
+// createResponseConstructor 创建 Response 构造器（与 WHATWG Fetch 规范保持一致）
+func (fe *FetchEnhancer) createResponseConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) *goja.Object {
+	return func(call goja.ConstructorCall) *goja.Object {
+		responseData, err := fe.buildResponseDataFromConstructor(runtime, call)
+		if err != nil {
+			panic(runtime.NewTypeError(err.Error()))
+		}
+		respVal := fe.recreateResponse(runtime, responseData)
+		return respVal.ToObject(runtime)
+	}
+}
+
+func (fe *FetchEnhancer) buildResponseDataFromConstructor(runtime *goja.Runtime, call goja.ConstructorCall) (*ResponseData, error) {
+	status := 200
+	statusText := ""
+	headers := http.Header{}
+	var bodyBytes []byte
+	var contentType string
+	var hasBody bool
+
+	if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) && !goja.IsNull(call.Arguments[0]) {
+		hasBody = true
+		bodyVal := call.Arguments[0]
+		fallbackStr := bodyVal.String()
+
+		var bodyInput interface{}
+		if obj, ok := bodyVal.(*goja.Object); ok {
+			bodyInput = obj
+		} else {
+			bodyInput = bodyVal.Export()
+		}
+
+		if fe.bodyHandler == nil {
+			return nil, fmt.Errorf("bodyHandler 为 nil")
+		}
+
+		data, reader, ct, err := fe.bodyHandler.ProcessBody(runtime, bodyInput)
+		if err != nil {
+			return nil, fmt.Errorf("处理 Response body 失败: %w", err)
+		}
+
+		if reader != nil {
+			buffer, err := io.ReadAll(reader)
+			if err != nil {
+				return nil, fmt.Errorf("读取 Response body 失败: %w", err)
+			}
+			data = buffer
+		}
+
+		switch {
+		case data != nil:
+			bodyBytes = append([]byte(nil), data...)
+		default:
+			bodyBytes = []byte(fallbackStr)
+		}
+
+		contentType = ct
+	}
+
+	if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) && !goja.IsNull(call.Arguments[1]) {
+		initObj := call.Arguments[1].ToObject(runtime)
+		if initObj == nil {
+			return nil, fmt.Errorf("Response init 必须是对象")
+		}
+
+		if statusVal := initObj.Get("status"); !goja.IsUndefined(statusVal) && !goja.IsNull(statusVal) {
+			parsed := int(statusVal.ToInteger())
+			if parsed < 200 || parsed > 599 || parsed == 101 {
+				return nil, fmt.Errorf("Response status 必须在 200-599 且不能为 101")
+			}
+			status = parsed
+		}
+
+		if statusTextVal := initObj.Get("statusText"); !goja.IsUndefined(statusTextVal) && !goja.IsNull(statusTextVal) {
+			statusText = statusTextVal.String()
+		}
+
+		if headersVal := initObj.Get("headers"); !goja.IsUndefined(headersVal) && !goja.IsNull(headersVal) {
+			if err := populateHeadersFromValue(runtime, headers, headersVal); err != nil {
+				return nil, fmt.Errorf("解析 Response headers 失败: %w", err)
+			}
+		}
+	}
+
+	if hasBody && (status == 101 || status == 204 || status == 205 || status == 304) {
+		return nil, fmt.Errorf("Response status %d 不允许包含 body", status)
+	}
+
+	if _, ok := headers["Content-Type"]; !ok && contentType != "" {
+		headers.Set("Content-Type", contentType)
+	}
+
+	responseData := &ResponseData{
+		StatusCode:    status,
+		Status:        statusText,
+		Headers:       headers,
+		Body:          bodyBytes,
+		IsStreaming:   false,
+		FinalURL:      "",
+		ContentLength: int64(len(bodyBytes)),
+	}
+
+	return responseData, nil
+}
+
+func populateHeadersFromValue(runtime *goja.Runtime, headers http.Header, value goja.Value) error {
+	if headers == nil || value == nil || goja.IsUndefined(value) || goja.IsNull(value) {
+		return nil
+	}
+
+	if obj, ok := value.(*goja.Object); ok {
+		if forEach := obj.Get("forEach"); forEach != nil && !goja.IsUndefined(forEach) {
+			if fn, ok := goja.AssertFunction(forEach); ok {
+				callback := func(call goja.FunctionCall) goja.Value {
+					if len(call.Arguments) >= 2 {
+						name := call.Argument(1).String()
+						headers.Add(name, call.Argument(0).String())
+					}
+					return goja.Undefined()
+				}
+				if _, err := fn(obj, runtime.ToValue(callback)); err != nil {
+					return err
+				}
+				return nil
+			}
+		}
+
+		for _, key := range obj.Keys() {
+			headers.Add(key, obj.Get(key).String())
+		}
+		return nil
+	}
+
+	if exported := value.Export(); exported != nil {
+		switch h := exported.(type) {
+		case map[string]interface{}:
+			for key, val := range h {
+				headers.Add(key, fmt.Sprintf("%v", val))
+			}
+		case []interface{}:
+			for _, entry := range h {
+				if tuple, ok := entry.([]interface{}); ok && len(tuple) >= 2 {
+					headers.Add(fmt.Sprintf("%v", tuple[0]), fmt.Sprintf("%v", tuple[1]))
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (fe *FetchEnhancer) createBlobFromBytes(runtime *goja.Runtime, data []byte, contentType string) (*goja.Object, error) {
+	factory, err := ensureBlobFactory(runtime)
+	if err != nil {
+		return nil, err
+	}
+
+	copied := make([]byte, len(data))
+	copy(copied, data)
+	arrayBuffer := runtime.NewArrayBuffer(copied)
+
+	var typeVal goja.Value = goja.Undefined()
+	if contentType != "" {
+		typeVal = runtime.ToValue(contentType)
+	}
+
+	result, err := factory(goja.Undefined(), runtime.ToValue(arrayBuffer), typeVal)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.ToObject(runtime), nil
+}
+
+func ensureBlobFactory(runtime *goja.Runtime) (goja.Callable, error) {
+	existing := runtime.Get("__createBlobFromBytes")
+	if existing != nil && !goja.IsUndefined(existing) && !goja.IsNull(existing) {
+		if callable, ok := goja.AssertFunction(existing); ok {
+			return callable, nil
+		}
+	}
+
+	script := `(function(global){
+  function createBlobFromBytes(buffer, type) {
+    if (type === undefined) {
+      return new Blob([buffer]);
+    }
+    return new Blob([buffer], { type: type });
+  }
+  Object.defineProperty(global, '__createBlobFromBytes', {
+    value: createBlobFromBytes,
+    configurable: true,
+    writable: true
+  });
+})(typeof globalThis !== 'undefined' ? globalThis : this);`
+	if _, err := runtime.RunString(script); err != nil {
+		return nil, err
+	}
+
+	existing = runtime.Get("__createBlobFromBytes")
+	if callable, ok := goja.AssertFunction(existing); ok {
+		return callable, nil
+	}
+	return nil, fmt.Errorf("Blob constructor unavailable")
 }
 
 // ensureQueueMicrotask 注入 queueMicrotask（若宿主环境未提供）
@@ -690,6 +915,16 @@ func (fe *FetchEnhancer) recreateResponse(runtime *goja.Runtime, data *ResponseD
 
 	respObj := runtime.NewObject()
 
+	if responseCtor := runtime.Get("Response"); responseCtor != nil && !goja.IsUndefined(responseCtor) && !goja.IsNull(responseCtor) {
+		if ctorObj := responseCtor.ToObject(runtime); ctorObj != nil {
+			if protoVal := ctorObj.Get("prototype"); protoVal != nil && !goja.IsUndefined(protoVal) && !goja.IsNull(protoVal) {
+				if protoObj := protoVal.ToObject(runtime); protoObj != nil {
+					respObj.SetPrototype(protoObj)
+				}
+			}
+		}
+	}
+
 	// 基础属性
 	respObj.Set("status", runtime.ToValue(data.StatusCode))
 	respObj.Set("statusText", runtime.ToValue(data.Status))
@@ -788,10 +1023,24 @@ func (fe *FetchEnhancer) createResponseHeaders(runtime *goja.Runtime, httpHeader
 // 🔥 线程安全：使用 setImmediate 替代 goroutine，确保所有 goja Runtime 操作在 EventLoop 中执行
 func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respObj *goja.Object, data *ResponseData) {
 	// 创建 StreamReader（包装 BodyStream）
-	streamReader := NewStreamReader(data.BodyStream, runtime, fe.config.MaxStreamingSize, data.ContentLength, data.AbortCh, data.Signal)
+	// 🔥 P2: 传入 ResponseReadTimeout 用于 abort watcher 超时保护
+	streamReader := NewStreamReader(data.BodyStream, runtime, fe.config.MaxStreamingSize, data.ContentLength, data.AbortCh, data.Signal, fe.config.ResponseReadTimeout)
 
 	// 🔥 创建 StreamingResponse（支持 Node.js + Web Streams）
-	streamingResponse := NewStreamingResponse(streamReader, runtime, true) // cloneable=true
+	streamingResponse := NewStreamingResponse(streamReader, runtime, false) // cloneable=false，避免缓存占满内存
+
+	// 🔥 保障底层流只关闭一次，避免资源悬挂
+	var closeStreamingOnce sync.Once
+	var autoCleanupTimer *time.Timer // 🔥 P1: 保存 timer 引用以便停止
+	closeStreaming := func() {
+		closeStreamingOnce.Do(func() {
+			// 🔥 P1: 停止自动清理 timer,防止 timer 累积
+			if autoCleanupTimer != nil {
+				autoCleanupTimer.Stop()
+			}
+			_ = streamingResponse.Close()
+		})
+	}
 
 	// 🔥 取消状态标志（body.cancel() 后阻止读取）
 	var cancelled bool
@@ -815,7 +1064,7 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 		cancelledMutex.Unlock()
 
 		// 关闭底层流
-		streamingResponse.Close()
+		closeStreaming()
 
 		resolve(goja.Undefined())
 		return runtime.ToValue(promise)
@@ -856,11 +1105,13 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 		if err == nil {
 			return false
 		}
+		closeStreaming()
 		reject(convertStreamError(err))
 		return true
 	}
 
 	readStreamIntoCache := func() {
+		defer closeStreaming()
 		defer func() {
 			if r := recover(); r != nil {
 				cacheMutex.Lock()
@@ -889,7 +1140,6 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 						float64(fe.config.MaxResponseSize)/1024/1024,
 					)
 					cacheMutex.Unlock()
-					_ = streamingResponse.Close()
 					return
 				}
 				_, _ = buffer.Write(chunk)
@@ -909,6 +1159,31 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 	var bodyUsed bool
 	var bodyUsedMutex sync.Mutex
 
+	// 🔥 P1 优化: 自动清理机制 - 使用可停止的 timer
+	// 在 ResponseBodyIdleTimeout 内完全未读取任何数据时关闭流，防止长时间占用连接
+	autoCleanupTimeout := fe.config.ResponseBodyIdleTimeout
+	if autoCleanupTimeout <= 0 {
+		autoCleanupTimeout = 30 * time.Second
+	}
+	autoCleanupTimer = time.AfterFunc(autoCleanupTimeout, func() {
+		// 如果流已经关闭或已被显式取消，则不再处理
+		if streamReader == nil || streamReader.IsClosed() {
+			return
+		}
+
+		cancelledMutex.Lock()
+		isCancelled := cancelled
+		cancelledMutex.Unlock()
+		if isCancelled {
+			return
+		}
+
+		// 仅在完全没有读取任何字节（GetTotalRead == 0）时触发自动关闭
+		if streamReader.GetTotalRead() == 0 {
+			closeStreaming()
+		}
+	})
+
 	// 通用的数据获取函数：优先使用缓存，缓存不存在时读取流
 	getResponseData := func() ([]byte, error) {
 		// 🔥 检查是否已取消（cancel 后返回空数据）
@@ -917,6 +1192,7 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 		cancelledMutex.Unlock()
 
 		if isCancelled {
+			closeStreaming()
 			return []byte{}, nil // cancel 后返回空数据
 		}
 
@@ -938,6 +1214,7 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 		cancelledMutex.Unlock()
 
 		if isCancelled {
+			closeStreaming()
 			return []byte{}, nil
 		}
 
@@ -1133,12 +1410,11 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 					contentType = ct
 				}
 
-				// 创建 Blob 对象
-				blobObj := runtime.NewObject()
-				blobObj.Set("__isBlob", true)
-				blobObj.Set("__data", allData)
-				blobObj.Set("size", len(allData))
-				blobObj.Set("type", contentType)
+				blobObj, blobErr := fe.createBlobFromBytes(runtime, allData, contentType)
+				if blobErr != nil {
+					reject(runtime.NewGoError(fmt.Errorf("create Blob failed: %v", blobErr)))
+					return goja.Undefined()
+				}
 
 				resolve(blobObj)
 				return goja.Undefined()
@@ -1156,11 +1432,11 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 				contentType = ct
 			}
 
-			blobObj := runtime.NewObject()
-			blobObj.Set("__isBlob", true)
-			blobObj.Set("__data", allData)
-			blobObj.Set("size", len(allData))
-			blobObj.Set("type", contentType)
+			blobObj, blobErr := fe.createBlobFromBytes(runtime, allData, contentType)
+			if blobErr != nil {
+				reject(runtime.NewGoError(fmt.Errorf("create Blob failed: %v", blobErr)))
+				return runtime.ToValue(promise)
+			}
 
 			resolve(blobObj)
 		}
@@ -1300,11 +1576,11 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 			contentType = ct
 		}
 
-		blobObj := runtime.NewObject()
-		blobObj.Set("__isBlob", true)
-		blobObj.Set("__data", getBodyData())
-		blobObj.Set("size", len(getBodyData()))
-		blobObj.Set("type", contentType)
+		blobObj, err := fe.createBlobFromBytes(runtime, getBodyData(), contentType)
+		if err != nil {
+			reject(runtime.NewGoError(fmt.Errorf("create Blob failed: %v", err)))
+			return runtime.ToValue(promise)
+		}
 
 		resolve(blobObj)
 		return runtime.ToValue(promise)

@@ -3,6 +3,7 @@ package blob
 import (
 	"bytes"
 	"fmt"
+	"math"
 	goRuntime "runtime"
 	"strconv"
 	"strings"
@@ -34,6 +35,8 @@ type JSFile struct {
 	name         string // 文件名
 	lastModified int64  // 最后修改时间（Unix 毫秒）
 }
+
+const blobStreamDefaultChunkSize = 64 * 1024
 
 // GetName 返回文件名
 func (f *JSFile) GetName() string {
@@ -191,7 +194,7 @@ func (fe *FetchEnhancer) createBlobConstructor(runtime *goja.Runtime) func(goja.
 
 		// 🔥 P2-1: 获取 endings 选项（默认 "transparent"，白名单处理）
 		endings := "transparent"
-		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
+		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) && !goja.IsNull(call.Arguments[1]) {
 			if optionsObj := call.Arguments[1].ToObject(runtime); optionsObj != nil {
 				if endingsVal := optionsObj.Get("endings"); endingsVal != nil && !goja.IsUndefined(endingsVal) {
 					if endingsVal.String() == "native" {
@@ -231,7 +234,10 @@ func (fe *FetchEnhancer) createBlobConstructor(runtime *goja.Runtime) func(goja.
 				// 遍历数组元素
 				for i := 0; i < arrayLen; i++ {
 					partVal := partsObj.Get(strconv.Itoa(i))
-					var partBytes []byte
+					var (
+						partBytes    []byte
+						partBytesSet bool
+					)
 
 					// 1. 检查是否是 Blob/File
 					if partObj, ok := partVal.(*goja.Object); ok {
@@ -240,16 +246,19 @@ func (fe *FetchEnhancer) createBlobConstructor(runtime *goja.Runtime) func(goja.
 							if blobDataVal := partObj.Get("__blobData"); blobDataVal != nil && !goja.IsUndefined(blobDataVal) {
 								if blobData, ok := blobDataVal.Export().(*JSBlob); ok {
 									partBytes = blobData.data
+									partBytesSet = true
 								}
 							}
 						} else if exported := partVal.Export(); exported != nil {
 							// 2. 检查是否是 ArrayBuffer
 							if ab, ok := exported.(goja.ArrayBuffer); ok {
 								partBytes = ab.Bytes()
+								partBytesSet = true
 							} else if partObj != nil {
 								// 3. 检查是否是 TypedArray 或 DataView
 								if bytes, err := extractBufferSourceBytes(runtime, partObj); err == nil {
 									partBytes = bytes
+									partBytesSet = true
 								}
 								// 如果提取失败，partBytes 保持 nil，会走到 toString() 逻辑
 							}
@@ -257,7 +266,7 @@ func (fe *FetchEnhancer) createBlobConstructor(runtime *goja.Runtime) func(goja.
 					}
 
 					// 4. 如果不是 BufferSource 或 Blob，使用 JS ToString 语义
-					if partBytes == nil {
+					if !partBytesSet {
 						// 调用 JS 的 toString 方法
 						str := partVal.String()
 
@@ -276,6 +285,7 @@ func (fe *FetchEnhancer) createBlobConstructor(runtime *goja.Runtime) func(goja.
 						}
 
 						partBytes = []byte(str)
+						partBytesSet = true
 					}
 
 					// 检查累积大小
@@ -297,7 +307,7 @@ func (fe *FetchEnhancer) createBlobConstructor(runtime *goja.Runtime) func(goja.
 		}
 
 		// 第二个参数：options {type: "text/plain"}
-		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
+		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) && !goja.IsNull(call.Arguments[1]) {
 			if optionsObj := call.Arguments[1].ToObject(runtime); optionsObj != nil {
 				// 🔥 修复：同时检查 nil 和 undefined，并规范化 type
 				if typeVal := optionsObj.Get("type"); typeVal != nil && !goja.IsUndefined(typeVal) {
@@ -336,6 +346,156 @@ func (fe *FetchEnhancer) createBlobObject(runtime *goja.Runtime, blob *JSBlob) *
 	// 🔥 Symbol.toStringTag 也已在 Blob.prototype 上定义
 
 	return obj
+}
+
+// createBlobReadableStream 创建一个最小可用的 ReadableStream 对象
+// 返回值紧跟 WHATWG Streams 的基础语义：getReader()、reader.read()、reader.cancel()
+func createBlobReadableStream(runtime *goja.Runtime, blob *JSBlob, uint8ArrayConstructor goja.Constructor) *goja.Object {
+	if runtime == nil || blob == nil {
+		return nil
+	}
+
+	streamObj := runtime.NewObject()
+	totalLength := len(blob.data)
+
+	var offset int
+	var streamLocked bool
+	var streamClosed bool
+	var readerClosedResolve func(interface{}) error
+
+	streamObj.Set("locked", false)
+
+	resolveReaderClosed := func() {
+		if readerClosedResolve != nil {
+			_ = readerClosedResolve(goja.Undefined())
+			readerClosedResolve = nil
+		}
+	}
+
+	updateLocked := func(locked bool) {
+		streamLocked = locked
+		streamObj.Set("locked", locked)
+	}
+
+	finalizeStream := func() {
+		if streamClosed {
+			return
+		}
+		streamClosed = true
+		offset = totalLength
+		updateLocked(false)
+		resolveReaderClosed()
+	}
+
+	createChunkValue := func(chunk []byte) goja.Value {
+		buffer := runtime.NewArrayBuffer(chunk)
+		if uint8ArrayConstructor != nil {
+			if uint8Array, err := uint8ArrayConstructor(nil, runtime.ToValue(buffer)); err == nil {
+				return uint8Array
+			}
+		}
+		return runtime.ToValue(buffer)
+	}
+
+	streamObj.Set("cancel", func(call goja.FunctionCall) goja.Value {
+		promise, resolve, _ := runtime.NewPromise()
+		finalizeStream()
+		_ = resolve(goja.Undefined())
+		return runtime.ToValue(promise)
+	})
+
+	streamObj.Set("getReader", func(call goja.FunctionCall) goja.Value {
+		if streamLocked {
+			panic(runtime.NewTypeError("ReadableStream already locked"))
+		}
+
+		reader := runtime.NewObject()
+		updateLocked(true)
+
+		readerClosed := false
+		readerReleased := false
+
+		closedPromise, resolveClosed, rejectClosed := runtime.NewPromise()
+		reader.Set("closed", closedPromise)
+		readerClosedResolve = resolveClosed
+
+		maybeResolveClosed := func() {
+			if readerClosed {
+				return
+			}
+			readerClosed = true
+			resolveReaderClosed()
+		}
+
+		reader.Set("read", func(call goja.FunctionCall) goja.Value {
+			promise, resolve, reject := runtime.NewPromise()
+
+			if readerReleased {
+				_ = reject(runtime.NewTypeError("Reader has been released"))
+				return runtime.ToValue(promise)
+			}
+
+			result := runtime.NewObject()
+
+			if streamClosed || offset >= totalLength {
+				finalizeStream()
+				result.Set("value", goja.Undefined())
+				result.Set("done", true)
+				_ = resolve(result)
+				maybeResolveClosed()
+				return runtime.ToValue(promise)
+			}
+
+			remaining := totalLength - offset
+			chunkSize := blobStreamDefaultChunkSize
+			if remaining < chunkSize {
+				chunkSize = remaining
+			}
+
+			chunk := make([]byte, chunkSize)
+			copy(chunk, blob.data[offset:offset+chunkSize])
+			offset += chunkSize
+
+			result.Set("value", createChunkValue(chunk))
+			result.Set("done", false)
+			_ = resolve(result)
+
+			if offset >= totalLength {
+				finalizeStream()
+				maybeResolveClosed()
+			}
+
+			return runtime.ToValue(promise)
+		})
+
+		reader.Set("cancel", func(call goja.FunctionCall) goja.Value {
+			promise, resolve, _ := runtime.NewPromise()
+			finalizeStream()
+			maybeResolveClosed()
+			_ = resolve(goja.Undefined())
+			return runtime.ToValue(promise)
+		})
+
+		reader.Set("releaseLock", func(call goja.FunctionCall) goja.Value {
+			readerReleased = true
+			readerClosedResolve = nil
+			updateLocked(false)
+			return goja.Undefined()
+		})
+
+		// closed Promise 如果 reader 还未消费任何数据且 stream 已关闭，立即 resolve
+		if streamClosed || offset >= totalLength {
+			finalizeStream()
+			maybeResolveClosed()
+		}
+
+		// 避免未使用的 reject
+		_ = rejectClosed
+
+		return reader
+	})
+
+	return streamObj
 }
 
 // createFileConstructor 创建 File 构造器
@@ -392,7 +552,10 @@ func (fe *FetchEnhancer) createFileConstructor(runtime *goja.Runtime) func(goja.
 				// 🔥 不跳过 undefined/null，让它们走 toString 路径
 				// undefined → "undefined", null → "null"
 
-				var partBytes []byte
+				var (
+					partBytes    []byte
+					partBytesSet bool
+				)
 
 				// 1. 检查是否是 Blob/File
 				if partObj, ok := partVal.(*goja.Object); ok {
@@ -401,26 +564,30 @@ func (fe *FetchEnhancer) createFileConstructor(runtime *goja.Runtime) func(goja.
 						if blobDataVal := partObj.Get("__blobData"); blobDataVal != nil && !goja.IsUndefined(blobDataVal) {
 							if blobData, ok := blobDataVal.Export().(*JSBlob); ok {
 								partBytes = blobData.data
+								partBytesSet = true
 							}
 						}
 					} else if exported := partVal.Export(); exported != nil {
 						// 2. 检查是否是 ArrayBuffer
 						if ab, ok := exported.(goja.ArrayBuffer); ok {
 							partBytes = ab.Bytes()
+							partBytesSet = true
 						} else if partObj != nil {
 							// 3. 检查是否是 TypedArray 或 DataView
 							if bytes, err := extractBufferSourceBytes(runtime, partObj); err == nil {
 								partBytes = bytes
+								partBytesSet = true
 							}
 						}
 					}
 				}
 
 				// 4. 如果不是 BufferSource 或 Blob，使用 JS ToString 语义
-				if partBytes == nil {
+				if !partBytesSet {
 					// 调用 JS 的 toString 方法
 					str := partVal.String()
 					partBytes = []byte(str)
+					partBytesSet = true
 				}
 
 				// 检查累积大小
@@ -444,7 +611,7 @@ func (fe *FetchEnhancer) createFileConstructor(runtime *goja.Runtime) func(goja.
 		file.name = call.Arguments[1].String()
 
 		// 第三个参数：options {type, lastModified}
-		if len(call.Arguments) > 2 && !goja.IsUndefined(call.Arguments[2]) {
+		if len(call.Arguments) > 2 && !goja.IsUndefined(call.Arguments[2]) && !goja.IsNull(call.Arguments[2]) {
 			if optionsObj := call.Arguments[2].ToObject(runtime); optionsObj != nil {
 				if typeVal := optionsObj.Get("type"); typeVal != nil && !goja.IsUndefined(typeVal) {
 					file.typ = normalizeType(typeVal.String())
@@ -538,6 +705,10 @@ func (fe *FetchEnhancer) RegisterBlobFileAPI(runtime *goja.Runtime) error {
 
 	// 🔥 创建 Blob 构造器并设置原型
 	blobConstructor := runtime.ToValue(fe.createBlobConstructor(runtime)).ToObject(runtime)
+
+	// 🔥 显式设置 Blob 构造函数的 name，与 Node.js v25 行为保持一致
+	blobConstructor.DefineDataProperty("name", runtime.ToValue("Blob"),
+		goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
 	blobPrototype := runtime.NewObject()
 
 	// 🔥 在 Blob.prototype 上定义方法（而不是在实例上）
@@ -585,35 +756,18 @@ func (fe *FetchEnhancer) RegisterBlobFileAPI(runtime *goja.Runtime) error {
 		blob, _ := blobDataVal.Export().(*JSBlob)
 
 		dataLen := int64(len(blob.data))
-		start := int64(0)
-		end := dataLen
-
-		// 第一个参数：start
-		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
-			start = call.Arguments[0].ToInteger()
-			if start < 0 {
-				start = dataLen + start
-				if start < 0 {
-					start = 0
-				}
-			}
-			if start > dataLen {
-				start = dataLen
-			}
+		var start int64
+		if len(call.Arguments) > 0 {
+			start = normalizeSliceIndex(call.Arguments[0], dataLen, 0)
+		} else {
+			start = 0
 		}
 
-		// 第二个参数：end
-		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			end = call.Arguments[1].ToInteger()
-			if end < 0 {
-				end = dataLen + end
-				if end < 0 {
-					end = 0
-				}
-			}
-			if end > dataLen {
-				end = dataLen
-			}
+		var end int64
+		if len(call.Arguments) > 1 {
+			end = normalizeSliceIndex(call.Arguments[1], dataLen, dataLen)
+		} else {
+			end = dataLen
 		}
 
 		// 确保 start <= end
@@ -667,9 +821,34 @@ func (fe *FetchEnhancer) RegisterBlobFileAPI(runtime *goja.Runtime) error {
 		return runtime.ToValue(promise)
 	})
 
-	// stream() 方法（占位符）
+	// stream() 方法
 	blobPrototype.Set("stream", func(call goja.FunctionCall) goja.Value {
-		panic(runtime.NewTypeError("Blob.stream() 需要 Streams API 支持，当前未实现"))
+		this := call.This.ToObject(runtime)
+		if this == nil {
+			panic(runtime.NewTypeError("stream called on non-Blob object"))
+		}
+
+		blobDataVal := this.Get("__blobData")
+		if blobDataVal == nil || goja.IsUndefined(blobDataVal) {
+			panic(runtime.NewTypeError("stream called on non-Blob object"))
+		}
+
+		exported := blobDataVal.Export()
+		if exported == nil {
+			panic(runtime.NewTypeError("Blob data is nil"))
+		}
+
+		blobData, ok := exported.(*JSBlob)
+		if !ok || blobData == nil {
+			panic(runtime.NewTypeError("Invalid Blob data"))
+		}
+
+		streamObj := createBlobReadableStream(runtime, blobData, uint8ArrayConstructor)
+		if streamObj == nil {
+			panic(runtime.NewTypeError("Failed to create ReadableStream for Blob"))
+		}
+
+		return streamObj
 	})
 
 	// 🔥 在原型上添加 size 和 type 的 getter 属性（与 Node.js/浏览器一致）
@@ -801,6 +980,53 @@ func (fe *FetchEnhancer) RegisterBlobFileAPI(runtime *goja.Runtime) error {
 	// 注册 File 构造器
 	runtime.Set("File", fileConstructor)
 
+	// 🔥 在 JS 层包装全局 Blob 构造函数：
+	// - 禁止直接调用 Blob([...])（非 new 调用抛 TypeError）
+	// - 内部仍然使用底层原生 Blob 实现，保持所有行为与 Node.js v25 一致
+	wrapperScript := `
+(function (global) {
+  var InternalBlob = global.Blob;
+  if (typeof InternalBlob !== 'function') {
+    return;
+  }
+
+  function Blob() {
+    if (!(this instanceof Blob)) {
+      throw new TypeError("Class constructor Blob cannot be invoked without 'new'");
+    }
+    return new InternalBlob(...arguments);
+  }
+
+  Blob.prototype = InternalBlob.prototype;
+
+  try {
+    if (typeof Object !== 'undefined' && Object.setPrototypeOf) {
+      Object.setPrototypeOf(Blob, InternalBlob);
+    }
+  } catch (e) {
+    // 忽略 setPrototypeOf 失败
+  }
+
+  try {
+    if (typeof Object !== 'undefined' && Object.defineProperty) {
+      Object.defineProperty(Blob, 'name', {
+        value: 'Blob',
+        writable: false,
+        enumerable: false,
+        configurable: true
+      });
+    }
+  } catch (e) {
+    // 忽略 defineProperty 失败
+  }
+
+  global.Blob = Blob;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+`
+	if _, err := runtime.RunString(wrapperScript); err != nil {
+		return fmt.Errorf("包装 Blob 构造函数失败: %w", err)
+	}
+
 	return nil
 }
 
@@ -891,4 +1117,31 @@ type FetchEnhancer struct {
 func RegisterBlobFileConstructors(runtime *goja.Runtime, maxBlobFileSize int64) error {
 	fe := &FetchEnhancer{maxBlobFileSize: maxBlobFileSize}
 	return fe.RegisterBlobFileAPI(runtime)
+}
+
+func normalizeSliceIndex(value goja.Value, dataLen int64, defaultValue int64) int64 {
+	if value == nil || goja.IsUndefined(value) {
+		return defaultValue
+	}
+
+	num := value.ToFloat()
+	if math.IsNaN(num) || math.IsInf(num, 0) {
+		num = 0
+	}
+
+	relative := int64(math.Trunc(num))
+	return clampIndex(relative, dataLen)
+}
+
+func clampIndex(val int64, dataLen int64) int64 {
+	if val < 0 {
+		val = dataLen + val
+		if val < 0 {
+			return 0
+		}
+	}
+	if val > dataLen {
+		return dataLen
+	}
+	return val
 }

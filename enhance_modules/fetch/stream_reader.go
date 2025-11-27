@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/dop251/goja"
 )
@@ -60,10 +61,14 @@ type StreamReader struct {
 	abortErr      error           // Abort 错误（包含 reason）
 	aborted       bool            // 是否已中止
 	abortWatcher  bool            // 是否已启动 abort watcher
+	closeOnce     sync.Once       // 确保关闭通知仅执行一次
+	closeCh       chan struct{}   // watcher 退出信号
+	timeout       time.Duration   // 🔥 P2: abort watcher 超时保护(0=不设置超时)
 }
 
 // NewStreamReader 创建流式读取器
-func NewStreamReader(reader io.ReadCloser, runtime *goja.Runtime, maxSize int64, contentLength int64, abortCh <-chan struct{}, signal *goja.Object) *StreamReader {
+// 🔥 P2 新增: timeout 参数用于 abort watcher 超时保护(0=不设置超时)
+func NewStreamReader(reader io.ReadCloser, runtime *goja.Runtime, maxSize int64, contentLength int64, abortCh <-chan struct{}, signal *goja.Object, timeout time.Duration) *StreamReader {
 	sr := &StreamReader{
 		reader:        reader,
 		runtime:       runtime,
@@ -73,6 +78,8 @@ func NewStreamReader(reader io.ReadCloser, runtime *goja.Runtime, maxSize int64,
 		contentLength: contentLength, // 🔥 保存 Content-Length（-1表示未知）
 		abortCh:       abortCh,
 		signal:        signal,
+		closeCh:       make(chan struct{}),
+		timeout:       timeout, // 🔥 P2: 超时保护
 	}
 	sr.startAbortWatcher()
 	return sr
@@ -178,15 +185,19 @@ func (sr *StreamReader) Read(size int) ([]byte, bool, error) {
 // Close 关闭流式读取器
 func (sr *StreamReader) Close() error {
 	sr.mutex.Lock()
-	defer sr.mutex.Unlock()
-
 	if sr.closed {
+		sr.mutex.Unlock()
 		return nil
 	}
 	sr.closed = true
+	reader := sr.reader
+	sr.reader = nil
+	sr.mutex.Unlock()
 
-	if sr.reader != nil {
-		return sr.reader.Close()
+	sr.closeWatcher()
+
+	if reader != nil {
+		return reader.Close()
 	}
 	return nil
 }
@@ -230,40 +241,81 @@ func (sr *StreamReader) GetMaxSize() int64 {
 // 启动 abort watcher，确保阻塞读取也能被中断
 func (sr *StreamReader) startAbortWatcher() {
 	sr.mutex.Lock()
+	defer sr.mutex.Unlock()
+	sr.startAbortWatcherLocked()
+}
+
+func (sr *StreamReader) startAbortWatcherLocked() {
 	if sr.abortWatcher || sr.abortCh == nil {
-		sr.mutex.Unlock()
 		return
 	}
 	sr.abortWatcher = true
 	ch := sr.abortCh
-	sr.mutex.Unlock()
+	closeCh := sr.closeCh
+	timeout := sr.timeout
 
+	// 🔥 P2 优化: 添加超时保护,防止 watcher goroutine 永久阻塞
 	go func() {
-		<-ch
-		sr.mutex.Lock()
-		if sr.aborted {
-			sr.mutex.Unlock()
-			return
-		}
-		sr.aborted = true
-		sr.closed = true
+		if timeout > 0 {
+			// 有超时保护: 三路 select
+			timer := time.NewTimer(timeout)
+			defer timer.Stop()
 
-		var reason goja.Value
-		if sr.signal != nil {
-			if r := sr.signal.Get("reason"); r != nil && !goja.IsUndefined(r) && !goja.IsNull(r) {
-				reason = r
+			select {
+			case <-ch:
+				sr.handleAbort()
+			case <-closeCh:
+				// 正常关闭,goroutine 退出
+			case <-timer.C:
+				// 超时保护触发,强制关闭流
+				sr.Close()
+			}
+		} else {
+			// 无超时保护: 二路 select(保持原有行为)
+			select {
+			case <-ch:
+				sr.handleAbort()
+			case <-closeCh:
 			}
 		}
-		if reason == nil || goja.IsUndefined(reason) || goja.IsNull(reason) {
-			reason = CreateDOMException(sr.runtime, "This operation was aborted", "AbortError")
-		}
-		sr.abortErr = &AbortReasonError{reason: reason}
-
-		if sr.reader != nil {
-			_ = sr.reader.Close()
-		}
-		sr.mutex.Unlock()
 	}()
+}
+
+func (sr *StreamReader) handleAbort() {
+	sr.mutex.Lock()
+	sr.abortLocked()
+	sr.mutex.Unlock()
+}
+
+func (sr *StreamReader) abortLocked() {
+	if sr.aborted {
+		return
+	}
+	sr.aborted = true
+	sr.closed = true
+
+	var reason goja.Value
+	if sr.signal != nil {
+		if r := sr.signal.Get("reason"); r != nil && !goja.IsUndefined(r) && !goja.IsNull(r) {
+			reason = r
+		}
+	}
+	if reason == nil || goja.IsUndefined(reason) || goja.IsNull(reason) {
+		reason = CreateDOMException(sr.runtime, "This operation was aborted", "AbortError")
+	}
+	sr.abortErr = &AbortReasonError{reason: reason}
+
+	if sr.reader != nil {
+		_ = sr.reader.Close()
+		sr.reader = nil
+	}
+	sr.closeWatcher()
+}
+
+func (sr *StreamReader) closeWatcher() {
+	sr.closeOnce.Do(func() {
+		close(sr.closeCh)
+	})
 }
 
 // AttachAbortSignal 绑定 AbortSignal（用于流式读取阶段）
@@ -273,35 +325,7 @@ func (sr *StreamReader) AttachAbortSignal(ch <-chan struct{}, signal *goja.Objec
 	sr.abortCh = ch
 	sr.signal = signal
 	if !sr.abortWatcher && sr.abortCh != nil {
-		// 重新启动 watcher
-		sr.abortWatcher = true
-		chLocal := sr.abortCh
-		go func() {
-			<-chLocal
-			sr.mutex.Lock()
-			if sr.aborted {
-				sr.mutex.Unlock()
-				return
-			}
-			sr.aborted = true
-			sr.closed = true
-
-			var reason goja.Value
-			if sr.signal != nil {
-				if r := sr.signal.Get("reason"); r != nil && !goja.IsUndefined(r) && !goja.IsNull(r) {
-					reason = r
-				}
-			}
-			if reason == nil || goja.IsUndefined(reason) || goja.IsNull(reason) {
-				reason = CreateDOMException(sr.runtime, "This operation was aborted", "AbortError")
-			}
-			sr.abortErr = &AbortReasonError{reason: reason}
-
-			if sr.reader != nil {
-				_ = sr.reader.Close()
-			}
-			sr.mutex.Unlock()
-		}()
+		sr.startAbortWatcherLocked()
 	}
 }
 
@@ -317,22 +341,7 @@ func (sr *StreamReader) checkAbortedLocked() error {
 
 	select {
 	case <-sr.abortCh:
-		sr.aborted = true
-		sr.closed = true
-		if sr.reader != nil {
-			_ = sr.reader.Close()
-		}
-
-		var reason goja.Value
-		if sr.signal != nil {
-			if r := sr.signal.Get("reason"); r != nil && !goja.IsUndefined(r) && !goja.IsNull(r) {
-				reason = r
-			}
-		}
-		if reason == nil || goja.IsUndefined(reason) || goja.IsNull(reason) {
-			reason = CreateDOMException(sr.runtime, "This operation was aborted", "AbortError")
-		}
-		sr.abortErr = &AbortReasonError{reason: reason}
+		sr.abortLocked()
 		return sr.abortErr
 	default:
 		return nil

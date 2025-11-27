@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"flow-codeblock-go/enhance_modules/fetch"
 	"flow-codeblock-go/model"
 	"flow-codeblock-go/utils"
 
@@ -326,6 +327,16 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 				delete(e.runtimeHealth, runtime)
 				e.healthMutex.Unlock()
 
+				// 移除 fetch 关联的 runtime prototype 映射，防止泄漏
+				fetch.ClearRuntimePrototypes(runtime)
+
+				// 🔥 P1.2: Runtime 销毁时清理 Fetch 连接池，防止空闲连接累积
+				if fetchModule, ok := e.moduleRegistry.GetModule("fetch"); ok {
+					if fe, ok := fetchModule.(*fetch.FetchEnhancer); ok && fe != nil {
+						fe.CleanupIdleConnections()
+					}
+				}
+
 				// 更新计数
 				atomic.AddInt32(&e.currentPoolSize, -1)
 
@@ -352,12 +363,25 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 
 			// 未达上限：清理后归还
 			e.cleanupRuntime(runtime)
+
+			// 🔥 定期清理 Fetch 模块的 HTTP 连接池，防止空闲连接长期占用内存
+			if fetchModule, ok := e.moduleRegistry.GetModule("fetch"); ok {
+				if fe, ok := fetchModule.(*fetch.FetchEnhancer); ok && fe != nil {
+					// 约每 100 次重用触发一次清理（按单个 Runtime 的执行次数粗略采样）
+					if reuseCount > 0 && reuseCount%100 == 0 {
+						fe.CleanupIdleConnections()
+					}
+				}
+			}
 			select {
 			case e.runtimePool <- runtime:
 				// ✅ 成功归还到池
 			default:
 				// 🔥 池满，丢弃Runtime（自然收缩）
 				atomic.AddInt32(&e.currentPoolSize, -1)
+
+				// runtime 不再使用，清理 fetch prototype 映射
+				fetch.ClearRuntimePrototypes(runtime)
 
 				// 清理健康信息（防止内存泄漏）
 				e.healthMutex.Lock()
@@ -408,6 +432,7 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 				// ✅ 池满，丢弃临时 Runtime
 				// 临时 Runtime 从未计入 currentPoolSize，丢弃时无需修正
 				utils.Debug("临时运行时使用后丢弃（池已满）")
+				fetch.ClearRuntimePrototypes(runtime)
 			}
 		}()
 	}
@@ -634,6 +659,11 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 	var finalResultJSON []byte // 🔥 预序列化的 JSON（避免重复序列化）
 	var finalError error
 	var vm *goja.Runtime // 🔥 提升到外层作用域，以便在超时时访问
+	defer func() {
+		if vm != nil {
+			fetch.ClearRuntimePrototypes(vm)
+		}
+	}()
 
 	// 🔥 使用传入的 context，而不是 context.Background()
 	execCtx, cancel := context.WithTimeout(ctx, e.executionTimeout)
