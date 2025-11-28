@@ -382,6 +382,60 @@ func (fe *FetchEnhancer) attachResponseStaticMethods(runtime *goja.Runtime) erro
 		return fe.recreateResponse(runtime, data)
 	})
 
+	constructorObj.Set("json", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			panic(runtime.NewTypeError("Response.json: 1 argument required, but 0 found."))
+		}
+
+		jsonVal := call.Arguments[0]
+		jsonObjVal := runtime.Get("JSON")
+		if jsonObjVal == nil || goja.IsUndefined(jsonObjVal) || goja.IsNull(jsonObjVal) {
+			panic(runtime.NewTypeError("JSON object is not available"))
+		}
+
+		jsonObj := jsonObjVal.ToObject(runtime)
+		if jsonObj == nil {
+			panic(runtime.NewTypeError("JSON object is not available"))
+		}
+
+		stringifyVal := jsonObj.Get("stringify")
+		stringifyFunc, ok := goja.AssertFunction(stringifyVal)
+		if !ok {
+			panic(runtime.NewTypeError("JSON.stringify is not callable"))
+		}
+
+		jsonStrVal, err := stringifyFunc(jsonObj, jsonVal)
+		if err != nil {
+			panic(err)
+		}
+		if jsonStrVal == nil || goja.IsUndefined(jsonStrVal) {
+			panic(runtime.NewTypeError("Value is not JSON serializable"))
+		}
+
+		bodyString := jsonStrVal.String()
+		args := []goja.Value{runtime.ToValue(bodyString)}
+		if len(call.Arguments) > 1 {
+			args = append(args, call.Arguments[1])
+		}
+
+		responseData, err := fe.buildResponseDataFromConstructor(runtime, goja.ConstructorCall{
+			This:      runtime.NewObject(),
+			Arguments: args,
+		})
+		if err != nil {
+			panic(runtime.NewTypeError(err.Error()))
+		}
+
+		if responseData.Headers == nil {
+			responseData.Headers = make(http.Header)
+		}
+		if responseData.Headers.Get("Content-Type") == "" {
+			responseData.Headers.Set("Content-Type", "application/json")
+		}
+
+		return fe.recreateResponse(runtime, responseData)
+	})
+
 	return nil
 }
 
@@ -1513,6 +1567,23 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 
 // recreateResponse 创建响应对象（供 JavaScript 使用）
 // 🔥 核心方法：将 ResponseData 转换为 JavaScript Response 对象
+func setResponseReadOnlyProperty(runtime *goja.Runtime, obj *goja.Object, name string, raw interface{}) {
+	if runtime == nil || obj == nil || name == "" {
+		return
+	}
+
+	var value goja.Value
+	if v, ok := raw.(goja.Value); ok {
+		value = v
+	} else {
+		value = runtime.ToValue(raw)
+	}
+
+	if err := obj.DefineDataProperty(name, value, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE); err != nil {
+		obj.Set(name, raw)
+	}
+}
+
 func (fe *FetchEnhancer) recreateResponse(runtime *goja.Runtime, data *ResponseData) goja.Value {
 	if data == nil {
 		return goja.Null()
@@ -1531,23 +1602,27 @@ func (fe *FetchEnhancer) recreateResponse(runtime *goja.Runtime, data *ResponseD
 	}
 
 	// 基础属性
-	respObj.Set("status", runtime.ToValue(data.StatusCode))
-	respObj.Set("statusText", runtime.ToValue(data.Status))
-	respObj.Set("ok", runtime.ToValue(data.StatusCode >= 200 && data.StatusCode < 300))
-	respObj.Set("url", runtime.ToValue(data.FinalURL))
+	setResponseReadOnlyProperty(runtime, respObj, "status", data.StatusCode)
+	setResponseReadOnlyProperty(runtime, respObj, "statusText", data.Status)
+	setResponseReadOnlyProperty(runtime, respObj, "ok", data.StatusCode >= 200 && data.StatusCode < 300)
+	setResponseReadOnlyProperty(runtime, respObj, "url", data.FinalURL)
 
 	// 🔥 支持 redirected 属性（检测是否发生重定向）
-	respObj.Set("redirected", runtime.ToValue(data.Redirected))
+	setResponseReadOnlyProperty(runtime, respObj, "redirected", data.Redirected)
 
 	// WHATWG Response 默认类型（Node 默认返回 default）
 	responseType := data.ResponseType
 	if responseType == "" {
 		responseType = "default"
 	}
-	respObj.Set("type", runtime.ToValue(responseType))
+	setResponseReadOnlyProperty(runtime, respObj, "type", responseType)
 
 	// Headers 对象
-	respObj.Set("headers", fe.createResponseHeaders(runtime, data.Headers))
+	headersObj := fe.createResponseHeaders(runtime, data.Headers)
+	setResponseReadOnlyProperty(runtime, respObj, "headers", headersObj)
+
+	// bodyUsed 默认为 false，供后续方法更新
+	setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", false)
 
 	// 🔥 核心：Body 读取方法（支持流式和缓冲）
 	// 🔥 注意：clone() 方法在 attachStreamingBodyMethods 和 attachBufferedBodyMethods 中设置
@@ -1677,7 +1752,7 @@ func (fe *FetchEnhancer) attachJSReadableStreamBody(runtime *goja.Runtime, respO
 
 	currentStream := streamObj
 	respObj.Set("body", currentStream)
-	respObj.Set("bodyUsed", false)
+	setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", false)
 
 	var bodyConsumed bool
 	var bodyMutex sync.Mutex
@@ -1690,7 +1765,7 @@ func (fe *FetchEnhancer) attachJSReadableStreamBody(runtime *goja.Runtime, respO
 			return errors.New(bodyAlreadyUsedErrorMessage)
 		}
 		bodyConsumed = true
-		respObj.Set("bodyUsed", runtime.ToValue(true))
+		setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", true)
 		return nil
 	}
 
@@ -1999,7 +2074,7 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 			return errors.New(bodyAlreadyUsedErrorMessage)
 		}
 		bodyConsumed = true
-		respObj.Set("bodyUsed", runtime.ToValue(true))
+		setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", true)
 		return nil
 	}
 
@@ -2224,7 +2299,7 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 	})
 
 	// bodyUsed 属性
-	respObj.Set("bodyUsed", false)
+	setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", false)
 
 	// 🔥 clone() 方法 - 使用缓存机制（性能优化：共享缓存，避免深拷贝）
 	respObj.Set("clone", func(call goja.FunctionCall) goja.Value {
@@ -2296,7 +2371,7 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 			return errors.New(bodyAlreadyUsedErrorMessage)
 		}
 		bodyConsumed = true
-		respObj.Set("bodyUsed", runtime.ToValue(true))
+		setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", true)
 		return nil
 	}
 
@@ -2450,7 +2525,7 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 	bodyObj.Set("locked", false)
 
 	respObj.Set("body", bodyObj)
-	respObj.Set("bodyUsed", false)
+	setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", false)
 
 	// 🔥 clone() 方法 - 缓冲响应克隆（共享数据，避免深拷贝）
 	respObj.Set("clone", func(call goja.FunctionCall) goja.Value {
