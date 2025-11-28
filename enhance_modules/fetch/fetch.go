@@ -2585,7 +2585,10 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 
 		source.Set("cancel", func(call goja.FunctionCall) goja.Value {
 			markCancelled()
-			closeController(nil)
+			if abortCleanup != nil {
+				abortCleanup()
+				abortCleanup = nil
+			}
 			return goja.Undefined()
 		})
 
