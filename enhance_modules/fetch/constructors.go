@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"flow-codeblock-go/enhance_modules/internal/blob"
 	"flow-codeblock-go/enhance_modules/internal/streams"
 
 	"github.com/dop251/goja"
@@ -437,7 +438,7 @@ func (s *requestBodyState) markUsed(runtime *goja.Runtime, requestObj *goja.Obje
 		return errors.New("Body is unusable: Body has already been read")
 	}
 	s.consumed = true
-	requestObj.Set("bodyUsed", runtime.ToValue(true))
+	setRequestBodyUsedProperty(runtime, requestObj, true)
 	return nil
 }
 
@@ -622,6 +623,19 @@ func requestBodyValueToBytes(value goja.Value) ([]byte, bool) {
 		cp := make([]byte, len(buf))
 		copy(cp, buf)
 		return cp, true
+	}
+
+	if obj, ok := value.(*goja.Object); ok && obj != nil {
+		if isBlobObject(obj) || isFileObject(obj) {
+			if blobDataVal := obj.Get("__blobData"); blobDataVal != nil && !goja.IsUndefined(blobDataVal) && !goja.IsNull(blobDataVal) {
+				if jsBlob, ok := blobDataVal.Export().(*blob.JSBlob); ok && jsBlob != nil {
+					data := jsBlob.GetData()
+					cp := make([]byte, len(data))
+					copy(cp, data)
+					return cp, true
+				}
+			}
+		}
 	}
 	return nil, false
 }
@@ -926,6 +940,23 @@ func defineRequestReadonlyProperty(runtime *goja.Runtime, obj *goja.Object, name
 	obj.DefineDataProperty(name, runtime.ToValue(value), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
 }
 
+func setRequestBodyPropertyValue(runtime *goja.Runtime, obj *goja.Object, value goja.Value) {
+	if runtime == nil || obj == nil {
+		return
+	}
+	if value == nil {
+		value = goja.Null()
+	}
+	obj.DefineDataProperty("body", value, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
+}
+
+func setRequestBodyUsedProperty(runtime *goja.Runtime, obj *goja.Object, used bool) {
+	if runtime == nil || obj == nil {
+		return
+	}
+	obj.DefineDataProperty("bodyUsed", runtime.ToValue(used), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
+}
+
 func attachRequestCloneMethod(runtime *goja.Runtime, requestObj *goja.Object, ctx *requestCloneContext) {
 	if runtime == nil || requestObj == nil || ctx == nil {
 		return
@@ -953,13 +984,13 @@ func attachRequestCloneMethod(runtime *goja.Runtime, requestObj *goja.Object, ct
 		clonedRequest.Set("method", runtime.ToValue(targetCtx.method))
 
 		clonedRequest.Set("headers", createHeadersObject(runtime, clonedHeaders))
-		clonedRequest.Set("bodyUsed", runtime.ToValue(false))
+		setRequestBodyUsedProperty(runtime, clonedRequest, false)
 		rawBodyVal := storeRequestRawBodyValue(runtime, clonedRequest, targetCtx.body)
 		bodyState := attachRequestBodyMethods(runtime, clonedRequest, targetCtx.fetchEnhancer)
 		if streamVal := createRequestBodyReadableStream(runtime, clonedRequest, rawBodyVal, bodyState); streamVal != nil && !goja.IsUndefined(streamVal) && !goja.IsNull(streamVal) {
-			clonedRequest.Set("body", streamVal)
+			setRequestBodyPropertyValue(runtime, clonedRequest, streamVal)
 		} else {
-			clonedRequest.Set("body", goja.Null())
+			setRequestBodyPropertyValue(runtime, clonedRequest, goja.Null())
 		}
 
 		defineRequestReadonlyProperty(runtime, clonedRequest, "cache", targetCtx.cacheValue)
@@ -1093,7 +1124,7 @@ func invokeRequestBodyMethodThroughResponse(runtime *goja.Runtime, requestObj *g
 		return goja.Undefined(), err
 	}
 
-	requestObj.Set("body", goja.Null())
+	setRequestBodyPropertyValue(runtime, requestObj, goja.Null())
 	storeRequestRawBodyValue(runtime, requestObj, nil)
 	if ctxVal := requestObj.Get("__requestCloneContext"); ctxVal != nil && !goja.IsUndefined(ctxVal) && !goja.IsNull(ctxVal) {
 		if ctx, ok := ctxVal.Export().(*requestCloneContext); ok && ctx != nil {
@@ -1513,7 +1544,7 @@ func CreateRequestConstructor(runtime *goja.Runtime, fe *FetchEnhancer) func(goj
 		if u, ok := options["url"].(string); ok && u != "" {
 			url = u
 		}
-		parsed, err := neturl.ParseRequestURI(url)
+		parsed, err := neturl.Parse(url)
 		if err != nil || parsed == nil || parsed.Scheme == "" {
 			panic(runtime.NewTypeError(fmt.Sprintf("Failed to parse URL from %s", url)))
 		}
@@ -1647,13 +1678,13 @@ func CreateRequestConstructor(runtime *goja.Runtime, fe *FetchEnhancer) func(goj
 		requestObj := ensureConstructorThis(runtime, "Request", call.This)
 		defineRequestReadonlyProperty(runtime, requestObj, "url", url)
 		defineRequestReadonlyProperty(runtime, requestObj, "method", methodDisplay)
-		requestObj.Set("bodyUsed", runtime.ToValue(false))
+		setRequestBodyUsedProperty(runtime, requestObj, false)
 		rawBodyVal := storeRequestRawBodyValue(runtime, requestObj, body)
 		bodyState := attachRequestBodyMethods(runtime, requestObj, fe)
 		if streamVal := createRequestBodyReadableStream(runtime, requestObj, rawBodyVal, bodyState); streamVal != nil && !goja.IsUndefined(streamVal) && !goja.IsNull(streamVal) {
-			requestObj.Set("body", streamVal)
+			setRequestBodyPropertyValue(runtime, requestObj, streamVal)
 		} else {
-			requestObj.Set("body", goja.Null())
+			setRequestBodyPropertyValue(runtime, requestObj, goja.Null())
 		}
 
 		// headers 对象
