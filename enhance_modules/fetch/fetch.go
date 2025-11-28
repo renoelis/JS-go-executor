@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	neturl "net/url"
 	"sort"
@@ -962,6 +964,31 @@ func (fe *FetchEnhancer) createBlobFromBytes(runtime *goja.Runtime, data []byte,
 	return result.ToObject(runtime), nil
 }
 
+func (fe *FetchEnhancer) createFileFromBytes(runtime *goja.Runtime, data []byte, filename, contentType string) (*goja.Object, error) {
+	factory, err := ensureFileFactory(runtime)
+	if err != nil {
+		return nil, err
+	}
+
+	copied := make([]byte, len(data))
+	copy(copied, data)
+	arrayBuffer := runtime.NewArrayBuffer(copied)
+
+	optionsVal := goja.Value(goja.Undefined())
+	if contentType != "" {
+		optionsObj := runtime.NewObject()
+		optionsObj.Set("type", contentType)
+		optionsVal = optionsObj
+	}
+
+	result, err := factory(goja.Undefined(), runtime.ToValue(arrayBuffer), runtime.ToValue(filename), optionsVal)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.ToObject(runtime), nil
+}
+
 func ensureBlobFactory(runtime *goja.Runtime) (goja.Callable, error) {
 	existing := runtime.Get("__createBlobFromBytes")
 	if existing != nil && !goja.IsUndefined(existing) && !goja.IsNull(existing) {
@@ -991,7 +1018,50 @@ func ensureBlobFactory(runtime *goja.Runtime) (goja.Callable, error) {
 	if callable, ok := goja.AssertFunction(existing); ok {
 		return callable, nil
 	}
-	return nil, fmt.Errorf("Blob constructor unavailable")
+	return nil, fmt.Errorf("__createBlobFromBytes is not callable")
+}
+
+func ensureFileFactory(runtime *goja.Runtime) (goja.Callable, error) {
+	existing := runtime.Get("__createFileFromBytes")
+	if existing != nil && !goja.IsUndefined(existing) && !goja.IsNull(existing) {
+		if callable, ok := goja.AssertFunction(existing); ok {
+			return callable, nil
+		}
+	}
+
+	script := `(function(global){
+  if (typeof global.__createFileFromBytes === 'function') {
+    return;
+  }
+  function createFileFromBytes(buffer, name, options) {
+    if (typeof File !== 'function') {
+      throw new TypeError('File constructor is not available');
+    }
+    var fileName = typeof name === 'string' && name.length ? name : 'blob';
+    return new File([buffer], fileName, options);
+  }
+  Object.defineProperty(global, '__createFileFromBytes', {
+    value: createFileFromBytes,
+    writable: false,
+    enumerable: false,
+    configurable: false
+  });
+})(typeof globalThis !== 'undefined' ? globalThis : this);`
+
+	if _, err := runtime.RunString(script); err != nil {
+		return nil, err
+	}
+
+	existing = runtime.Get("__createFileFromBytes")
+	if existing == nil || goja.IsUndefined(existing) || goja.IsNull(existing) {
+		return nil, fmt.Errorf("failed to initialize File factory")
+	}
+
+	callable, ok := goja.AssertFunction(existing)
+	if !ok {
+		return nil, fmt.Errorf("__createFileFromBytes is not callable")
+	}
+	return callable, nil
 }
 
 // ensureQueueMicrotask 注入 queueMicrotask（若宿主环境未提供）
@@ -2332,6 +2402,50 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 		return runtime.ToValue(promise)
 	})
 
+	// formData() - 读取为 FormData
+	respObj.Set("formData", func(call goja.FunctionCall) goja.Value {
+		promise, resolve, reject := runtime.NewPromise()
+
+		if err := checkAndMarkBodyUsed(); err != nil {
+			reject(runtime.NewTypeError(err.Error()))
+			return runtime.ToValue(promise)
+		}
+
+		execute := func() {
+			defer func() {
+				if r := recover(); r != nil {
+					reject(runtime.NewGoError(fmt.Errorf("response.formData internal error: %v", r)))
+				}
+			}()
+
+			allData, err := getResponseData()
+			if handleBodyReadError(err, reject) {
+				return
+			}
+
+			formDataObj, parseErr := fe.parseBodyToFormData(runtime, data.Headers, allData)
+			if parseErr != nil {
+				reject(runtime.NewTypeError(parseErr.Error()))
+				return
+			}
+
+			resolve(formDataObj)
+		}
+
+		setImmediate := runtime.Get("setImmediate")
+		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
+			callback := func(call goja.FunctionCall) goja.Value {
+				execute()
+				return goja.Undefined()
+			}
+			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
+		} else {
+			execute()
+		}
+
+		return runtime.ToValue(promise)
+	})
+
 	// bodyUsed 属性
 	setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", false)
 
@@ -2488,6 +2602,25 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 		return runtime.ToValue(promise)
 	})
 
+	// formData() - 返回 FormData
+	respObj.Set("formData", func(call goja.FunctionCall) goja.Value {
+		promise, resolve, reject := runtime.NewPromise()
+
+		if err := checkAndMarkBodyUsed(); err != nil {
+			reject(runtime.NewTypeError(err.Error()))
+			return runtime.ToValue(promise)
+		}
+
+		formDataObj, err := fe.parseBodyToFormData(runtime, data.Headers, getBodyData())
+		if err != nil {
+			reject(runtime.NewTypeError(err.Error()))
+			return runtime.ToValue(promise)
+		}
+
+		resolve(formDataObj)
+		return runtime.ToValue(promise)
+	})
+
 	// 🔥 body 属性（ReadableStream 对象，支持 cancel 和 getReader）
 	// Web API 标准：response.body 应该是 ReadableStream，不是 null
 	bodyObj := runtime.NewObject()
@@ -2604,6 +2737,153 @@ func parseJSONBytes(runtime *goja.Runtime, data []byte) (goja.Value, error) {
 		return goja.Undefined(), fmt.Errorf("JSON.parse is not a function")
 	}
 	return parseFn(jsonObj, runtime.ToValue(string(data)))
+}
+
+func (fe *FetchEnhancer) parseBodyToFormData(runtime *goja.Runtime, headers http.Header, body []byte) (*goja.Object, error) {
+	if runtime == nil {
+		return nil, fmt.Errorf("runtime is nil")
+	}
+
+	contentType := ""
+	if headers != nil {
+		contentType = headers.Get("Content-Type")
+		if contentType == "" {
+			contentType = headers.Get("content-type")
+		}
+	}
+
+	if strings.TrimSpace(contentType) == "" {
+		return nil, fmt.Errorf("Response.formData: missing Content-Type header")
+	}
+
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return nil, fmt.Errorf("Response.formData: invalid Content-Type: %w", err)
+	}
+
+	switch strings.ToLower(mediaType) {
+	case "multipart/form-data":
+		boundary := params["boundary"]
+		if strings.TrimSpace(boundary) == "" {
+			return nil, fmt.Errorf("Response.formData: missing multipart boundary")
+		}
+		return fe.parseMultipartFormData(runtime, body, boundary)
+	case "application/x-www-form-urlencoded":
+		if charset, ok := params["charset"]; ok {
+			cs := strings.TrimSpace(strings.ToLower(charset))
+			if cs != "" && cs != "utf-8" && cs != "utf8" {
+				return nil, fmt.Errorf("Response.formData: unsupported charset %q", charset)
+			}
+		}
+		return fe.parseURLEncodedFormData(runtime, body)
+	default:
+		return nil, fmt.Errorf("Response.formData: unsupported Content-Type %q", mediaType)
+	}
+}
+
+func (fe *FetchEnhancer) parseMultipartFormData(runtime *goja.Runtime, body []byte, boundary string) (*goja.Object, error) {
+	formDataObj, formDataInstance, err := fe.newJSFormDataObject(runtime)
+	if err != nil {
+		return nil, err
+	}
+
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("Response.formData: failed to read multipart body: %w", err)
+		}
+
+		partData, err := io.ReadAll(part)
+		part.Close()
+		if err != nil {
+			return nil, fmt.Errorf("Response.formData: failed to read multipart entry: %w", err)
+		}
+
+		name := part.FormName()
+		if name == "" {
+			continue
+		}
+
+		filename := part.FileName()
+		if filename != "" {
+			fileObj, fileErr := fe.createFileFromBytes(runtime, partData, filename, part.Header.Get("Content-Type"))
+			if fileErr != nil {
+				return nil, fmt.Errorf("Response.formData: failed to create File: %w", fileErr)
+			}
+			formDataInstance.Append(name, fileObj)
+			continue
+		}
+
+		formDataInstance.Append(name, string(partData))
+	}
+
+	return formDataObj, nil
+}
+
+func (fe *FetchEnhancer) parseURLEncodedFormData(runtime *goja.Runtime, body []byte) (*goja.Object, error) {
+	formDataObj, formDataInstance, err := fe.newJSFormDataObject(runtime)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(body) == 0 {
+		return formDataObj, nil
+	}
+
+	pairs := bytes.Split(body, []byte("&"))
+	for _, pair := range pairs {
+		if len(pair) == 0 {
+			continue
+		}
+
+		var namePart, valuePart []byte
+		if idx := bytes.IndexByte(pair, '='); idx >= 0 {
+			namePart = pair[:idx]
+			valuePart = pair[idx+1:]
+		} else {
+			namePart = pair
+			valuePart = []byte{}
+		}
+
+		name, err := neturl.QueryUnescape(string(namePart))
+		if err != nil {
+			return nil, fmt.Errorf("Response.formData: failed to decode field name: %w", err)
+		}
+		value, err := neturl.QueryUnescape(string(valuePart))
+		if err != nil {
+			return nil, fmt.Errorf("Response.formData: failed to decode field value: %w", err)
+		}
+		formDataInstance.Append(name, value)
+	}
+
+	return formDataObj, nil
+}
+
+func (fe *FetchEnhancer) newJSFormDataObject(runtime *goja.Runtime) (*goja.Object, *FormData, error) {
+	if runtime == nil {
+		return nil, nil, fmt.Errorf("runtime is nil")
+	}
+
+	formDataVal := runtime.Get("FormData")
+	if formDataVal == nil || goja.IsUndefined(formDataVal) || goja.IsNull(formDataVal) {
+		return nil, nil, fmt.Errorf("FormData constructor is unavailable")
+	}
+
+	formDataObj, err := runtime.New(formDataVal)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	instance, err := ExtractFormDataInstance(formDataObj)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return formDataObj, instance, nil
 }
 
 // ==================== FormData 提取 ====================
