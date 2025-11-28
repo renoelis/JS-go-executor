@@ -89,17 +89,14 @@ const writableStreamControllerSignalPatchJS = `
     } catch (err) {}
   }
 
-  var descriptor = Object.getOwnPropertyDescriptor(WritableStreamDefaultController.prototype, 'signal');
-  if (!descriptor || typeof descriptor.get !== 'function') {
-    Object.defineProperty(WritableStreamDefaultController.prototype, 'signal', {
-      configurable: true,
-      enumerable: true,
-      get: function () {
-        var abortController = ensureAbortController(this);
-        return abortController ? abortController.signal : undefined;
-      }
-    });
-  }
+  Object.defineProperty(WritableStreamDefaultController.prototype, 'signal', {
+    configurable: true,
+    enumerable: true,
+    get: function () {
+      var abortController = ensureAbortController(this);
+      return abortController ? abortController.signal : undefined;
+    }
+  });
 
   var originalStreamAbort = WritableStream.prototype.abort;
   WritableStream.prototype.abort = function (reason) {
@@ -141,11 +138,7 @@ func EnsureReadableStream(runtime *goja.Runtime) error {
 		}
 	}
 
-	if _, err := runtime.RunString(writableStreamControllerSignalPatchJS); err != nil {
-		return fmt.Errorf("注入 WritableStream signal polyfill 失败: %w", err)
-	}
-
-	return nil
+	return EnsureWritableStreamControllerSignal(runtime)
 }
 
 // GetReadableStreamPrototype 返回全局 ReadableStream.prototype（若不存在返回 nil）
@@ -205,4 +198,16 @@ func hasReadableStream(runtime *goja.Runtime) bool {
 func ensureSymbolAsyncIterator(runtime *goja.Runtime) error {
 	_, err := runtime.RunString(symbolAsyncIteratorPolyfill)
 	return err
+}
+
+// EnsureWritableStreamControllerSignal 确保 WritableStreamDefaultController.prototype.signal 存在
+func EnsureWritableStreamControllerSignal(runtime *goja.Runtime) error {
+	if runtime == nil {
+		return fmt.Errorf("runtime 为 nil")
+	}
+
+	if _, err := runtime.RunString(writableStreamControllerSignalPatchJS); err != nil {
+		return fmt.Errorf("注入 WritableStream signal polyfill 失败: %w", err)
+	}
+	return nil
 }

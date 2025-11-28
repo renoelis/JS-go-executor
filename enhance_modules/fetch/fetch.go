@@ -290,6 +290,9 @@ func (fe *FetchEnhancer) RegisterFetchAPI(runtime *goja.Runtime) error {
 	// 5. 注册 AbortController 构造器
 	nativeAbortController := CreateAbortControllerConstructor(runtime)
 	runtime.Set("AbortController", WrapAbortController(runtime, nativeAbortController))
+	if err := streams.EnsureWritableStreamControllerSignal(runtime); err != nil {
+		return fmt.Errorf("注册 WritableStream signal 失败: %w", err)
+	}
 
 	// 6. 注册 DOMException 构造器
 	runtime.Set("DOMException", CreateDOMExceptionConstructor(runtime))
