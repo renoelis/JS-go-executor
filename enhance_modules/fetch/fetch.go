@@ -463,47 +463,81 @@ func (fe *FetchEnhancer) buildResponseDataFromConstructor(runtime *goja.Runtime,
 		fallbackStr := bodyVal.String()
 
 		var bodyInput interface{}
+		var handledSpecialBody bool
+
 		if obj, ok := bodyVal.(*goja.Object); ok {
 			bodyInput = obj
 			if isReadableStreamObject(obj) {
 				jsReadableBody = obj
 			}
+
+			if isFormDataObject(obj) {
+				formBody, boundary, err := fe.extractFormDataInCurrentThread(runtime, obj)
+				if err != nil {
+					return nil, fmt.Errorf("提取 Response FormData 失败: %w", err)
+				}
+				bytes, err := convertFormDataBodyToBytes(formBody)
+				if err != nil {
+					return nil, fmt.Errorf("读取 Response FormData 失败: %w", err)
+				}
+				bodyBytes = append([]byte(nil), bytes...)
+				handledSpecialBody = true
+				if boundary != "" {
+					contentType = fmt.Sprintf("multipart/form-data; boundary=%s", boundary)
+				} else {
+					contentType = "multipart/form-data"
+				}
+			} else if isNodeFormDataObject(obj) {
+				bytes, boundary, err := fe.convertNodeFormDataToBytes(runtime, obj)
+				if err != nil {
+					return nil, fmt.Errorf("提取 Node.js FormData 失败: %w", err)
+				}
+				bodyBytes = append([]byte(nil), bytes...)
+				handledSpecialBody = true
+				if boundary != "" {
+					contentType = fmt.Sprintf("multipart/form-data; boundary=%s", boundary)
+				} else {
+					contentType = "multipart/form-data"
+				}
+			}
 		} else {
 			bodyInput = bodyVal.Export()
 		}
 
-		var (
-			data   []byte
-			reader io.Reader
-			ct     string
-			err    error
-		)
+		if !handledSpecialBody {
+			var (
+				data   []byte
+				reader io.Reader
+				ct     string
+				err    error
+			)
 
-		if jsReadableBody == nil && fe.bodyHandler != nil {
-			data, reader, ct, err = fe.bodyHandler.ProcessBody(runtime, bodyInput)
-			if err != nil {
-				return nil, fmt.Errorf("处理 Response body 失败: %w", err)
-			}
-
-			if reader != nil {
-				buffer, err := io.ReadAll(reader)
+			if jsReadableBody == nil && fe.bodyHandler != nil {
+				data, reader, ct, err = fe.bodyHandler.ProcessBody(runtime, bodyInput)
 				if err != nil {
-					return nil, fmt.Errorf("读取 Response body 失败: %w", err)
+					return nil, fmt.Errorf("处理 Response body 失败: %w", err)
 				}
-				data = buffer
+
+				if reader != nil {
+					buffer, err := io.ReadAll(reader)
+					if err != nil {
+						return nil, fmt.Errorf("读取 Response body 失败: %w", err)
+					}
+					data = buffer
+				}
 			}
-		}
 
-		switch {
-		case jsReadableBody != nil:
-			bodyBytes = nil
-		case data != nil:
-			bodyBytes = append([]byte(nil), data...)
-		default:
-			bodyBytes = []byte(fallbackStr)
-		}
+			switch {
+			case jsReadableBody != nil:
+				bodyBytes = nil
+			case data != nil:
+				bodyBytes = append([]byte(nil), data...)
+			default:
+				bodyBytes = []byte(fallbackStr)
+			}
 
-		contentType = ct
+			contentType = ct
+		}
 	}
 
 	if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) && !goja.IsNull(call.Arguments[1]) {
@@ -2698,6 +2732,65 @@ func (fe *FetchEnhancer) extractFormDataInCurrentThread(runtime *goja.Runtime, f
 	}
 
 	return reader, boundary, nil
+}
+
+func (fe *FetchEnhancer) convertNodeFormDataToBytes(runtime *goja.Runtime, formDataObj *goja.Object) ([]byte, string, error) {
+	if formDataObj == nil {
+		return nil, "", fmt.Errorf("Node.js FormData 为 nil")
+	}
+
+	if goStreamingFD := formDataObj.Get("__getGoStreamingFormData"); !goja.IsUndefined(goStreamingFD) && goStreamingFD != nil {
+		if streamingFormData, ok := goStreamingFD.Export().(*formdata.StreamingFormData); ok && streamingFormData != nil {
+			reader, err := streamingFormData.CreateReader()
+			if err != nil {
+				return nil, "", fmt.Errorf("创建 FormData reader 失败: %w", err)
+			}
+			data, err := io.ReadAll(reader)
+			if err != nil {
+				return nil, "", fmt.Errorf("读取 FormData 失败: %w", err)
+			}
+			return data, streamingFormData.GetBoundary(), nil
+		}
+	}
+
+	getBufferFunc := formDataObj.Get("getBuffer")
+	if goja.IsUndefined(getBufferFunc) || getBufferFunc == nil {
+		return nil, "", fmt.Errorf("Node.js FormData 缺少 getBuffer 方法")
+	}
+	getBuffer, ok := goja.AssertFunction(getBufferFunc)
+	if !ok {
+		return nil, "", fmt.Errorf("Node.js FormData getBuffer 不是一个函数")
+	}
+
+	bufferVal, err := getBuffer(formDataObj)
+	if err != nil {
+		return nil, "", fmt.Errorf("调用 getBuffer 失败: %w", err)
+	}
+
+	bufferObj := bufferVal.ToObject(runtime)
+	if bufferObj == nil {
+		return nil, "", fmt.Errorf("getBuffer 没有返回 Buffer")
+	}
+
+	data, err := fe.extractBufferBytes(bufferObj)
+	if err != nil {
+		return nil, "", fmt.Errorf("提取 buffer 数据失败: %w", err)
+	}
+
+	boundary := ""
+	if boundaryGetter := formDataObj.Get("getBoundary"); !goja.IsUndefined(boundaryGetter) && boundaryGetter != nil {
+		getBoundaryFn, ok := goja.AssertFunction(boundaryGetter)
+		if !ok {
+			return nil, "", fmt.Errorf("getBoundary 不是一个函数")
+		}
+		result, err := getBoundaryFn(formDataObj)
+		if err != nil {
+			return nil, "", fmt.Errorf("调用 getBoundary 失败: %w", err)
+		}
+		boundary = strings.TrimSpace(result.String())
+	}
+
+	return data, boundary, nil
 }
 
 // ==================== Body Wrapper ====================
