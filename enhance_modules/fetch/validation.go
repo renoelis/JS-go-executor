@@ -8,9 +8,13 @@ import (
 )
 
 var (
-	validModeValues        = []string{"navigate", "same-origin", "no-cors", "cors"}
-	validCredentialsValues = []string{"omit", "same-origin", "include"}
-	validRedirectValues    = []string{"follow", "manual", "error"}
+	validModeValues           = []string{"navigate", "same-origin", "no-cors", "cors"}
+	validCredentialsValues    = []string{"omit", "same-origin", "include"}
+	validRedirectValues       = []string{"follow", "manual", "error"}
+	validCacheValues          = []string{"default", "no-store", "reload", "no-cache", "force-cache", "only-if-cached"}
+	validReferrerPolicyValues = []string{"", "no-referrer", "no-referrer-when-downgrade", "same-origin", "origin", "strict-origin", "origin-when-cross-origin", "strict-origin-when-cross-origin", "unsafe-url"}
+	validDuplexValues         = []string{"half"}
+	forbiddenHTTPMethods      = map[string]struct{}{"CONNECT": {}, "TRACE": {}, "TRACK": {}}
 )
 
 func ensureValidHeaderName(runtime *goja.Runtime, ctx, name string) {
@@ -60,6 +64,10 @@ func validateHTTPMethod(runtime *goja.Runtime, method string) {
 	if method == "" || !isHTTPToken(method) {
 		panic(runtime.NewTypeError(fmt.Sprintf("'%s' is not a valid HTTP method.", method)))
 	}
+	upper := strings.ToUpper(method)
+	if _, forbidden := forbiddenHTTPMethods[upper]; forbidden {
+		panic(runtime.NewTypeError(fmt.Sprintf("'%s' HTTP method is unsupported.", upper)))
+	}
 }
 
 func hasUsableBodyValue(val interface{}) bool {
@@ -100,6 +108,24 @@ func ensureValidRedirectValue(runtime *goja.Runtime, value string) {
 	validateEnum(runtime, value, validRedirectValues)
 }
 
+func ensureValidCacheValue(runtime *goja.Runtime, value string) {
+	validateEnum(runtime, value, validCacheValues)
+}
+
+func ensureValidReferrerPolicyValue(runtime *goja.Runtime, value string) {
+	validateEnum(runtime, value, validReferrerPolicyValues)
+}
+
+func ensureValidDuplexValue(runtime *goja.Runtime, value string) {
+	validateEnum(runtime, value, validDuplexValues)
+}
+
+func ensureOnlyIfCachedMode(runtime *goja.Runtime, cacheValue, modeValue string) {
+	if strings.EqualFold(cacheValue, "only-if-cached") && !strings.EqualFold(modeValue, "same-origin") {
+		panic(runtime.NewTypeError("'only-if-cached' can be set only with 'same-origin' mode"))
+	}
+}
+
 func validateEnum(runtime *goja.Runtime, value string, allowed []string) {
 	for _, candidate := range allowed {
 		if value == candidate {
@@ -109,7 +135,7 @@ func validateEnum(runtime *goja.Runtime, value string, allowed []string) {
 	panic(runtime.NewTypeError(fmt.Sprintf("undefined: %s is not an accepted type. Expected one of %s.", value, strings.Join(allowed, ", "))))
 }
 
-func normalizeRequestOptions(runtime *goja.Runtime, options map[string]interface{}) map[string]interface{} {
+func normalizeRequestOptions(runtime *goja.Runtime, options map[string]interface{}, modeFromRequest bool) map[string]interface{} {
 	if options == nil {
 		options = make(map[string]interface{})
 	}
@@ -118,9 +144,7 @@ func normalizeRequestOptions(runtime *goja.Runtime, options map[string]interface
 	if rawMethod, ok := options["method"]; ok && rawMethod != nil {
 		switch v := rawMethod.(type) {
 		case string:
-			if v != "" {
-				methodStr = v
-			}
+			methodStr = v
 		case goja.Value:
 			if !goja.IsUndefined(v) && !goja.IsNull(v) {
 				methodStr = v.String()
@@ -138,10 +162,15 @@ func normalizeRequestOptions(runtime *goja.Runtime, options map[string]interface
 		panic(runtime.NewTypeError("Request with GET/HEAD method cannot have body."))
 	}
 
+	currentMode := "cors"
 	if modeVal, ok := options["mode"]; ok {
 		modeStr := fmt.Sprintf("%v", modeVal)
 		ensureValidModeValue(runtime, modeStr)
+		if modeStr == "navigate" && !modeFromRequest {
+			panic(runtime.NewTypeError("Request constructor: invalid request mode navigate."))
+		}
 		options["mode"] = modeStr
+		currentMode = modeStr
 	}
 	if credentialsVal, ok := options["credentials"]; ok {
 		credentialsStr := fmt.Sprintf("%v", credentialsVal)
@@ -153,6 +182,15 @@ func normalizeRequestOptions(runtime *goja.Runtime, options map[string]interface
 		ensureValidRedirectValue(runtime, redirectStr)
 		options["redirect"] = redirectStr
 	}
+
+	cacheValue := "default"
+	if cacheVal, ok := options["cache"]; ok {
+		cacheStr := fmt.Sprintf("%v", cacheVal)
+		ensureValidCacheValue(runtime, cacheStr)
+		options["cache"] = cacheStr
+		cacheValue = cacheStr
+	}
+	ensureOnlyIfCachedMode(runtime, cacheValue, currentMode)
 
 	return options
 }

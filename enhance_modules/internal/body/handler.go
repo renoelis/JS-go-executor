@@ -1,7 +1,6 @@
 package body
 
 import (
-	"encoding/binary"
 	"fmt"
 	"io"
 	"math"
@@ -151,7 +150,7 @@ func (h *BodyTypeHandler) ProcessBody(runtime *goja.Runtime, body interface{}) (
 			if err != nil {
 				return nil, nil, "", fmt.Errorf("转换 URLSearchParams 失败: %w", err)
 			}
-			return []byte(str), nil, "application/x-www-form-urlencoded", nil
+			return []byte(str), nil, "application/x-www-form-urlencoded;charset=UTF-8", nil
 		}
 
 		// 4.4 检查是否是 Blob 或 File
@@ -168,25 +167,49 @@ func (h *BodyTypeHandler) ProcessBody(runtime *goja.Runtime, body interface{}) (
 	return nil, nil, "", nil
 }
 
-// isTypedArray 检查对象是否是 TypedArray
-func (h *BodyTypeHandler) isTypedArray(obj *goja.Object) bool {
-	if constructor := obj.Get("constructor"); !goja.IsUndefined(constructor) {
+var supportedTypedArrayNames = map[string]struct{}{
+	"Uint8Array":        {},
+	"Int8Array":         {},
+	"Uint16Array":       {},
+	"Int16Array":        {},
+	"Uint32Array":       {},
+	"Int32Array":        {},
+	"Float32Array":      {},
+	"Float64Array":      {},
+	"Uint8ClampedArray": {},
+	"BigInt64Array":     {},
+	"BigUint64Array":    {},
+}
+
+// getTypedArrayTypeName 返回 TypedArray 的类型名（兼容多种构造方式）
+func getTypedArrayTypeName(obj *goja.Object) string {
+	if obj == nil {
+		return ""
+	}
+
+	if constructor := obj.Get("constructor"); !goja.IsUndefined(constructor) && constructor != nil {
 		if constructorObj, ok := constructor.(*goja.Object); ok {
-			if nameVal := constructorObj.Get("name"); !goja.IsUndefined(nameVal) {
+			if nameVal := constructorObj.Get("name"); !goja.IsUndefined(nameVal) && nameVal != nil {
 				typeName := nameVal.String()
-				return typeName == "Uint8Array" ||
-					typeName == "Int8Array" ||
-					typeName == "Uint16Array" ||
-					typeName == "Int16Array" ||
-					typeName == "Uint32Array" ||
-					typeName == "Int32Array" ||
-					typeName == "Float32Array" ||
-					typeName == "Float64Array" ||
-					typeName == "Uint8ClampedArray"
+				if typeName != "" {
+					return typeName
+				}
 			}
 		}
 	}
-	return false
+
+	if className := obj.ClassName(); className != "" {
+		return className
+	}
+
+	return ""
+}
+
+// isTypedArray 检查对象是否是 TypedArray
+func (h *BodyTypeHandler) isTypedArray(obj *goja.Object) bool {
+	typeName := getTypedArrayTypeName(obj)
+	_, ok := supportedTypedArrayNames[typeName]
+	return ok
 }
 
 // isArrayBuffer 检查对象是否是 ArrayBuffer
@@ -350,107 +373,93 @@ func (h *BodyTypeHandler) isURLSearchParams(obj *goja.Object) bool {
 	return false
 }
 
-// typedArrayToBytes 将 TypedArray 转换为字节数组
+// typedArrayToBytes 将 TypedArray 转换为字节数组（直接读取底层 ArrayBuffer）
 func (h *BodyTypeHandler) typedArrayToBytes(obj *goja.Object) ([]byte, error) {
-	// 安全检查
 	if obj == nil {
 		return nil, fmt.Errorf("TypedArray 对象为 nil")
 	}
 
-	// 获取数组长度
-	lengthVal := obj.Get("length")
-	if goja.IsUndefined(lengthVal) || lengthVal == nil {
-		return nil, fmt.Errorf("TypedArray 缺少 length 属性")
-	}
-	length := int(lengthVal.ToInteger())
-
-	// 🔥 检查 length 合法性
-	if length < 0 {
-		return nil, fmt.Errorf("TypedArray length 不能为负数: %d", length)
-	}
-	if length == 0 {
-		return []byte{}, nil // 空数组，直接返回
-	}
-
-	// 获取数组类型
-	var bytesPerElement int = 1
-	var typeName string
-	if constructor := obj.Get("constructor"); !goja.IsUndefined(constructor) {
-		if constructorObj, ok := constructor.(*goja.Object); ok {
-			if nameVal := constructorObj.Get("name"); !goja.IsUndefined(nameVal) {
-				typeName = nameVal.String()
-			}
+	if lengthVal := obj.Get("length"); !goja.IsUndefined(lengthVal) && lengthVal != nil && !goja.IsNull(lengthVal) {
+		if length := lengthVal.ToInteger(); length < 0 {
+			return nil, fmt.Errorf("TypedArray length 不能为负数: %d", length)
 		}
 	}
 
-	switch typeName {
-	case "Uint8Array", "Int8Array", "Uint8ClampedArray":
-		bytesPerElement = 1
-	case "Uint16Array", "Int16Array":
-		bytesPerElement = 2
-	case "Uint32Array", "Int32Array", "Float32Array":
-		bytesPerElement = 4
-	case "Float64Array":
-		bytesPerElement = 8
+	byteLengthVal := obj.Get("byteLength")
+	if goja.IsUndefined(byteLengthVal) || byteLengthVal == nil || goja.IsNull(byteLengthVal) {
+		return nil, fmt.Errorf("TypedArray 缺少 byteLength 属性")
+	}
+	byteLength := byteLengthVal.ToInteger()
+	if byteLength < 0 {
+		return nil, fmt.Errorf("TypedArray byteLength 非法: %d", byteLength)
+	}
+	if byteLength == 0 {
+		return []byte{}, nil
 	}
 
-	// 🔥 防护：整数溢出 + 内存耗尽（DoS 防护）
-	// 使用 int64 计算避免 32 位系统溢出
-	totalBytes64 := int64(length) * int64(bytesPerElement)
+	typeName := getTypedArrayTypeName(obj)
+	totalBytes64 := byteLength
 
-	// 🔥 检查是否超过配置的限制（MAX_BLOB_FILE_SIZE）
 	if totalBytes64 > h.maxBlobFileSize {
 		sizeMB := float64(totalBytes64) / (1024 * 1024)
 		limitMB := float64(h.maxBlobFileSize) / (1024 * 1024)
-		return nil, fmt.Errorf("TypedArray 过大: %.2fMB > %.2fMB 限制 (类型: %s, 长度: %d, 每元素字节数: %d)",
-			sizeMB, limitMB, typeName, length, bytesPerElement)
+		return nil, fmt.Errorf("TypedArray 过大: %.2fMB > %.2fMB 限制 (类型: %s)",
+			sizeMB, limitMB, typeName)
 	}
 
-	// 检查是否会在 32 位系统上溢出（兼容性检查）
 	if totalBytes64 > math.MaxInt32 {
 		return nil, fmt.Errorf("TypedArray 超过 32 位系统支持的最大大小")
 	}
-
 	totalBytes := int(totalBytes64)
-	data := make([]byte, totalBytes)
 
-	// 读取数据
-	for i := 0; i < length; i++ {
-		val := obj.Get(strconv.Itoa(i))
-		if goja.IsUndefined(val) || val == nil {
-			continue
-		}
+	bufferVal := obj.Get("buffer")
+	if goja.IsUndefined(bufferVal) || bufferVal == nil || goja.IsNull(bufferVal) {
+		return nil, fmt.Errorf("TypedArray 缺少 buffer 属性")
+	}
 
-		switch bytesPerElement {
-		case 1:
-			// Uint8Array, Int8Array
-			num := uint8(val.ToInteger())
-			data[i] = num
-
-		case 2:
-			// Uint16Array, Int16Array
-			num := uint16(val.ToInteger())
-			binary.LittleEndian.PutUint16(data[i*2:], num)
-
-		case 4:
-			// Uint32Array, Int32Array, Float32Array
-			if typeName == "Float32Array" {
-				// 使用标准库函数转换 Float32
-				bits := math.Float32bits(float32(val.ToFloat()))
-				binary.LittleEndian.PutUint32(data[i*4:], bits)
-			} else {
-				num := uint32(val.ToInteger())
-				binary.LittleEndian.PutUint32(data[i*4:], num)
-			}
-
-		case 8:
-			// Float64Array - 使用标准库函数转换 Float64
-			bits := math.Float64bits(val.ToFloat())
-			binary.LittleEndian.PutUint64(data[i*8:], bits)
+	var backing []byte
+	if exported := bufferVal.Export(); exported != nil {
+		switch v := exported.(type) {
+		case goja.ArrayBuffer:
+			backing = v.Bytes()
+		case []byte:
+			backing = v
 		}
 	}
 
-	return data, nil
+	if backing == nil {
+		if bufferObj, ok := bufferVal.(*goja.Object); ok {
+			bytes, err := h.arrayBufferToBytes(bufferObj)
+			if err != nil {
+				return nil, err
+			}
+			backing = bytes
+		} else {
+			return nil, fmt.Errorf("无法解析 TypedArray buffer")
+		}
+	}
+
+	byteOffset := int64(0)
+	if offsetVal := obj.Get("byteOffset"); !goja.IsUndefined(offsetVal) && offsetVal != nil && !goja.IsNull(offsetVal) {
+		byteOffset = offsetVal.ToInteger()
+	}
+	if byteOffset < 0 {
+		return nil, fmt.Errorf("TypedArray byteOffset 非法: %d", byteOffset)
+	}
+
+	if byteOffset > int64(len(backing)) {
+		return nil, fmt.Errorf("TypedArray byteOffset 越界")
+	}
+	if byteOffset+totalBytes64 > int64(len(backing)) {
+		return nil, fmt.Errorf("TypedArray 视图超过 ArrayBuffer 大小")
+	}
+
+	start := int(byteOffset)
+	end := start + totalBytes
+	result := make([]byte, totalBytes)
+	copy(result, backing[start:end])
+
+	return result, nil
 }
 
 // arrayBufferToBytes 将 ArrayBuffer 转换为字节数组

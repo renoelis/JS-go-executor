@@ -273,7 +273,7 @@ func (fe *FetchEnhancer) RegisterFetchAPI(runtime *goja.Runtime) error {
 	ensureHeadersPrototypeToStringTag(runtime)
 
 	// 3. 注册 Request 构造器
-	runtime.Set("Request", CreateRequestConstructor(runtime))
+	runtime.Set("Request", CreateRequestConstructor(runtime, fe))
 
 	// 3.5 注册 Response 构造器
 	runtime.Set("Response", fe.createResponseConstructor(runtime))
@@ -632,6 +632,16 @@ func normalizeHeadersInit(runtime *goja.Runtime, value goja.Value, opCtx string)
 		return result, nil
 	}
 
+	if obj, ok := value.(*goja.Object); ok && obj != nil {
+		if obj.ClassName() == "Object" {
+			for _, key := range obj.Keys() {
+				val := obj.Get(key)
+				addNormalizedHeaderEntry(runtime, opCtx, key, val.String(), result)
+			}
+			return result, nil
+		}
+	}
+
 	if exported := value.Export(); exported != nil {
 		switch h := exported.(type) {
 		case map[string]interface{}:
@@ -649,15 +659,6 @@ func normalizeHeadersInit(runtime *goja.Runtime, value goja.Value, opCtx string)
 			return result, nil
 		case string, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
 			return nil, fmt.Errorf("%s: Invalid Headers init input", opCtx)
-		}
-	}
-
-	if obj, ok := value.(*goja.Object); ok {
-		if obj.ClassName() == "Object" {
-			for _, key := range obj.Keys() {
-				addNormalizedHeaderEntry(runtime, opCtx, key, obj.Get(key).String(), result)
-			}
-			return result, nil
 		}
 	}
 
@@ -952,6 +953,7 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 		// 1. 解析 URL（支持 string 或 Request 对象）
 		var url string
 		var options map[string]interface{}
+		modeFromRequest := false
 
 		firstArg := call.Arguments[0]
 		if obj, ok := firstArg.(*goja.Object); ok {
@@ -1000,7 +1002,13 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 						options["headers"] = normalizedHeaders
 					}
 				}
-				if bodyVal := obj.Get("body"); !goja.IsUndefined(bodyVal) && !goja.IsNull(bodyVal) {
+				if rawBodyVal := obj.Get(requestRawBodyValueProp); rawBodyVal != nil && !goja.IsUndefined(rawBodyVal) && !goja.IsNull(rawBodyVal) {
+					if bodyObj, ok := rawBodyVal.(*goja.Object); ok {
+						options["__rawBodyObject"] = bodyObj
+					} else {
+						options["body"] = rawBodyVal.Export()
+					}
+				} else if bodyVal := obj.Get("body"); !goja.IsUndefined(bodyVal) && !goja.IsNull(bodyVal) {
 					// 保留 body 对象，延迟处理
 					if bodyObj, ok := bodyVal.(*goja.Object); ok {
 						options["__rawBodyObject"] = bodyObj
@@ -1380,7 +1388,7 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 			delete(options, "__rawBodyObject")
 
 		}
-		options = normalizeRequestOptions(runtime, options)
+		options = normalizeRequestOptions(runtime, options, modeFromRequest)
 
 		// 5. 检查是否有 AbortSignal
 		var abortCh chan struct{}
@@ -2519,6 +2527,9 @@ func (fe *FetchEnhancer) extractFormDataInCurrentThread(runtime *goja.Runtime, f
 		fe.config.RequestTimeout,
 	)
 	streamingFormData := formdata.NewStreamingFormData(config)
+	if boundary := getFormDataBoundaryFromObject(formDataObj); boundary != "" {
+		streamingFormData.SetBoundary(boundary)
+	}
 
 	// 转换 entries
 	entries := formData.GetEntries()

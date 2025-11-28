@@ -1,15 +1,49 @@
 package fetch
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	neturl "net/url"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"flow-codeblock-go/enhance_modules/internal/streams"
+
 	"github.com/dop251/goja"
 )
+
+const (
+	requestCloneBodyUsedMessage          = "unusable"
+	requestConstructorBodyUsedMessage    = "Cannot construct a Request with a Request object that has already been used."
+	requestRawBodyValueProp              = "__rawBodyValue"
+	requestBodyLockedMessage             = "body stream is locked"
+	requestSyntheticStreamMarker         = "__requestSyntheticReadableStream"
+	requestSyntheticStreamLockedProperty = "__requestSyntheticReadableStreamLocked"
+)
+
+var canonicalDisplayMethods = map[string]struct{}{
+	"DELETE":  {},
+	"GET":     {},
+	"HEAD":    {},
+	"OPTIONS": {},
+	"PATCH":   {},
+	"POST":    {},
+	"PUT":     {},
+}
+
+func normalizeRequestMethodForProperty(method string) string {
+	if method == "" {
+		return method
+	}
+	upper := strings.ToUpper(method)
+	if _, ok := canonicalDisplayMethods[upper]; ok {
+		return upper
+	}
+	return method
+}
 
 func setHeaderWithValidation(headers map[string]string, runtime *goja.Runtime, ctx, name, value string) string {
 	ensureValidHeaderName(runtime, ctx, name)
@@ -374,6 +408,7 @@ type requestCloneContext struct {
 	url                 string
 	method              string
 	body                interface{}
+	hasBody             bool
 	headers             map[string]string
 	cacheValue          string
 	credentialsValue    string
@@ -385,6 +420,503 @@ type requestCloneContext struct {
 	keepaliveValue      bool
 	destinationValue    string
 	signal              goja.Value
+	duplexValue         string
+	fetchEnhancer       *FetchEnhancer
+}
+
+type requestBodyState struct {
+	consumed      bool
+	mutex         sync.Mutex
+	fetchEnhancer *FetchEnhancer
+}
+
+func (s *requestBodyState) markUsed(runtime *goja.Runtime, requestObj *goja.Object) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.consumed {
+		return errors.New("Body is unusable: Body has already been read")
+	}
+	s.consumed = true
+	requestObj.Set("bodyUsed", runtime.ToValue(true))
+	return nil
+}
+
+func (s *requestBodyState) isConsumed() bool {
+	if s == nil {
+		return false
+	}
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return s.consumed
+}
+
+func requestBodyReadableStream(requestObj *goja.Object) *goja.Object {
+	if requestObj == nil {
+		return nil
+	}
+	bodyVal := requestObj.Get("body")
+	if bodyVal == nil || goja.IsUndefined(bodyVal) || goja.IsNull(bodyVal) {
+		return nil
+	}
+	streamObj, ok := bodyVal.(*goja.Object)
+	if !ok || streamObj == nil {
+		return nil
+	}
+	if !isReadableStreamObject(streamObj) {
+		return nil
+	}
+	return streamObj
+}
+
+func requestBodyStreamLocked(requestObj *goja.Object) bool {
+	streamObj := requestBodyReadableStream(requestObj)
+	if streamObj == nil {
+		return false
+	}
+
+	if locked, ok := syntheticRequestStreamLocked(streamObj); ok {
+		return locked
+	}
+
+	if locked, ok := safeReadableStreamLockedValue(streamObj); ok {
+		return locked
+	}
+
+	return false
+}
+
+func markSyntheticRequestBodyStream(streamObj *goja.Object) {
+	if streamObj == nil {
+		return
+	}
+	streamObj.Set(requestSyntheticStreamMarker, true)
+	streamObj.Set(requestSyntheticStreamLockedProperty, false)
+}
+
+func updateSyntheticRequestBodyStreamLocked(streamObj *goja.Object, locked bool) {
+	if streamObj == nil {
+		return
+	}
+	streamObj.Set(requestSyntheticStreamLockedProperty, locked)
+}
+
+func syntheticRequestStreamLocked(streamObj *goja.Object) (bool, bool) {
+	if streamObj == nil {
+		return false, false
+	}
+	marker := streamObj.Get(requestSyntheticStreamMarker)
+	if marker == nil || goja.IsUndefined(marker) || goja.IsNull(marker) || !marker.ToBoolean() {
+		return false, false
+	}
+	lockedVal := streamObj.Get(requestSyntheticStreamLockedProperty)
+	if lockedVal == nil || goja.IsUndefined(lockedVal) || goja.IsNull(lockedVal) {
+		return false, true
+	}
+	return lockedVal.ToBoolean(), true
+}
+
+func safeReadableStreamLockedValue(streamObj *goja.Object) (locked bool, ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, isException := r.(*goja.Exception); isException {
+				locked = false
+				ok = true
+			} else {
+				panic(r)
+			}
+		}
+	}()
+	lockedVal := streamObj.Get("locked")
+	if lockedVal == nil || goja.IsUndefined(lockedVal) || goja.IsNull(lockedVal) {
+		return false, true
+	}
+	return lockedVal.ToBoolean(), true
+}
+
+func ensureRequestBodyStateFromThis(runtime *goja.Runtime, thisVal goja.Value) (*goja.Object, *requestBodyState) {
+	if runtime == nil {
+		return nil, nil
+	}
+	if thisVal == nil || goja.IsUndefined(thisVal) || goja.IsNull(thisVal) {
+		panic(runtime.NewTypeError("Illegal invocation"))
+	}
+	obj, ok := thisVal.(*goja.Object)
+	if !ok || obj == nil {
+		panic(runtime.NewTypeError("Illegal invocation"))
+	}
+	stateVal := obj.Get("__requestBodyState")
+	if stateVal == nil || goja.IsUndefined(stateVal) || goja.IsNull(stateVal) {
+		panic(runtime.NewTypeError("Illegal invocation"))
+	}
+	state, ok := stateVal.Export().(*requestBodyState)
+	if !ok || state == nil {
+		panic(runtime.NewTypeError("Illegal invocation"))
+	}
+	return obj, state
+}
+
+func ensureRequestCloneContextFromThis(runtime *goja.Runtime, thisVal goja.Value) (*goja.Object, *requestCloneContext) {
+	obj, _ := ensureRequestBodyStateFromThis(runtime, thisVal)
+	ctxVal := obj.Get("__requestCloneContext")
+	if ctxVal == nil || goja.IsUndefined(ctxVal) || goja.IsNull(ctxVal) {
+		panic(runtime.NewTypeError("Illegal invocation"))
+	}
+	ctx, ok := ctxVal.Export().(*requestCloneContext)
+	if !ok || ctx == nil {
+		panic(runtime.NewTypeError("Illegal invocation"))
+	}
+	return obj, ctx
+}
+
+func storeRequestRawBodyValue(runtime *goja.Runtime, requestObj *goja.Object, body interface{}) goja.Value {
+	if requestObj == nil {
+		return goja.Undefined()
+	}
+
+	var raw goja.Value
+	switch v := body.(type) {
+	case goja.Value:
+		raw = v
+	case nil:
+		raw = goja.Null()
+	default:
+		if runtime != nil {
+			raw = runtime.ToValue(v)
+		} else {
+			raw = goja.Null()
+		}
+	}
+
+	if raw == nil {
+		raw = goja.Null()
+	}
+	requestObj.Set(requestRawBodyValueProp, raw)
+	return raw
+}
+
+func getRequestRawBodyValue(obj *goja.Object) goja.Value {
+	if obj == nil {
+		return goja.Undefined()
+	}
+	val := obj.Get(requestRawBodyValueProp)
+	if val == nil {
+		return goja.Undefined()
+	}
+	return val
+}
+
+func requestBodyValueToBytes(value goja.Value) ([]byte, bool) {
+	if value == nil || goja.IsUndefined(value) || goja.IsNull(value) {
+		return nil, false
+	}
+
+	switch exported := value.Export().(type) {
+	case string:
+		return []byte(exported), true
+	case []byte:
+		cp := make([]byte, len(exported))
+		copy(cp, exported)
+		return cp, true
+	case goja.ArrayBuffer:
+		buf := exported.Bytes()
+		cp := make([]byte, len(buf))
+		copy(cp, buf)
+		return cp, true
+	}
+	return nil, false
+}
+
+func isFormDataObject(obj *goja.Object) bool {
+	if obj == nil {
+		return false
+	}
+	val := obj.Get("__isFormData")
+	return val != nil && !goja.IsUndefined(val) && !goja.IsNull(val) && val.ToBoolean()
+}
+
+func isNodeFormDataObject(obj *goja.Object) bool {
+	if obj == nil {
+		return false
+	}
+	val := obj.Get("__isNodeFormData")
+	return val != nil && !goja.IsUndefined(val) && !goja.IsNull(val) && val.ToBoolean()
+}
+
+func getFormDataBoundaryFromObject(obj *goja.Object) string {
+	if obj == nil {
+		return ""
+	}
+	if boundaryVal := obj.Get("_boundary"); boundaryVal != nil && !goja.IsUndefined(boundaryVal) && !goja.IsNull(boundaryVal) {
+		if boundary := strings.TrimSpace(boundaryVal.String()); boundary != "" {
+			return boundary
+		}
+	}
+	return ""
+}
+
+func isURLSearchParamsObject(obj *goja.Object) bool {
+	if obj == nil {
+		return false
+	}
+	if marker := obj.Get("__isURLSearchParams"); marker != nil && !goja.IsUndefined(marker) && !goja.IsNull(marker) && marker.ToBoolean() {
+		return true
+	}
+	constructorVal := obj.Get("constructor")
+	constructorObj, ok := constructorVal.(*goja.Object)
+	if !ok || constructorObj == nil {
+		return false
+	}
+	nameVal := constructorObj.Get("name")
+	if goja.IsUndefined(nameVal) || goja.IsNull(nameVal) {
+		return false
+	}
+	return nameVal.String() == "URLSearchParams"
+}
+
+func isBlobObject(obj *goja.Object) bool {
+	if obj == nil {
+		return false
+	}
+	val := obj.Get("__isBlob")
+	return val != nil && !goja.IsUndefined(val) && !goja.IsNull(val) && val.ToBoolean()
+}
+
+func isFileObject(obj *goja.Object) bool {
+	if obj == nil {
+		return false
+	}
+	val := obj.Get("__isFile")
+	return val != nil && !goja.IsUndefined(val) && !goja.IsNull(val) && val.ToBoolean()
+}
+
+func detectAutoContentTypeForRequest(body interface{}) (string, bool) {
+	if body == nil {
+		return "", false
+	}
+
+	if _, ok := body.(string); ok {
+		return "text/plain;charset=UTF-8", true
+	}
+
+	val, ok := body.(goja.Value)
+	if !ok || goja.IsUndefined(val) || goja.IsNull(val) {
+		return "", false
+	}
+
+	if obj, ok := val.(*goja.Object); ok {
+		if isFormDataObject(obj) || isNodeFormDataObject(obj) {
+			boundary := getFormDataBoundaryFromObject(obj)
+			if boundary != "" {
+				return fmt.Sprintf("multipart/form-data; boundary=%s", boundary), true
+			}
+			return "multipart/form-data", true
+		}
+
+		if isURLSearchParamsObject(obj) {
+			return "application/x-www-form-urlencoded;charset=UTF-8", true
+		}
+
+		if isBlobObject(obj) || isFileObject(obj) {
+			if typeVal := obj.Get("type"); typeVal != nil && !goja.IsUndefined(typeVal) && !goja.IsNull(typeVal) {
+				if contentType := strings.TrimSpace(typeVal.String()); contentType != "" {
+					return contentType, true
+				}
+			}
+		}
+
+		if obj.ClassName() == "String" {
+			return "text/plain;charset=UTF-8", true
+		}
+	}
+
+	if _, ok := val.Export().(string); ok {
+		return "text/plain;charset=UTF-8", true
+	}
+
+	return "", false
+}
+
+func convertFormDataBodyToBytes(body interface{}) ([]byte, error) {
+	switch v := body.(type) {
+	case []byte:
+		return v, nil
+	case io.Reader:
+		if closer, ok := v.(io.Closer); ok {
+			defer closer.Close()
+		}
+		data, err := io.ReadAll(v)
+		if err != nil {
+			return nil, err
+		}
+		return data, nil
+	default:
+		return nil, fmt.Errorf("unsupported FormData body type %T", body)
+	}
+}
+
+func createRequestBodyReadableStream(runtime *goja.Runtime, requestObj *goja.Object, rawBodyVal goja.Value, state *requestBodyState) goja.Value {
+	if runtime == nil || requestObj == nil || state == nil {
+		return goja.Null()
+	}
+	if rawBodyVal == nil || goja.IsUndefined(rawBodyVal) || goja.IsNull(rawBodyVal) {
+		return goja.Null()
+	}
+
+	if obj, ok := rawBodyVal.(*goja.Object); ok && isReadableStreamObject(obj) {
+		return rawBodyVal
+	}
+
+	data, ok := requestBodyValueToBytes(rawBodyVal)
+	if !ok {
+		return goja.Null()
+	}
+
+	streamObj := runtime.NewObject()
+	streams.AttachReadableStreamPrototype(runtime, streamObj)
+	streamObj.Set("locked", false)
+	markSyntheticRequestBodyStream(streamObj)
+
+	var lockMutex sync.Mutex
+	var locked bool
+	var disturbed bool
+	var cancelled bool
+	offset := 0
+	total := len(data)
+
+	markConsumed := func() error {
+		if disturbed {
+			return nil
+		}
+		if err := state.markUsed(runtime, requestObj); err != nil {
+			return err
+		}
+		disturbed = true
+		return nil
+	}
+
+	createReader := func() *goja.Object {
+		reader := runtime.NewObject()
+		closedPromise, resolveClosed, _ := runtime.NewPromise()
+		var closeOnce sync.Once
+		closeReader := func() {
+			closeOnce.Do(func() {
+				resolveClosed(goja.Undefined())
+			})
+		}
+		reader.Set("closed", closedPromise)
+
+		reader.Set("read", func(call goja.FunctionCall) goja.Value {
+			promise, resolve, reject := runtime.NewPromise()
+			if cancelled {
+				result := runtime.NewObject()
+				result.Set("value", goja.Undefined())
+				result.Set("done", true)
+				resolve(result)
+				return runtime.ToValue(promise)
+			}
+			if err := markConsumed(); err != nil {
+				reject(runtime.NewTypeError(err.Error()))
+				return runtime.ToValue(promise)
+			}
+			result := runtime.NewObject()
+			lockMutex.Lock()
+			current := offset
+			lockMutex.Unlock()
+			if current < total {
+				chunk := runtime.NewArrayBuffer(data[current:])
+				result.Set("value", chunk)
+				result.Set("done", false)
+				lockMutex.Lock()
+				offset = total
+				lockMutex.Unlock()
+			} else {
+				result.Set("value", goja.Undefined())
+				result.Set("done", true)
+				closeReader()
+			}
+			resolve(result)
+			return runtime.ToValue(promise)
+		})
+
+		reader.Set("cancel", func(call goja.FunctionCall) goja.Value {
+			promise, resolve, reject := runtime.NewPromise()
+			if cancelled {
+				resolve(goja.Undefined())
+				return runtime.ToValue(promise)
+			}
+			if err := markConsumed(); err != nil {
+				reject(runtime.NewTypeError(err.Error()))
+				return runtime.ToValue(promise)
+			}
+			cancelled = true
+			lockMutex.Lock()
+			offset = total
+			locked = false
+			streamObj.Set("locked", false)
+			updateSyntheticRequestBodyStreamLocked(streamObj, false)
+			lockMutex.Unlock()
+			closeReader()
+			resolve(goja.Undefined())
+			return runtime.ToValue(promise)
+		})
+
+		reader.Set("releaseLock", func(call goja.FunctionCall) goja.Value {
+			lockMutex.Lock()
+			defer lockMutex.Unlock()
+			if locked {
+				locked = false
+				streamObj.Set("locked", false)
+				updateSyntheticRequestBodyStreamLocked(streamObj, false)
+			}
+			return goja.Undefined()
+		})
+
+		return reader
+	}
+
+	streamObj.Set("getReader", func(call goja.FunctionCall) goja.Value {
+		lockMutex.Lock()
+		defer lockMutex.Unlock()
+		if locked {
+			panic(runtime.NewTypeError("ReadableStream is already locked"))
+		}
+		locked = true
+		streamObj.Set("locked", true)
+		updateSyntheticRequestBodyStreamLocked(streamObj, true)
+		return createReader()
+	})
+
+	streamObj.Set("cancel", func(call goja.FunctionCall) goja.Value {
+		promise, resolve, reject := runtime.NewPromise()
+		if cancelled {
+			resolve(goja.Undefined())
+			return runtime.ToValue(promise)
+		}
+		if err := markConsumed(); err != nil {
+			reject(runtime.NewTypeError(err.Error()))
+			return runtime.ToValue(promise)
+		}
+		cancelled = true
+		lockMutex.Lock()
+		offset = total
+		locked = false
+		streamObj.Set("locked", false)
+		updateSyntheticRequestBodyStreamLocked(streamObj, false)
+		lockMutex.Unlock()
+		resolve(goja.Undefined())
+		return runtime.ToValue(promise)
+	})
+
+	return streamObj
+}
+
+func createDefaultRequestSignal(runtime *goja.Runtime) goja.Value {
+	state := &SignalState{
+		aborted: false,
+		reason:  nil,
+		abortCh: make(chan struct{}),
+	}
+	return CreateAbortSignalObject(runtime, state)
 }
 
 func defineRequestReadonlyProperty(runtime *goja.Runtime, obj *goja.Object, name string, value interface{}) {
@@ -399,41 +931,51 @@ func attachRequestCloneMethod(runtime *goja.Runtime, requestObj *goja.Object, ct
 		return
 	}
 
+	requestObj.Set("__requestCloneContext", ctx)
+
 	requestObj.Set("clone", func(call goja.FunctionCall) goja.Value {
-		clonedHeaders := make(map[string]string, len(ctx.headers))
-		for k, v := range ctx.headers {
+		targetObj, targetCtx := ensureRequestCloneContextFromThis(runtime, call.This)
+
+		if targetCtx.hasBody {
+			if bodyUsedVal := targetObj.Get("bodyUsed"); bodyUsedVal != nil && !goja.IsUndefined(bodyUsedVal) && bodyUsedVal.ToBoolean() {
+				panic(runtime.NewTypeError(requestCloneBodyUsedMessage))
+			}
+		}
+
+		clonedHeaders := make(map[string]string, len(targetCtx.headers))
+		for k, v := range targetCtx.headers {
 			clonedHeaders[k] = v
 		}
 
 		clonedRequest := runtime.NewObject()
 		attachConstructorPrototype(runtime, "Request", clonedRequest)
-		clonedRequest.Set("url", runtime.ToValue(ctx.url))
-		clonedRequest.Set("method", runtime.ToValue(ctx.method))
+		clonedRequest.Set("url", runtime.ToValue(targetCtx.url))
+		clonedRequest.Set("method", runtime.ToValue(targetCtx.method))
 
-		if gojaVal, ok := ctx.body.(goja.Value); ok {
-			clonedRequest.Set("body", gojaVal)
-		} else if ctx.body != nil {
-			clonedRequest.Set("body", runtime.ToValue(ctx.body))
+		clonedRequest.Set("headers", createHeadersObject(runtime, clonedHeaders))
+		clonedRequest.Set("bodyUsed", runtime.ToValue(false))
+		rawBodyVal := storeRequestRawBodyValue(runtime, clonedRequest, targetCtx.body)
+		bodyState := attachRequestBodyMethods(runtime, clonedRequest, targetCtx.fetchEnhancer)
+		if streamVal := createRequestBodyReadableStream(runtime, clonedRequest, rawBodyVal, bodyState); streamVal != nil && !goja.IsUndefined(streamVal) && !goja.IsNull(streamVal) {
+			clonedRequest.Set("body", streamVal)
 		} else {
 			clonedRequest.Set("body", goja.Null())
 		}
 
-		clonedRequest.Set("headers", createHeadersObject(runtime, clonedHeaders))
-		clonedRequest.Set("bodyUsed", runtime.ToValue(false))
-
-		defineRequestReadonlyProperty(runtime, clonedRequest, "cache", ctx.cacheValue)
-		defineRequestReadonlyProperty(runtime, clonedRequest, "credentials", ctx.credentialsValue)
-		defineRequestReadonlyProperty(runtime, clonedRequest, "mode", ctx.modeValue)
-		defineRequestReadonlyProperty(runtime, clonedRequest, "redirect", ctx.redirectValue)
-		defineRequestReadonlyProperty(runtime, clonedRequest, "referrer", ctx.referrerValue)
-		defineRequestReadonlyProperty(runtime, clonedRequest, "referrerPolicy", ctx.referrerPolicyValue)
-		defineRequestReadonlyProperty(runtime, clonedRequest, "integrity", ctx.integrityValue)
-		defineRequestReadonlyProperty(runtime, clonedRequest, "keepalive", ctx.keepaliveValue)
-		defineRequestReadonlyProperty(runtime, clonedRequest, "destination", ctx.destinationValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "cache", targetCtx.cacheValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "credentials", targetCtx.credentialsValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "mode", targetCtx.modeValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "redirect", targetCtx.redirectValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "referrer", targetCtx.referrerValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "referrerPolicy", targetCtx.referrerPolicyValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "integrity", targetCtx.integrityValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "keepalive", targetCtx.keepaliveValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "destination", targetCtx.destinationValue)
+		defineRequestReadonlyProperty(runtime, clonedRequest, "duplex", targetCtx.duplexValue)
 
 		var clonedSignal goja.Value
-		if ctx.signal != nil && !goja.IsUndefined(ctx.signal) && !goja.IsNull(ctx.signal) {
-			if signalObj, ok := ctx.signal.(*goja.Object); ok {
+		if targetCtx.signal != nil && !goja.IsUndefined(targetCtx.signal) && !goja.IsNull(targetCtx.signal) {
+			if signalObj, ok := targetCtx.signal.(*goja.Object); ok {
 				if stateVal := signalObj.Get("__signalState"); stateVal != nil && !goja.IsUndefined(stateVal) {
 					if st, ok := stateVal.Export().(*SignalState); ok {
 						if protos := getRuntimePrototypes(runtime); protos != nil && protos.abortSignalPrototype != nil {
@@ -443,7 +985,7 @@ func attachRequestCloneMethod(runtime *goja.Runtime, requestObj *goja.Object, ct
 				}
 			}
 			if clonedSignal == nil {
-				clonedSignal = ctx.signal
+				clonedSignal = targetCtx.signal
 			}
 			clonedRequest.DefineDataProperty("signal", clonedSignal, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
 		} else {
@@ -452,30 +994,155 @@ func attachRequestCloneMethod(runtime *goja.Runtime, requestObj *goja.Object, ct
 		}
 
 		cloneCtx := &requestCloneContext{
-			url:                 ctx.url,
-			method:              ctx.method,
-			body:                ctx.body,
+			url:                 targetCtx.url,
+			method:              targetCtx.method,
+			body:                targetCtx.body,
+			hasBody:             targetCtx.hasBody,
 			headers:             clonedHeaders,
-			cacheValue:          ctx.cacheValue,
-			credentialsValue:    ctx.credentialsValue,
-			modeValue:           ctx.modeValue,
-			redirectValue:       ctx.redirectValue,
-			referrerValue:       ctx.referrerValue,
-			referrerPolicyValue: ctx.referrerPolicyValue,
-			integrityValue:      ctx.integrityValue,
-			keepaliveValue:      ctx.keepaliveValue,
-			destinationValue:    ctx.destinationValue,
+			cacheValue:          targetCtx.cacheValue,
+			credentialsValue:    targetCtx.credentialsValue,
+			modeValue:           targetCtx.modeValue,
+			redirectValue:       targetCtx.redirectValue,
+			referrerValue:       targetCtx.referrerValue,
+			referrerPolicyValue: targetCtx.referrerPolicyValue,
+			integrityValue:      targetCtx.integrityValue,
+			keepaliveValue:      targetCtx.keepaliveValue,
+			destinationValue:    targetCtx.destinationValue,
 			signal:              clonedSignal,
+			duplexValue:         targetCtx.duplexValue,
+			fetchEnhancer:       targetCtx.fetchEnhancer,
 		}
 		attachRequestCloneMethod(runtime, clonedRequest, cloneCtx)
 		return clonedRequest
 	})
 }
 
+func attachRequestBodyMethods(runtime *goja.Runtime, requestObj *goja.Object, fe *FetchEnhancer) *requestBodyState {
+	if runtime == nil || requestObj == nil {
+		return nil
+	}
+	state := &requestBodyState{
+		fetchEnhancer: fe,
+	}
+	requestObj.Set("__requestBodyState", state)
+
+	createBodyMethod := func(methodName string) func(goja.FunctionCall) goja.Value {
+		return func(call goja.FunctionCall) goja.Value {
+			targetObj, bodyState := ensureRequestBodyStateFromThis(runtime, call.This)
+			if requestBodyStreamLocked(targetObj) {
+				return rejectRequestBodyPromise(runtime, runtime.NewTypeError(requestBodyLockedMessage))
+			}
+			if err := bodyState.markUsed(runtime, targetObj); err != nil {
+				return rejectRequestBodyPromise(runtime, runtime.NewTypeError(err.Error()))
+			}
+
+			value, err := invokeRequestBodyMethodThroughResponse(runtime, targetObj, methodName, bodyState)
+			if err != nil {
+				return rejectRequestBodyPromise(runtime, err)
+			}
+			return value
+		}
+	}
+
+	requestObj.Set("text", createBodyMethod("text"))
+	requestObj.Set("arrayBuffer", createBodyMethod("arrayBuffer"))
+	requestObj.Set("json", createBodyMethod("json"))
+	requestObj.Set("blob", createBodyMethod("blob"))
+	requestObj.Set("formData", createBodyMethod("formData"))
+
+	return state
+}
+
+func invokeRequestBodyMethodThroughResponse(runtime *goja.Runtime, requestObj *goja.Object, methodName string, state *requestBodyState) (goja.Value, error) {
+	if runtime == nil || requestObj == nil {
+		return goja.Undefined(), fmt.Errorf("invalid runtime or request object")
+	}
+
+	responseCtorVal := runtime.Get("Response")
+	ctorObj, ok := responseCtorVal.(*goja.Object)
+	if !ok || ctorObj == nil {
+		return goja.Undefined(), fmt.Errorf("Response constructor is unavailable")
+	}
+
+	bodyVal := getRequestRawBodyValue(requestObj)
+	init := runtime.NewObject()
+	if init != nil {
+		if headersVal := requestObj.Get("headers"); headersVal != nil && !goja.IsUndefined(headersVal) && !goja.IsNull(headersVal) {
+			init.Set("headers", headersVal)
+		}
+	}
+
+	preparedBody, err := prepareRequestBodyForReading(runtime, bodyVal, state)
+	if err != nil {
+		return goja.Undefined(), err
+	}
+
+	responseObj, err := runtime.New(ctorObj, preparedBody, init)
+	if err != nil {
+		return goja.Undefined(), err
+	}
+
+	methodVal := responseObj.Get(methodName)
+	method, ok := goja.AssertFunction(methodVal)
+	if !ok {
+		return goja.Undefined(), fmt.Errorf("Response.%s is not callable", methodName)
+	}
+
+	result, err := method(responseObj)
+	if err != nil {
+		return goja.Undefined(), err
+	}
+
+	requestObj.Set("body", goja.Null())
+	storeRequestRawBodyValue(runtime, requestObj, nil)
+	if ctxVal := requestObj.Get("__requestCloneContext"); ctxVal != nil && !goja.IsUndefined(ctxVal) && !goja.IsNull(ctxVal) {
+		if ctx, ok := ctxVal.Export().(*requestCloneContext); ok && ctx != nil {
+			ctx.body = nil
+		}
+	}
+	return result, nil
+}
+
+func rejectRequestBodyPromise(runtime *goja.Runtime, err interface{}) goja.Value {
+	promise, _, reject := runtime.NewPromise()
+	switch v := err.(type) {
+	case *goja.Exception:
+		reject(v.Value())
+	case goja.Value:
+		reject(v)
+	case error:
+		reject(runtime.NewGoError(v))
+	default:
+		reject(runtime.ToValue(v))
+	}
+	return runtime.ToValue(promise)
+}
+
 // createHeadersObject 创建一个带有完整 Headers 接口方法的对象
 // 这个辅助函数用于为 Request/Response 对象创建 headers 属性
 func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja.Object {
 	obj := runtime.NewObject()
+	if headers == nil {
+		headers = make(map[string]string)
+	}
+	setCookieKey := strings.ToLower("Set-Cookie")
+	var setCookieValues []string
+
+	if value, ok := headers[setCookieKey]; ok && value != "" {
+		setCookieValues = append(setCookieValues, value)
+	}
+
+	setSetCookie := func(values []string) {
+		if values == nil {
+			setCookieValues = nil
+			return
+		}
+		setCookieValues = append([]string(nil), values...)
+	}
+
+	appendSetCookie := func(value string) {
+		setCookieValues = append(setCookieValues, value)
+	}
 
 	// get(name) - 获取头部值
 	obj.Set("get", func(call goja.FunctionCall) goja.Value {
@@ -496,7 +1163,10 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 		}
 		name := call.Arguments[0].String()
 		value := call.Arguments[1].String()
-		setHeaderWithValidation(headers, runtime, "Headers.set", name, value)
+		normalized := setHeaderWithValidation(headers, runtime, "Headers.set", name, value)
+		if strings.EqualFold(name, "Set-Cookie") {
+			setSetCookie([]string{normalized})
+		}
 		return goja.Undefined()
 	})
 
@@ -517,6 +1187,9 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 		}
 		name := strings.ToLower(call.Arguments[0].String())
 		delete(headers, name)
+		if name == setCookieKey {
+			setSetCookie(nil)
+		}
 		return goja.Undefined()
 	})
 
@@ -527,7 +1200,10 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 		}
 		name := call.Arguments[0].String()
 		value := call.Arguments[1].String()
-		appendHeaderWithValidation(headers, runtime, "Headers.append", name, value)
+		normalized := appendHeaderWithValidation(headers, runtime, "Headers.append", name, value)
+		if strings.EqualFold(name, "Set-Cookie") {
+			appendSetCookie(normalized)
+		}
 		return goja.Undefined()
 	})
 
@@ -541,9 +1217,16 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 			return goja.Undefined()
 		}
 
+		var thisArg goja.Value = goja.Undefined()
+		if len(call.Arguments) > 1 {
+			thisArg = call.Arguments[1]
+		}
+
 		for _, key := range sortedHeaderKeys(headers) {
 			value := headers[key]
-			callback(goja.Undefined(), runtime.ToValue(value), runtime.ToValue(key), obj)
+			if _, err := callback(thisArg, runtime.ToValue(value), runtime.ToValue(key), obj); err != nil {
+				panic(err)
+			}
 		}
 		return goja.Undefined()
 	})
@@ -636,6 +1319,31 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 		return iterator
 	})
 
+	// Symbol.iterator - 与 entries() 等价
+	obj.SetSymbol(goja.SymIterator, func(call goja.FunctionCall) goja.Value {
+		entries := obj.Get("entries")
+		if entries == nil || goja.IsUndefined(entries) {
+			return goja.Undefined()
+		}
+		if fn, ok := goja.AssertFunction(entries); ok {
+			iter, err := fn(obj)
+			if err != nil {
+				panic(err)
+			}
+			return iter
+		}
+		return goja.Undefined()
+	})
+
+	// getSetCookie() - Node fetch 扩展：返回 Set-Cookie 数组
+	obj.Set("getSetCookie", func(call goja.FunctionCall) goja.Value {
+		if len(setCookieValues) == 0 {
+			return runtime.ToValue([]string{})
+		}
+		copyVals := append([]string(nil), setCookieValues...)
+		return runtime.ToValue(copyVals)
+	})
+
 	attachConstructorPrototype(runtime, "Headers", obj)
 
 	return obj
@@ -652,7 +1360,7 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 // - 支持 url, method, headers, body 属性
 // - 支持 clone() 方法复制请求
 // - 🔥 修复：保留 body 的原始类型（特别是 FormData 对象）
-func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) *goja.Object {
+func CreateRequestConstructor(runtime *goja.Runtime, fe *FetchEnhancer) func(goja.ConstructorCall) *goja.Object {
 	return func(call goja.ConstructorCall) *goja.Object {
 		if len(call.Arguments) == 0 {
 			panic(runtime.NewTypeError("Request 构造函数需要至少 1 个参数"))
@@ -661,6 +1369,13 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 		// 输入参数
 		input := call.Arguments[0]
 		options := make(map[string]interface{})
+		modeProvidedExplicit := false
+		duplexProvided := false
+		var bodyFromInit bool
+		var sourceRequestObj *goja.Object
+		var sourceRequestState *requestBodyState
+		var sourceBodyValue goja.Value
+		var sourceHasBody bool
 
 		// 预先提取的原始值（保持 goja.Value 类型，避免 Export 破坏）
 		var bodyVal goja.Value
@@ -669,6 +1384,12 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 
 		// 如果第一个参数是 Request 对象，先继承其字段
 		if inputObj, ok := input.(*goja.Object); ok {
+			if stateVal := inputObj.Get("__requestBodyState"); stateVal != nil && !goja.IsUndefined(stateVal) && !goja.IsNull(stateVal) {
+				if st, ok := stateVal.Export().(*requestBodyState); ok && st != nil {
+					sourceRequestObj = inputObj
+					sourceRequestState = st
+				}
+			}
 			if urlVal := inputObj.Get("url"); urlVal != nil && !goja.IsUndefined(urlVal) && !goja.IsNull(urlVal) {
 				options["url"] = urlVal.String()
 			}
@@ -678,7 +1399,18 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			if h := inputObj.Get("headers"); h != nil && !goja.IsUndefined(h) && !goja.IsNull(h) {
 				headersVal = h
 			}
-			if b := inputObj.Get("body"); b != nil && !goja.IsUndefined(b) {
+			if rawBodyVal := getRequestRawBodyValue(inputObj); rawBodyVal != nil && !goja.IsUndefined(rawBodyVal) && !goja.IsNull(rawBodyVal) {
+				sourceBodyValue = rawBodyVal
+				if hasUsableBodyValue(rawBodyVal) {
+					sourceHasBody = true
+				}
+				bodyVal = rawBodyVal
+				options["body"] = rawBodyVal
+			} else if b := inputObj.Get("body"); b != nil && !goja.IsUndefined(b) {
+				sourceBodyValue = b
+				if hasUsableBodyValue(b) {
+					sourceHasBody = true
+				}
 				bodyVal = b
 				options["body"] = b
 			}
@@ -713,30 +1445,66 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			if destinationVal := inputObj.Get("destination"); destinationVal != nil && !goja.IsUndefined(destinationVal) && !goja.IsNull(destinationVal) {
 				options["destination"] = destinationVal.String()
 			}
+			if duplexVal := inputObj.Get("duplex"); duplexVal != nil && !goja.IsUndefined(duplexVal) && !goja.IsNull(duplexVal) {
+				options["duplex"] = duplexVal.String()
+				duplexProvided = true
+			}
 		}
 
 		// 处理 init 参数（第二个参数）
-		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
-			if optionsObj := call.Arguments[1].ToObject(runtime); optionsObj != nil {
-				bodyVal = optionsObj.Get("body")
-				signalVal = optionsObj.Get("signal")
-				headersVal = optionsObj.Get("headers")
+		if len(call.Arguments) > 1 {
+			initArg := call.Arguments[1]
+			if !goja.IsUndefined(initArg) && !goja.IsNull(initArg) {
+				if _, ok := initArg.(*goja.Object); !ok {
+					panic(runtime.NewTypeError("RequestInit is not an object."))
+				}
+				if optionsObj := initArg.ToObject(runtime); optionsObj != nil {
+					bodyVal = optionsObj.Get("body")
+					signalVal = optionsObj.Get("signal")
+					headersVal = optionsObj.Get("headers")
+					if mv := optionsObj.Get("mode"); mv != nil && !goja.IsUndefined(mv) && !goja.IsNull(mv) {
+						modeProvidedExplicit = true
+					}
+					if dv := optionsObj.Get("duplex"); dv != nil && !goja.IsUndefined(dv) && !goja.IsNull(dv) {
+						duplexProvided = true
+						options["duplex"] = dv
+					}
 
-				if exported, ok := call.Arguments[1].Export().(map[string]interface{}); ok {
-					for k, v := range exported {
-						options[k] = v
+					if exported, ok := initArg.Export().(map[string]interface{}); ok {
+						for k, v := range exported {
+							lk := strings.ToLower(k)
+							skipBody := lk == "body" && bodyVal != nil && !goja.IsUndefined(bodyVal) && !goja.IsNull(bodyVal)
+							skipHeaders := lk == "headers" && headersVal != nil && !goja.IsUndefined(headersVal) && !goja.IsNull(headersVal)
+							skipSignal := lk == "signal" && signalVal != nil && !goja.IsUndefined(signalVal) && !goja.IsNull(signalVal)
+							if skipBody || skipHeaders || skipSignal {
+								continue
+							}
+							options[k] = v
+						}
+					}
+
+					if !goja.IsUndefined(bodyVal) && bodyVal != nil {
+						options["body"] = bodyVal
+						bodyFromInit = true
+					}
+					if !goja.IsUndefined(signalVal) && signalVal != nil {
+						options["signal"] = signalVal
+					}
+					if !goja.IsUndefined(headersVal) && headersVal != nil {
+						options["headers"] = headersVal
 					}
 				}
+			}
+		}
 
-				if !goja.IsUndefined(bodyVal) && bodyVal != nil {
-					options["body"] = bodyVal
-				}
-				if !goja.IsUndefined(signalVal) && signalVal != nil {
-					options["signal"] = signalVal
-				}
-				if !goja.IsUndefined(headersVal) && headersVal != nil {
-					options["headers"] = headersVal
-				}
+		if sourceRequestState != nil && !bodyFromInit {
+			if sourceRequestState.isConsumed() {
+				panic(runtime.NewTypeError(requestConstructorBodyUsedMessage))
+			}
+			if sourceBodyValue != nil && !goja.IsUndefined(sourceBodyValue) && !goja.IsNull(sourceBodyValue) {
+				options["body"] = sourceBodyValue
+			} else {
+				delete(options, "body")
 			}
 		}
 
@@ -745,18 +1513,30 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 		if u, ok := options["url"].(string); ok && u != "" {
 			url = u
 		}
-		if parsed, err := neturl.ParseRequestURI(url); err != nil || parsed == nil || parsed.Scheme == "" {
+		parsed, err := neturl.ParseRequestURI(url)
+		if err != nil || parsed == nil || parsed.Scheme == "" {
 			panic(runtime.NewTypeError(fmt.Sprintf("Failed to parse URL from %s", url)))
 		}
+		if parsed.User != nil && parsed.User.Username() != "" {
+			panic(runtime.NewTypeError("Request cannot contain credentials in the URL"))
+		}
+		if parsed.Host == "" && (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")) {
+			panic(runtime.NewTypeError(fmt.Sprintf("Failed to parse URL from %s", url)))
+		}
+		if parsed.Scheme != "" {
+			parsed.Scheme = strings.ToLower(parsed.Scheme)
+		}
+		if parsed.Host != "" {
+			parsed.Host = strings.ToLower(parsed.Host)
+		}
+		url = parsed.String()
 
 		// 方法
 		methodSource := "GET"
 		if rawMethod, ok := options["method"]; ok {
 			switch v := rawMethod.(type) {
 			case string:
-				if v != "" {
-					methodSource = v
-				}
+				methodSource = v
 			case goja.Value:
 				if !goja.IsUndefined(v) && !goja.IsNull(v) {
 					methodSource = v.String()
@@ -769,6 +1549,7 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 		}
 		validateHTTPMethod(runtime, methodSource)
 		method := strings.ToUpper(methodSource)
+		methodDisplay := normalizeRequestMethodForProperty(methodSource)
 
 		// 解析 headers
 		headers := make(map[string]string)
@@ -803,9 +1584,17 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 		if b, ok := options["body"]; ok && b != nil {
 			body = b
 		}
+		if autoContentType, ok := detectAutoContentTypeForRequest(body); ok {
+			ctKey := strings.ToLower("Content-Type")
+			if _, exists := headers[ctKey]; !exists {
+				setHeaderWithValidation(headers, runtime, "Request constructor", "Content-Type", autoContentType)
+			}
+		}
+		streamBody := bodyValueIsReadableStream(body)
 		if (method == "GET" || method == "HEAD") && hasUsableBodyValue(body) {
 			panic(runtime.NewTypeError("Request with GET/HEAD method cannot have body."))
 		}
+		consumeSourceBody := sourceRequestState != nil && sourceHasBody && !bodyFromInit
 
 		// 提取并验证 signal
 		var signal goja.Value
@@ -824,41 +1613,55 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 				}
 			}
 		}
+		if signal == nil || goja.IsUndefined(signal) || goja.IsNull(signal) {
+			signal = createDefaultRequestSignal(runtime)
+		}
 
 		cacheValue := requestStringOptionValue(options, "cache", "default")
+		ensureValidCacheValue(runtime, cacheValue)
 		credentialsValue := requestStringOptionValue(options, "credentials", "same-origin")
+		ensureValidCredentialsValue(runtime, credentialsValue)
 		modeValue := requestStringOptionValue(options, "mode", "cors")
+		ensureValidModeValue(runtime, modeValue)
+		ensureOnlyIfCachedMode(runtime, cacheValue, modeValue)
+		if modeProvidedExplicit && strings.EqualFold(modeValue, "navigate") {
+			panic(runtime.NewTypeError("Request constructor: invalid request mode navigate."))
+		}
 		redirectValue := requestStringOptionValue(options, "redirect", "follow")
+		ensureValidRedirectValue(runtime, redirectValue)
 		referrerValue := requestStringOptionValue(options, "referrer", "about:client")
 		referrerPolicyValue := requestStringOptionValue(options, "referrerPolicy", "")
+		if referrerPolicyValue != "" {
+			ensureValidReferrerPolicyValue(runtime, referrerPolicyValue)
+		}
 		integrityValue := requestStringOptionValue(options, "integrity", "")
 		destinationValue := requestStringOptionValue(options, "destination", "")
 		keepaliveValue := requestBoolOptionValue(options, "keepalive", false)
+		duplexValue := requestStringOptionValue(options, "duplex", "half")
+		ensureValidDuplexValue(runtime, duplexValue)
+		if streamBody && !duplexProvided {
+			panic(runtime.NewTypeError("RequestInit: duplex option is required when sending a body."))
+		}
 
 		// 创建 Request 对象
 		requestObj := ensureConstructorThis(runtime, "Request", call.This)
-		requestObj.Set("url", runtime.ToValue(url))
-		requestObj.Set("method", runtime.ToValue(method))
-
-		if gojaVal, ok := body.(goja.Value); ok {
-			requestObj.Set("body", gojaVal)
-		} else if body != nil {
-			requestObj.Set("body", runtime.ToValue(body))
+		defineRequestReadonlyProperty(runtime, requestObj, "url", url)
+		defineRequestReadonlyProperty(runtime, requestObj, "method", methodDisplay)
+		requestObj.Set("bodyUsed", runtime.ToValue(false))
+		rawBodyVal := storeRequestRawBodyValue(runtime, requestObj, body)
+		bodyState := attachRequestBodyMethods(runtime, requestObj, fe)
+		if streamVal := createRequestBodyReadableStream(runtime, requestObj, rawBodyVal, bodyState); streamVal != nil && !goja.IsUndefined(streamVal) && !goja.IsNull(streamVal) {
+			requestObj.Set("body", streamVal)
 		} else {
 			requestObj.Set("body", goja.Null())
 		}
-		requestObj.Set("bodyUsed", runtime.ToValue(false))
 
 		// headers 对象
 		headersObj := createHeadersObject(runtime, headers)
-		requestObj.Set("headers", headersObj)
+		requestObj.DefineDataProperty("headers", headersObj, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
 
 		// signal 只读属性
-		if signal != nil && !goja.IsUndefined(signal) && !goja.IsNull(signal) {
-			requestObj.DefineDataProperty("signal", signal, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
-		} else {
-			requestObj.DefineDataProperty("signal", goja.Null(), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
-		}
+		requestObj.DefineDataProperty("signal", signal, goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_TRUE)
 
 		defineRequestReadonlyProperty(runtime, requestObj, "cache", cacheValue)
 		defineRequestReadonlyProperty(runtime, requestObj, "credentials", credentialsValue)
@@ -870,10 +1673,17 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 		defineRequestReadonlyProperty(runtime, requestObj, "keepalive", keepaliveValue)
 		defineRequestReadonlyProperty(runtime, requestObj, "destination", destinationValue)
 
+		if consumeSourceBody {
+			if err := sourceRequestState.markUsed(runtime, sourceRequestObj); err != nil {
+				panic(runtime.NewTypeError(requestConstructorBodyUsedMessage))
+			}
+		}
+
 		initialCtx := &requestCloneContext{
 			url:                 url,
-			method:              method,
+			method:              methodDisplay,
 			body:                body,
+			hasBody:             hasUsableBodyValue(body),
 			headers:             headers,
 			cacheValue:          cacheValue,
 			credentialsValue:    credentialsValue,
@@ -885,6 +1695,8 @@ func CreateRequestConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			keepaliveValue:      keepaliveValue,
 			destinationValue:    destinationValue,
 			signal:              requestObj.Get("signal"),
+			duplexValue:         duplexValue,
+			fetchEnhancer:       fe,
 		}
 		attachRequestCloneMethod(runtime, requestObj, initialCtx)
 
@@ -944,6 +1756,55 @@ func requestBoolOptionValue(options map[string]interface{}, key string, defaultV
 		}
 	}
 	return defaultValue
+}
+
+func bodyValueIsReadableStream(body interface{}) bool {
+	jsVal, ok := body.(goja.Value)
+	if !ok {
+		return false
+	}
+	obj, ok := jsVal.(*goja.Object)
+	if !ok {
+		return false
+	}
+	return isReadableStreamObject(obj)
+}
+
+func prepareRequestBodyForReading(runtime *goja.Runtime, bodyVal goja.Value, state *requestBodyState) (goja.Value, error) {
+	if runtime == nil || bodyVal == nil || goja.IsUndefined(bodyVal) || goja.IsNull(bodyVal) {
+		return bodyVal, nil
+	}
+
+	obj, ok := bodyVal.(*goja.Object)
+	if !ok {
+		return bodyVal, nil
+	}
+
+	if isFormDataObject(obj) {
+		if state == nil || state.fetchEnhancer == nil {
+			return runtime.ToValue(bodyVal.String()), nil
+		}
+
+		formBody, _, err := state.fetchEnhancer.extractFormDataInCurrentThread(runtime, obj)
+		if err != nil {
+			return goja.Undefined(), err
+		}
+		bytes, err := convertFormDataBodyToBytes(formBody)
+		if err != nil {
+			return goja.Undefined(), err
+		}
+		// 🔥 返回 ArrayBuffer，确保 Response 构造器能够识别为二进制数据
+		cloned := append([]byte(nil), bytes...)
+		arrayBuffer := runtime.NewArrayBuffer(cloned)
+		return runtime.ToValue(arrayBuffer), nil
+	}
+
+	if isNodeFormDataObject(obj) {
+		// Node.js FormData 读取路径：降级为字符串表示
+		return runtime.ToValue(bodyVal.String()), nil
+	}
+
+	return bodyVal, nil
 }
 
 // ==================== DOMException 构造器 ====================
