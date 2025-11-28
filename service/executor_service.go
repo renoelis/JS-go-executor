@@ -33,6 +33,48 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+const textEncoderStreamPolyfill = `
+(function (global) {
+  if (typeof global.TransformStream !== 'function') {
+    return;
+  }
+  if (typeof global.TextEncoderStream !== 'function') {
+    global.TextEncoderStream = class TextEncoderStream {
+      constructor() {
+        const encoder = new TextEncoder();
+        const transform = new TransformStream({
+          transform(chunk, controller) {
+            controller.enqueue(encoder.encode(typeof chunk === 'string' ? chunk : String(chunk || '')));
+          }
+        });
+        this.readable = transform.readable;
+        this.writable = transform.writable;
+      }
+    };
+  }
+  if (typeof global.TextDecoderStream !== 'function') {
+    global.TextDecoderStream = class TextDecoderStream {
+      constructor(label, options) {
+        const decoder = new TextDecoder(label || 'utf-8', options || {});
+        const transform = new TransformStream({
+          transform(chunk, controller) {
+            controller.enqueue(decoder.decode(chunk, { stream: true }));
+          },
+          flush(controller) {
+            const remainder = decoder.decode();
+            if (remainder) {
+              controller.enqueue(remainder);
+            }
+          }
+        });
+        this.readable = transform.readable;
+        this.writable = transform.writable;
+      }
+    };
+  }
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+`
+
 // gcThrottler GC 节流器，防止 GC 风暴
 // 🔥 使用 channel 限制并发 GC 数量（最多 1 个）
 type gcThrottler struct {
@@ -1242,6 +1284,7 @@ func (e *JSExecutor) registerTextEncoders(runtime *goja.Runtime) {
 	// 注册到全局作用域
 	runtime.Set("TextEncoder", textEncoderConstructor)
 	runtime.Set("TextDecoder", textDecoderConstructor)
+	_, _ = runtime.RunString(textEncoderStreamPolyfill)
 }
 
 // registerProcessHrtime 注册 process.hrtime API（Node.js 兼容）

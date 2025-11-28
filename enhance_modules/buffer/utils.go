@@ -1042,7 +1042,15 @@ func convertToUint8(runtime *goja.Runtime, val goja.Value) byte {
 			if math.IsNaN(v) || math.IsInf(v, 0) {
 				return 0
 			}
-			return byte(int64(v) & 0xFF)
+			truncated := math.Trunc(v)
+			if truncated == 0 {
+				return 0
+			}
+			mod := math.Mod(truncated, 256)
+			if mod < 0 {
+				mod += 256
+			}
+			return byte(int64(mod) & 0xFF)
 		case int64:
 			return byte(v & 0xFF)
 		case int:

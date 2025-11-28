@@ -2,7 +2,7 @@ package buffer
 
 import (
 	"strconv"
-	
+
 	"github.com/dop251/goja"
 )
 
@@ -16,22 +16,31 @@ func SetupStructuredClone(runtime *goja.Runtime) {
 		}
 
 		value := call.Arguments[0]
-		
+
 		// 处理 null 和 undefined
 		if goja.IsNull(value) || goja.IsUndefined(value) {
 			return value
 		}
 
+		var transferList map[goja.ArrayBuffer]struct{}
+		if len(call.Arguments) >= 2 {
+			transferList = parseTransferList(runtime, call.Arguments[1])
+		}
+
 		// 深拷贝对象
-		return cloneValue(runtime, value, make(map[interface{}]goja.Value))
+		return cloneValue(runtime, value, make(map[interface{}]goja.Value), transferList)
 	})
 }
 
 // cloneValue 递归克隆值
-func cloneValue(runtime *goja.Runtime, value goja.Value, seen map[interface{}]goja.Value) goja.Value {
+func cloneValue(runtime *goja.Runtime, value goja.Value, seen map[interface{}]goja.Value, transfer map[goja.ArrayBuffer]struct{}) goja.Value {
 	// 处理原始类型（null, undefined, number, string, boolean）
 	if value == nil || goja.IsNull(value) || goja.IsUndefined(value) {
 		return value
+	}
+
+	if ab, ok := exportArrayBuffer(value); ok {
+		return cloneArrayBuffer(runtime, ab, transfer)
 	}
 
 	// 检查是否是原始类型（不是对象）
@@ -70,11 +79,33 @@ func cloneValue(runtime *goja.Runtime, value goja.Value, seen map[interface{}]go
 
 	// 处理数组
 	if isArray(runtime, obj) {
-		return cloneArray(runtime, obj, seen)
+		return cloneArray(runtime, obj, seen, transfer)
 	}
 
 	// 处理普通对象
-	return cloneObject(runtime, obj, seen)
+	return cloneObject(runtime, obj, seen, transfer)
+}
+
+func cloneArrayBuffer(runtime *goja.Runtime, ab goja.ArrayBuffer, transfer map[goja.ArrayBuffer]struct{}) goja.Value {
+	data := ab.Bytes()
+	if data != nil {
+		copied := make([]byte, len(data))
+		copy(copied, data)
+		cloned := runtime.NewArrayBuffer(copied)
+		if len(transfer) > 0 {
+			if _, ok := transfer[ab]; ok {
+				ab.Detach()
+			}
+		}
+		return runtime.ToValue(cloned)
+	}
+	cloned := runtime.NewArrayBuffer(nil)
+	if len(transfer) > 0 {
+		if _, ok := transfer[ab]; ok {
+			ab.Detach()
+		}
+	}
+	return runtime.ToValue(cloned)
 }
 
 // isBuffer 检查对象是否是 Buffer
@@ -162,7 +193,7 @@ func isArray(runtime *goja.Runtime, obj *goja.Object) bool {
 }
 
 // cloneArray 克隆数组
-func cloneArray(runtime *goja.Runtime, arr *goja.Object, seen map[interface{}]goja.Value) goja.Value {
+func cloneArray(runtime *goja.Runtime, arr *goja.Object, seen map[interface{}]goja.Value, transfer map[goja.ArrayBuffer]struct{}) goja.Value {
 	lengthVal := arr.Get("length")
 	if goja.IsUndefined(lengthVal) {
 		return goja.Undefined()
@@ -174,7 +205,7 @@ func cloneArray(runtime *goja.Runtime, arr *goja.Object, seen map[interface{}]go
 
 	for i := int64(0); i < length; i++ {
 		val := arr.Get(strconv.FormatInt(i, 10))
-		clonedVal := cloneValue(runtime, val, seen)
+		clonedVal := cloneValue(runtime, val, seen, transfer)
 		newArr.ToObject(runtime).Set(strconv.FormatInt(i, 10), clonedVal)
 	}
 
@@ -182,7 +213,7 @@ func cloneArray(runtime *goja.Runtime, arr *goja.Object, seen map[interface{}]go
 }
 
 // cloneObject 克隆普通对象
-func cloneObject(runtime *goja.Runtime, obj *goja.Object, seen map[interface{}]goja.Value) goja.Value {
+func cloneObject(runtime *goja.Runtime, obj *goja.Object, seen map[interface{}]goja.Value, transfer map[goja.ArrayBuffer]struct{}) goja.Value {
 	newObj := runtime.NewObject()
 	seen[obj] = newObj
 
@@ -190,9 +221,52 @@ func cloneObject(runtime *goja.Runtime, obj *goja.Object, seen map[interface{}]g
 	keys := obj.Keys()
 	for _, key := range keys {
 		val := obj.Get(key)
-		clonedVal := cloneValue(runtime, val, seen)
+		clonedVal := cloneValue(runtime, val, seen, transfer)
 		newObj.Set(key, clonedVal)
 	}
 
 	return newObj
+}
+
+func exportArrayBuffer(value goja.Value) (goja.ArrayBuffer, bool) {
+	if ab, ok := value.Export().(goja.ArrayBuffer); ok {
+		return ab, true
+	}
+	return goja.ArrayBuffer{}, false
+}
+
+func parseTransferList(runtime *goja.Runtime, options goja.Value) map[goja.ArrayBuffer]struct{} {
+	if goja.IsUndefined(options) || goja.IsNull(options) {
+		return nil
+	}
+
+	optObj := options.ToObject(runtime)
+	transferVal := optObj.Get("transfer")
+	if goja.IsUndefined(transferVal) || goja.IsNull(transferVal) {
+		return nil
+	}
+
+	transferObj := transferVal.ToObject(runtime)
+	lengthVal := transferObj.Get("length")
+	if goja.IsUndefined(lengthVal) {
+		return nil
+	}
+	length := lengthVal.ToInteger()
+	if length <= 0 {
+		return nil
+	}
+
+	result := make(map[goja.ArrayBuffer]struct{})
+	for i := int64(0); i < length; i++ {
+		item := transferObj.Get(strconv.FormatInt(i, 10))
+		if ab, ok := exportArrayBuffer(item); ok {
+			result[ab] = struct{}{}
+		}
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+
+	return result
 }

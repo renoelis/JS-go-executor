@@ -26,6 +26,90 @@ import (
 	"github.com/dop251/goja_nodejs/require"
 )
 
+const readableStreamConsumerJS = `
+(function (global) {
+  if (typeof global.__flowConsumeReadableStream === 'function') {
+    return;
+  }
+  function normalizeChunk(value) {
+    if (value == null) {
+      return new Uint8Array(0);
+    }
+    if (value instanceof Uint8Array) {
+      return value;
+    }
+    if (ArrayBuffer.isView(value)) {
+      return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    }
+    if (value instanceof ArrayBuffer) {
+      return new Uint8Array(value);
+    }
+    if (typeof value === 'string') {
+      if (typeof TextEncoder === 'undefined') {
+        var arr = new Uint8Array(value.length);
+        for (var i = 0; i < value.length; i++) {
+          arr[i] = value.charCodeAt(i) & 255;
+        }
+        return arr;
+      }
+      return new TextEncoder().encode(value);
+    }
+    return normalizeChunk(String(value));
+  }
+  async function collect(stream) {
+    if (!stream || typeof stream.getReader !== 'function') {
+      throw new TypeError('Body is not a ReadableStream');
+    }
+    const reader = stream.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+        const chunk = normalizeChunk(value);
+        if (chunk.length > 0) {
+          chunks.push(chunk);
+          total += chunk.length;
+        }
+      }
+    } finally {
+      if (reader && typeof reader.releaseLock === 'function') {
+        reader.releaseLock();
+      }
+    }
+    const result = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      result.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return result;
+  }
+  global.__flowConsumeReadableStream = function (stream, mode) {
+    return (async () => {
+      const bytes = await collect(stream);
+      if (mode === 'arrayBuffer') {
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      }
+      if (mode === 'blob') {
+        return new Blob([bytes]);
+      }
+      const decoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
+      const text = decoder
+        ? decoder.decode(bytes)
+        : Array.prototype.map.call(bytes, function (ch) { return String.fromCharCode(ch); }).join('');
+      if (mode === 'json') {
+        return JSON.parse(text || '');
+      }
+      return text;
+    })();
+  };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+`
+
 // ==================== FetchEnhancer ====================
 
 // FetchEnhancer Fetch 增强器（集成所有功能）
@@ -317,6 +401,7 @@ func (fe *FetchEnhancer) buildResponseDataFromConstructor(runtime *goja.Runtime,
 	var bodyBytes []byte
 	var contentType string
 	var hasBody bool
+	var jsReadableBody *goja.Object
 
 	if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) && !goja.IsNull(call.Arguments[0]) {
 		hasBody = true
@@ -326,6 +411,9 @@ func (fe *FetchEnhancer) buildResponseDataFromConstructor(runtime *goja.Runtime,
 		var bodyInput interface{}
 		if obj, ok := bodyVal.(*goja.Object); ok {
 			bodyInput = obj
+			if isReadableStreamObject(obj) {
+				jsReadableBody = obj
+			}
 		} else {
 			bodyInput = bodyVal.Export()
 		}
@@ -337,7 +425,7 @@ func (fe *FetchEnhancer) buildResponseDataFromConstructor(runtime *goja.Runtime,
 			err    error
 		)
 
-		if fe.bodyHandler != nil {
+		if jsReadableBody == nil && fe.bodyHandler != nil {
 			data, reader, ct, err = fe.bodyHandler.ProcessBody(runtime, bodyInput)
 			if err != nil {
 				return nil, fmt.Errorf("处理 Response body 失败: %w", err)
@@ -353,6 +441,8 @@ func (fe *FetchEnhancer) buildResponseDataFromConstructor(runtime *goja.Runtime,
 		}
 
 		switch {
+		case jsReadableBody != nil:
+			bodyBytes = nil
 		case data != nil:
 			bodyBytes = append([]byte(nil), data...)
 		default:
@@ -406,6 +496,7 @@ func (fe *FetchEnhancer) buildResponseDataFromConstructor(runtime *goja.Runtime,
 		ResponseType:  "default",
 		ContentLength: int64(len(bodyBytes)),
 	}
+	responseData.JSReadableBody = jsReadableBody
 
 	return responseData, nil
 }
@@ -1452,10 +1543,13 @@ func (fe *FetchEnhancer) recreateResponse(runtime *goja.Runtime, data *ResponseD
 
 	// 🔥 核心：Body 读取方法（支持流式和缓冲）
 	// 🔥 注意：clone() 方法在 attachStreamingBodyMethods 和 attachBufferedBodyMethods 中设置
-	if data.IsStreaming {
+	switch {
+	case data.JSReadableBody != nil:
+		fe.attachJSReadableStreamBody(runtime, respObj, data)
+	case data.IsStreaming:
 		// 流式响应（支持 clone）
 		fe.attachStreamingBodyMethods(runtime, respObj, data)
-	} else {
+	default:
 		// 缓冲响应
 		fe.attachBufferedBodyMethods(runtime, respObj, data)
 	}
@@ -1563,6 +1657,115 @@ func (fe *FetchEnhancer) createResponseHeaders(runtime *goja.Runtime, httpHeader
 	attachConstructorPrototype(runtime, "Headers", headersObj)
 
 	return headersObj
+}
+
+// attachJSReadableStreamBody 附加基于 ReadableStream 的 Body（Response 构造器）
+func (fe *FetchEnhancer) attachJSReadableStreamBody(runtime *goja.Runtime, respObj *goja.Object, data *ResponseData) {
+	streamObj := data.JSReadableBody
+	if streamObj == nil {
+		fe.attachBufferedBodyMethods(runtime, respObj, data)
+		return
+	}
+
+	currentStream := streamObj
+	respObj.Set("body", currentStream)
+	respObj.Set("bodyUsed", false)
+
+	var bodyConsumed bool
+	var bodyMutex sync.Mutex
+
+	markBodyUsed := func() error {
+		bodyMutex.Lock()
+		defer bodyMutex.Unlock()
+
+		if bodyConsumed {
+			return errors.New(bodyAlreadyUsedErrorMessage)
+		}
+		bodyConsumed = true
+		respObj.Set("bodyUsed", runtime.ToValue(true))
+		return nil
+	}
+
+	rejectPromise := func(err error) goja.Value {
+		promise, _, reject := runtime.NewPromise()
+		if exc, ok := err.(*goja.Exception); ok {
+			reject(exc.Value())
+		} else {
+			reject(runtime.NewGoError(err))
+		}
+		return runtime.ToValue(promise)
+	}
+
+	createMethod := func(mode string) func(goja.FunctionCall) goja.Value {
+		return func(call goja.FunctionCall) goja.Value {
+			if err := markBodyUsed(); err != nil {
+				return rejectPromise(err)
+			}
+
+			value, err := fe.consumeReadableStream(runtime, currentStream, mode)
+			if err != nil {
+				return rejectPromise(err)
+			}
+			return value
+		}
+	}
+
+	respObj.Set("text", createMethod("text"))
+	respObj.Set("json", createMethod("json"))
+	respObj.Set("arrayBuffer", createMethod("arrayBuffer"))
+	respObj.Set("blob", createMethod("blob"))
+
+	respObj.Set("clone", func(call goja.FunctionCall) goja.Value {
+		bodyMutex.Lock()
+		consumed := bodyConsumed
+		bodyMutex.Unlock()
+		if consumed {
+			panic(runtime.NewTypeError(responseCloneConsumedMessage))
+		}
+
+		teeVal := currentStream.Get("tee")
+		teeFunc, ok := goja.AssertFunction(teeVal)
+		if !ok {
+			panic(runtime.NewTypeError("ReadableStream.tee is not available"))
+		}
+
+		result, err := teeFunc(currentStream)
+		if err != nil {
+			panic(err)
+		}
+		branches := result.ToObject(runtime)
+		if branches == nil {
+			panic(runtime.NewTypeError("ReadableStream.tee returned invalid result"))
+		}
+
+		firstVal := branches.Get("0")
+		secondVal := branches.Get("1")
+		first := firstVal.ToObject(runtime)
+		second := secondVal.ToObject(runtime)
+		if first == nil || second == nil {
+			panic(runtime.NewTypeError("ReadableStream.tee returned invalid branches"))
+		}
+
+		currentStream = first
+		respObj.Set("body", currentStream)
+
+		clonedData := &ResponseData{
+			StatusCode:     data.StatusCode,
+			Status:         data.Status,
+			Headers:        data.Headers.Clone(),
+			Body:           nil,
+			IsStreaming:    false,
+			FinalURL:       data.FinalURL,
+			Redirected:     data.Redirected,
+			ResponseType:   data.ResponseType,
+			ContentLength:  data.ContentLength,
+			AbortCh:        data.AbortCh,
+			Signal:         data.Signal,
+			JSReadableBody: second,
+		}
+
+		return fe.recreateResponse(runtime, clonedData)
+	})
 }
 
 // ==================== 流式响应处理 ====================
@@ -2421,7 +2624,45 @@ func (fe *FetchEnhancer) createBodyWrapper(body io.ReadCloser, contentLength int
 	return CreateBodyWithCancel(body, contentLength, fe.config.ResponseReadTimeout, fe.config.ResponseBodyIdleTimeout, cancel)
 }
 
+func (fe *FetchEnhancer) getReadableStreamConsumer(runtime *goja.Runtime) (goja.Callable, error) {
+	fnVal := runtime.Get("__flowConsumeReadableStream")
+	if fnVal == nil || goja.IsUndefined(fnVal) || goja.IsNull(fnVal) {
+		if _, err := runtime.RunString(readableStreamConsumerJS); err != nil {
+			return nil, err
+		}
+		fnVal = runtime.Get("__flowConsumeReadableStream")
+	}
+	fn, ok := goja.AssertFunction(fnVal)
+	if !ok {
+		return nil, fmt.Errorf("__flowConsumeReadableStream is not callable")
+	}
+	return fn, nil
+}
+
+func (fe *FetchEnhancer) consumeReadableStream(runtime *goja.Runtime, stream *goja.Object, mode string) (goja.Value, error) {
+	if stream == nil {
+		return nil, fmt.Errorf("ReadableStream body is nil")
+	}
+	consumeFn, err := fe.getReadableStreamConsumer(runtime)
+	if err != nil {
+		return nil, err
+	}
+	return consumeFn(goja.Undefined(), stream, runtime.ToValue(mode))
+}
+
 // ==================== 辅助方法 ====================
+
+func isReadableStreamObject(obj *goja.Object) bool {
+	if obj == nil {
+		return false
+	}
+	getReaderVal := obj.Get("getReader")
+	if getReaderVal == nil || goja.IsUndefined(getReaderVal) || goja.IsNull(getReaderVal) {
+		return false
+	}
+	_, ok := goja.AssertFunction(getReaderVal)
+	return ok
+}
 
 // extractBufferBytes 从 Buffer 对象提取字节数据
 // 🔥 用于 Node.js FormData 的 getBuffer() 方法返回值

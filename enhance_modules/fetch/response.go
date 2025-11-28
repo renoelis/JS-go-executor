@@ -30,18 +30,19 @@ import (
 //   - 已知大小时预分配确切缓冲区（避免 io.ReadAll 的多次扩容）
 //   - 未知大小时使用动态扩容策略
 type ResponseData struct {
-	StatusCode    int           // HTTP 状态码
-	Status        string        // HTTP 状态文本（如 "200 OK"）
-	Headers       http.Header   // HTTP 响应头
-	Body          []byte        // 非流式模式使用（缓冲读取）
-	BodyStream    io.ReadCloser // 流式模式使用（流式读取）
-	IsStreaming   bool          // 是否为流式模式
-	FinalURL      string        // 最终 URL（重定向后）
-	Redirected    bool          // 是否跟随过重定向
-	ResponseType  string        // WHATWG Response.type
-	ContentLength int64         // 响应的 Content-Length（用于智能预分配，-1表示未知）
-	AbortCh       chan struct{} // 🔥 关联的 abort channel（用于流式读取时中止）
-	Signal        *goja.Object  // 🔥 原始 AbortSignal 对象（用于获取 reason）
+	StatusCode     int           // HTTP 状态码
+	Status         string        // HTTP 状态文本（如 "200 OK"）
+	Headers        http.Header   // HTTP 响应头
+	Body           []byte        // 非流式模式使用（缓冲读取）
+	BodyStream     io.ReadCloser // 流式模式使用（流式读取）
+	IsStreaming    bool          // 是否为流式模式
+	FinalURL       string        // 最终 URL（重定向后）
+	Redirected     bool          // 是否跟随过重定向
+	ResponseType   string        // WHATWG Response.type
+	ContentLength  int64         // 响应的 Content-Length（用于智能预分配，-1表示未知）
+	AbortCh        chan struct{} // 🔥 关联的 abort channel（用于流式读取时中止）
+	Signal         *goja.Object  // 🔥 原始 AbortSignal 对象（用于获取 reason）
+	JSReadableBody *goja.Object  // 🔥 Response 构造时传入的 ReadableStream body
 }
 
 // ==================== 缓冲读取函数 ====================
