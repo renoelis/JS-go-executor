@@ -13,7 +13,6 @@ import (
 	"flow-codeblock-go/config"
 	"flow-codeblock-go/enhance_modules"
 	buffer "flow-codeblock-go/enhance_modules/buffer"
-	nativecrypto "flow-codeblock-go/enhance_modules/crypto"
 
 	// "flow-codeblock-go/enhance_modules/crypto"
 	// "flow-codeblock-go/enhance_modules/pinyin"
@@ -32,48 +31,6 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
 )
-
-const textEncoderStreamPolyfill = `
-(function (global) {
-  if (typeof global.TransformStream !== 'function') {
-    return;
-  }
-  if (typeof global.TextEncoderStream !== 'function') {
-    global.TextEncoderStream = class TextEncoderStream {
-      constructor() {
-        const encoder = new TextEncoder();
-        const transform = new TransformStream({
-          transform(chunk, controller) {
-            controller.enqueue(encoder.encode(typeof chunk === 'string' ? chunk : String(chunk || '')));
-          }
-        });
-        this.readable = transform.readable;
-        this.writable = transform.writable;
-      }
-    };
-  }
-  if (typeof global.TextDecoderStream !== 'function') {
-    global.TextDecoderStream = class TextDecoderStream {
-      constructor(label, options) {
-        const decoder = new TextDecoder(label || 'utf-8', options || {});
-        const transform = new TransformStream({
-          transform(chunk, controller) {
-            controller.enqueue(decoder.decode(chunk, { stream: true }));
-          },
-          flush(controller) {
-            const remainder = decoder.decode();
-            if (remainder) {
-              controller.enqueue(remainder);
-            }
-          }
-        });
-        this.readable = transform.readable;
-        this.writable = transform.writable;
-      }
-    };
-  }
-})(typeof globalThis !== 'undefined' ? globalThis : this);
-`
 
 // gcThrottler GC 节流器，防止 GC 风暴
 // 🔥 使用 channel 限制并发 GC 数量（最多 1 个）
@@ -1211,80 +1168,8 @@ func (e *JSExecutor) registerBase64Functions(runtime *goja.Runtime) {
 
 // registerTextEncoders 注册 TextEncoder 和 TextDecoder（Node.js 兼容）
 func (e *JSExecutor) registerTextEncoders(runtime *goja.Runtime) {
-	// TextEncoder 构造函数（纯 Go 实现）
-	textEncoderConstructor := func(call goja.ConstructorCall) *goja.Object {
-		obj := call.This
-		obj.Set("encoding", "utf-8")
-
-		// encode 方法
-		obj.Set("encode", func(call goja.FunctionCall) goja.Value {
-			var input string
-			if len(call.Arguments) > 0 && !goja.IsUndefined(call.Argument(0)) && !goja.IsNull(call.Argument(0)) {
-				input = call.Argument(0).String()
-			}
-
-			// UTF-8 编码
-			bytes := []byte(input)
-
-			// 创建普通数组
-			arr := runtime.NewArray()
-			for i, b := range bytes {
-				arr.Set(fmt.Sprintf("%d", i), runtime.ToValue(int(b)))
-			}
-
-			// 使用 Uint8Array 构造函数
-			uint8ArrayVal := runtime.Get("Uint8Array")
-			if uint8ArrayObj, ok := uint8ArrayVal.(*goja.Object); ok && uint8ArrayObj != nil {
-				if result, err := runtime.New(uint8ArrayObj, arr); err == nil {
-					return result
-				}
-			}
-
-			// 降级：返回普通数组
-			return arr
-		})
-
-		return nil
-	}
-
-	// TextDecoder 构造函数（纯 Go 实现）
-	textDecoderConstructor := func(call goja.ConstructorCall) *goja.Object {
-		obj := call.This
-		encoding := "utf-8"
-		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Argument(0)) && !goja.IsNull(call.Argument(0)) {
-			encoding = call.Argument(0).String()
-		}
-		obj.Set("encoding", encoding)
-
-		// decode 方法
-		obj.Set("decode", func(call goja.FunctionCall) goja.Value {
-			if len(call.Arguments) == 0 {
-				return runtime.ToValue("")
-			}
-
-			input := call.Argument(0)
-			if goja.IsUndefined(input) || goja.IsNull(input) {
-				return runtime.ToValue("")
-			}
-
-			// 统一使用 WebCrypto 中的 BufferSource 转字节实现，避免 nil 指针问题
-			bytes, err := nativecrypto.ConvertToBytes(runtime, input)
-			if err != nil || bytes == nil {
-				// 对于不支持的类型，返回空字符串而不是 panic
-				return runtime.ToValue("")
-			}
-
-			// UTF-8 解码
-			return runtime.ToValue(string(bytes))
-		})
-
-		return nil
-	}
-
-	// 注册到全局作用域
-	runtime.Set("TextEncoder", textEncoderConstructor)
-	runtime.Set("TextDecoder", textDecoderConstructor)
-	_, _ = runtime.RunString(textEncoderStreamPolyfill)
+	// 使用独立模块的实现
+	RegisterTextEncoders(runtime)
 }
 
 // registerProcessHrtime 注册 process.hrtime API（Node.js 兼容）
