@@ -1994,11 +1994,120 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 	// 🔥 创建自定义 body 对象（包装 StreamingResponse.GetReader()）
 	bodyObj := runtime.NewObject()
 	streams.AttachReadableStreamPrototype(runtime, bodyObj)
-	innerReader := streamingResponse.GetReader()
+	bodyObj.Set("__streamReader", streamReader)
+
+	var bodyLocked bool
+	var bodyLockOwnerID uint64
+	var bodyLockCounter uint64
+	var bodyLockMutex sync.Mutex
+
+	// 🔥 bodyUsed 状态
+	var bodyConsumed bool
+	var bodyUsedMutex sync.Mutex
+
+	markBodyUsed := func() bool {
+		bodyUsedMutex.Lock()
+		defer bodyUsedMutex.Unlock()
+
+		if bodyConsumed {
+			return false
+		}
+		bodyConsumed = true
+		setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", true)
+		return true
+	}
+
+	releaseAllLocks := func() {
+		bodyLockMutex.Lock()
+		bodyLocked = false
+		bodyLockOwnerID = 0
+		bodyObj.Set("locked", false)
+		bodyLockMutex.Unlock()
+	}
+
+	releaseReaderByID := func(ownerID uint64) {
+		bodyLockMutex.Lock()
+		if bodyLocked && bodyLockOwnerID == ownerID {
+			bodyLocked = false
+			bodyLockOwnerID = 0
+			bodyObj.Set("locked", false)
+		}
+		bodyLockMutex.Unlock()
+	}
 
 	// getReader() 方法
 	bodyObj.Set("getReader", func(call goja.FunctionCall) goja.Value {
-		return innerReader
+		bodyLockMutex.Lock()
+		if bodyLocked {
+			bodyLockMutex.Unlock()
+			panic(runtime.NewTypeError("ReadableStream is already locked"))
+		}
+		bodyLocked = true
+		bodyLockCounter++
+		currentReaderID := bodyLockCounter
+		bodyLockOwnerID = currentReaderID
+		bodyObj.Set("locked", true)
+		bodyLockMutex.Unlock()
+
+		reader := streamingResponse.GetReader()
+		if reader == nil {
+			releaseReaderByID(currentReaderID)
+			panic(runtime.NewTypeError("Failed to acquire ReadableStream reader"))
+		}
+
+		releaseReader := func() {
+			releaseReaderByID(currentReaderID)
+		}
+
+		if readVal := reader.Get("read"); readVal != nil {
+			if readFunc, ok := goja.AssertFunction(readVal); ok {
+				reader.Set("read", func(call goja.FunctionCall) goja.Value {
+					markBodyUsed()
+					result, err := readFunc(call.This, call.Arguments...)
+					if err != nil {
+						panic(err)
+					}
+					return result
+				})
+			}
+		}
+
+		if cancelVal := reader.Get("cancel"); cancelVal != nil {
+			if cancelFunc, ok := goja.AssertFunction(cancelVal); ok {
+				reader.Set("cancel", func(call goja.FunctionCall) goja.Value {
+					defer releaseReader()
+					markBodyUsed()
+					result, err := cancelFunc(call.This, call.Arguments...)
+					if err != nil {
+						panic(err)
+					}
+					return result
+				})
+			}
+		}
+
+		reader.Set("releaseLock", func(call goja.FunctionCall) goja.Value {
+			releaseReader()
+			return goja.Undefined()
+		})
+
+		if closedVal := reader.Get("closed"); closedVal != nil && !goja.IsUndefined(closedVal) && !goja.IsNull(closedVal) {
+			if closedObj := closedVal.ToObject(runtime); closedObj != nil {
+				if thenVal := closedObj.Get("then"); thenVal != nil {
+					if thenFunc, ok := goja.AssertFunction(thenVal); ok {
+						releaseCallback := runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+							releaseReader()
+							return goja.Undefined()
+						})
+						if _, err := thenFunc(closedObj, releaseCallback, releaseCallback); err != nil {
+							panic(err)
+						}
+					}
+				}
+			}
+		}
+
+		return reader
 	})
 
 	// cancel() 方法 - 设置取消标志并关闭流
@@ -2008,9 +2117,11 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 		cancelledMutex.Lock()
 		cancelled = true
 		cancelledMutex.Unlock()
+		markBodyUsed()
 
 		// 关闭底层流
 		closeStreaming()
+		releaseAllLocks()
 
 		resolve(goja.Undefined())
 		return runtime.ToValue(promise)
@@ -2020,7 +2131,6 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 	bodyObj.Set("locked", false)
 
 	respObj.Set("body", bodyObj)
-
 	// 🔥 数据缓存机制（确保只读取一次）
 	var cachedData []byte
 	var cacheError error
@@ -2101,10 +2211,6 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 		cacheMutex.Unlock()
 	}
 
-	// 🔥 bodyUsed 状态
-	var bodyConsumed bool
-	var bodyUsedMutex sync.Mutex
-
 	// 🔥 P1 优化: 自动清理机制 - 使用可停止的 timer
 	// 在 ResponseBodyIdleTimeout 内完全未读取任何数据时关闭流，防止长时间占用连接
 	autoCleanupTimeout := fe.config.ResponseBodyIdleTimeout
@@ -2171,14 +2277,9 @@ func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respO
 
 	// 检查并标记 body 为已使用
 	checkAndMarkBodyUsed := func() error {
-		bodyUsedMutex.Lock()
-		defer bodyUsedMutex.Unlock()
-
-		if bodyConsumed {
+		if !markBodyUsed() {
 			return errors.New(bodyAlreadyUsedErrorMessage)
 		}
-		bodyConsumed = true
-		setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", true)
 		return nil
 	}
 
@@ -2488,6 +2589,18 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 	var bodyConsumed bool
 	var bodyUsedMutex sync.Mutex
 
+	markBodyUsed := func() bool {
+		bodyUsedMutex.Lock()
+		defer bodyUsedMutex.Unlock()
+
+		if bodyConsumed {
+			return false
+		}
+		bodyConsumed = true
+		setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", true)
+		return true
+	}
+
 	// 🔥 取消状态（与流式模式保持一致）
 	var cancelled bool
 	var cancelledMutex sync.RWMutex
@@ -2512,14 +2625,9 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 
 	// 检查并标记 body 为已使用
 	checkAndMarkBodyUsed := func() error {
-		bodyUsedMutex.Lock()
-		defer bodyUsedMutex.Unlock()
-
-		if bodyConsumed {
+		if !markBodyUsed() {
 			return errors.New(bodyAlreadyUsedErrorMessage)
 		}
-		bodyConsumed = true
-		setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", true)
 		return nil
 	}
 
@@ -2626,10 +2734,58 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 	bodyObj := runtime.NewObject()
 	streams.AttachReadableStreamPrototype(runtime, bodyObj)
 
+	var bodyLocked bool
+	var bodyLockOwnerID uint64
+	var bodyLockCounter uint64
+	var bodyLockMutex sync.Mutex
+
+	releaseAllLocks := func() {
+		bodyLockMutex.Lock()
+		bodyLocked = false
+		bodyLockOwnerID = 0
+		bodyObj.Set("locked", false)
+		bodyLockMutex.Unlock()
+	}
+
+	releaseReaderByID := func(ownerID uint64) {
+		bodyLockMutex.Lock()
+		if bodyLocked && bodyLockOwnerID == ownerID {
+			bodyLocked = false
+			bodyLockOwnerID = 0
+			bodyObj.Set("locked", false)
+		}
+		bodyLockMutex.Unlock()
+	}
+
 	// getReader() 方法
 	bodyObj.Set("getReader", func(call goja.FunctionCall) goja.Value {
+		if isBodyConsumed() {
+			panic(runtime.NewTypeError(bodyAlreadyUsedErrorMessage))
+		}
+
+		bodyLockMutex.Lock()
+		if bodyLocked {
+			bodyLockMutex.Unlock()
+			panic(runtime.NewTypeError("ReadableStream is already locked"))
+		}
+		bodyLocked = true
+		bodyLockCounter++
+		currentReaderID := bodyLockCounter
+		bodyLockOwnerID = currentReaderID
+		bodyObj.Set("locked", true)
+		bodyLockMutex.Unlock()
+
 		reader := runtime.NewObject()
 		localIndex := 0
+		closedPromise, resolveClosedPromise, _ := runtime.NewPromise()
+		var closeOnce sync.Once
+		closeReader := func() {
+			closeOnce.Do(func() {
+				resolveClosedPromise(goja.Undefined())
+				releaseReaderByID(currentReaderID)
+			})
+		}
+		reader.Set("closed", closedPromise)
 
 		// read() 方法
 		reader.Set("read", func(call goja.FunctionCall) goja.Value {
@@ -2648,6 +2804,8 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 				return runtime.ToValue(promise)
 			}
 
+			markBodyUsed()
+
 			if localIndex < len(bodyData) {
 				// 返回所有数据（一次性）
 				uint8Array := runtime.NewArrayBuffer(bodyData[localIndex:])
@@ -2657,6 +2815,7 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 			} else {
 				result.Set("value", goja.Undefined())
 				result.Set("done", true)
+				closeReader()
 			}
 
 			resolve(result)
@@ -2667,15 +2826,17 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 		reader.Set("cancel", func(call goja.FunctionCall) goja.Value {
 			promise, resolve, _ := runtime.NewPromise()
 			localIndex = len(bodyData) // 标记为已消费
+			markBodyUsed()
 			markCancelled()
+			closeReader()
 			resolve(goja.Undefined())
 			return runtime.ToValue(promise)
 		})
 
-		// closed 属性
-		closedPromise, resolveClosedPromise, _ := runtime.NewPromise()
-		resolveClosedPromise(goja.Undefined())
-		reader.Set("closed", closedPromise)
+		reader.Set("releaseLock", func(call goja.FunctionCall) goja.Value {
+			releaseReaderByID(currentReaderID)
+			return goja.Undefined()
+		})
 
 		return reader
 	})
@@ -2683,7 +2844,9 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 	// cancel() 方法
 	bodyObj.Set("cancel", func(call goja.FunctionCall) goja.Value {
 		promise, resolve, _ := runtime.NewPromise()
+		markBodyUsed()
 		markCancelled()
+		releaseAllLocks()
 		resolve(goja.Undefined())
 		return runtime.ToValue(promise)
 	})
