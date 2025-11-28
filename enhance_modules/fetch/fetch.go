@@ -2814,9 +2814,8 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 			markBodyUsed()
 
 			if localIndex < len(bodyData) {
-				// 返回所有数据（一次性）
-				uint8Array := runtime.NewArrayBuffer(bodyData[localIndex:])
-				result.Set("value", runtime.ToValue(uint8Array))
+				// 返回所有数据（一次性，chunk 类型保持与 Node fetch 一致）
+				result.Set("value", createUint8ArrayValue(runtime, bodyData[localIndex:]))
 				result.Set("done", false)
 				localIndex = len(bodyData)
 			} else {

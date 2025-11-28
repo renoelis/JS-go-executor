@@ -38,6 +38,27 @@ func ensureASCIIHeaderValue(runtime *goja.Runtime, value string) {
 	}
 }
 
+// createUint8ArrayValue 将 Go 字节切片包装成 Uint8Array（与 Node fetch 行为一致）
+// - 优先使用全局 Uint8Array 构造器
+// - 如果不可用，则回退为 ArrayBuffer
+func createUint8ArrayValue(runtime *goja.Runtime, data []byte) goja.Value {
+	if runtime == nil {
+		return goja.Undefined()
+	}
+
+	arrayBuffer := runtime.NewArrayBuffer(data)
+	uint8ArrayCtor := runtime.Get("Uint8Array")
+	if uint8ArrayCtor != nil && !goja.IsUndefined(uint8ArrayCtor) && !goja.IsNull(uint8ArrayCtor) {
+		if ctor, ok := goja.AssertConstructor(uint8ArrayCtor); ok {
+			if typedArray, err := ctor(nil, runtime.ToValue(arrayBuffer)); err == nil {
+				return typedArray
+			}
+		}
+	}
+
+	return runtime.ToValue(arrayBuffer)
+}
+
 // ==================== 注释说明 ====================
 // 🔥 设计原则：
 //

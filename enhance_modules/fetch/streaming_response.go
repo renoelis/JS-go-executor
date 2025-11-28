@@ -218,10 +218,9 @@ func (sr *StreamingResponse) readNextChunk() {
 			}
 		}
 
-		// 🔥 降级方案：如果无法创建 Buffer，创建 Uint8Array
+		// 🔥 降级方案：如果无法创建 Buffer，返回 Uint8Array（与 Node fetch 一致）
 		if dataValue == nil || goja.IsUndefined(dataValue) {
-			arrayBuffer := sr.runtime.NewArrayBuffer(data)
-			dataValue = sr.runtime.ToValue(arrayBuffer)
+			dataValue = createUint8ArrayValue(sr.runtime, data)
 		}
 
 		// 触发 data 事件
@@ -360,8 +359,7 @@ func (sr *StreamingResponse) handleReadResult(resolve, reject func(interface{}) 
 		result.Set("done", true)
 		_ = sr.Close()
 	} else {
-		uint8Array := sr.runtime.NewArrayBuffer(data)
-		result.Set("value", sr.runtime.ToValue(uint8Array))
+		result.Set("value", createUint8ArrayValue(sr.runtime, data))
 		result.Set("done", false)
 	}
 	_ = resolve(result)
