@@ -20,6 +20,101 @@ const symbolAsyncIteratorPolyfill = `
 })();
 `
 
+const writableStreamControllerSignalPatchJS = `
+(function () {
+  if (typeof WritableStream !== 'function' ||
+      typeof WritableStreamDefaultController !== 'function' ||
+      typeof WritableStreamDefaultWriter !== 'function' ||
+      typeof AbortController !== 'function') {
+    return;
+  }
+
+  var controllerSignalMap = new WeakMap();
+
+  function ensureAbortController(controller) {
+    if (!controller) {
+      return undefined;
+    }
+    var record = controllerSignalMap.get(controller);
+    if (!record) {
+      var abortController = new AbortController();
+      record = { controller: abortController, aborted: false };
+      controllerSignalMap.set(controller, record);
+    }
+    return record.controller;
+  }
+
+  function getControllerFromStream(stream) {
+    if (!stream || typeof stream !== 'object') {
+      return undefined;
+    }
+    try {
+      if (stream._writableStreamController) {
+        return stream._writableStreamController;
+      }
+    } catch (err) {}
+    return undefined;
+  }
+
+  function getStreamFromWriter(writer) {
+    if (!writer || typeof writer !== 'object') {
+      return undefined;
+    }
+    try {
+      if (writer._ownerWritableStream) {
+        return writer._ownerWritableStream;
+      }
+    } catch (err) {}
+    return undefined;
+  }
+
+  function abortSignalForStream(stream, reason) {
+    var controller = getControllerFromStream(stream);
+    if (!controller) {
+      return;
+    }
+    var abortController = ensureAbortController(controller);
+    if (!abortController) {
+      return;
+    }
+    var record = controllerSignalMap.get(controller);
+    if (record && record.aborted) {
+      return;
+    }
+    if (record) {
+      record.aborted = true;
+    }
+    try {
+      abortController.abort(reason);
+    } catch (err) {}
+  }
+
+  var descriptor = Object.getOwnPropertyDescriptor(WritableStreamDefaultController.prototype, 'signal');
+  if (!descriptor || typeof descriptor.get !== 'function') {
+    Object.defineProperty(WritableStreamDefaultController.prototype, 'signal', {
+      configurable: true,
+      enumerable: true,
+      get: function () {
+        var abortController = ensureAbortController(this);
+        return abortController ? abortController.signal : undefined;
+      }
+    });
+  }
+
+  var originalStreamAbort = WritableStream.prototype.abort;
+  WritableStream.prototype.abort = function (reason) {
+    abortSignalForStream(this, reason);
+    return originalStreamAbort.call(this, reason);
+  };
+
+  var originalWriterAbort = WritableStreamDefaultWriter.prototype.abort;
+  WritableStreamDefaultWriter.prototype.abort = function (reason) {
+    abortSignalForStream(getStreamFromWriter(this), reason);
+    return originalWriterAbort.call(this, reason);
+  };
+})();
+`
+
 // EnsureReadableStream 确保全局存在 ReadableStream 构造器（最小可用 polyfill）
 // Node.js v25 已内置 Web Streams API；Goja 环境需要手动注入，避免 Blob.stream() 等
 // 调用时出现 ReadableStream 未定义的错误。
@@ -32,22 +127,24 @@ func EnsureReadableStream(runtime *goja.Runtime) error {
 		return fmt.Errorf("初始化 Symbol.asyncIterator 失败: %w", err)
 	}
 
-	// 已存在且具有 prototype -> 直接复用
-	if hasReadableStream(runtime) {
-		return nil
-	}
-
-	if readableStreamPolyfillJS == "" {
-		return fmt.Errorf("ReadableStream polyfill 资源未内置")
-	}
-
-	if _, err := runtime.RunString(readableStreamPolyfillJS); err != nil {
-		return fmt.Errorf("注入 ReadableStream polyfill 失败: %w", err)
-	}
-
 	if !hasReadableStream(runtime) {
-		return fmt.Errorf("ReadableStream polyfill 注入后仍不可用")
+		if readableStreamPolyfillJS == "" {
+			return fmt.Errorf("ReadableStream polyfill 资源未内置")
+		}
+
+		if _, err := runtime.RunString(readableStreamPolyfillJS); err != nil {
+			return fmt.Errorf("注入 ReadableStream polyfill 失败: %w", err)
+		}
+
+		if !hasReadableStream(runtime) {
+			return fmt.Errorf("ReadableStream polyfill 注入后仍不可用")
+		}
 	}
+
+	if _, err := runtime.RunString(writableStreamControllerSignalPatchJS); err != nil {
+		return fmt.Errorf("注入 WritableStream signal polyfill 失败: %w", err)
+	}
+
 	return nil
 }
 
