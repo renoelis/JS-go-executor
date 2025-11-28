@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 
 	"flow-codeblock-go/enhance_modules/internal/blob"
 	"flow-codeblock-go/enhance_modules/internal/body"
@@ -466,6 +467,29 @@ func isNullBodyStatus(status int) bool {
 	}
 }
 
+func parseResponseStatusText(value goja.Value) (string, error) {
+	if value == nil {
+		return "", nil
+	}
+
+	statusText := value.String()
+	if statusText == "" {
+		return "", nil
+	}
+
+	codeUnits := utf16.Encode([]rune(statusText))
+	for idx, cu := range codeUnits {
+		if cu > 255 {
+			return "", fmt.Errorf("Cannot convert argument to a ByteString because the character at index %d has a value of %d which is greater than 255.", idx, cu)
+		}
+		if (cu <= 31 && cu != 9) || cu == 127 {
+			return "", fmt.Errorf("Invalid statusText")
+		}
+	}
+
+	return statusText, nil
+}
+
 func (fe *FetchEnhancer) buildResponseDataFromConstructor(runtime *goja.Runtime, call goja.ConstructorCall) (*ResponseData, error) {
 	status := 200
 	statusText := ""
@@ -575,7 +599,11 @@ func (fe *FetchEnhancer) buildResponseDataFromConstructor(runtime *goja.Runtime,
 		}
 
 		if statusTextVal := initObj.Get("statusText"); statusTextVal != nil && !goja.IsUndefined(statusTextVal) && !goja.IsNull(statusTextVal) {
-			statusText = statusTextVal.String()
+			parsedStatusText, err := parseResponseStatusText(statusTextVal)
+			if err != nil {
+				return nil, err
+			}
+			statusText = parsedStatusText
 		}
 
 		if headersVal := initObj.Get("headers"); headersVal != nil && !goja.IsUndefined(headersVal) && !goja.IsNull(headersVal) {
