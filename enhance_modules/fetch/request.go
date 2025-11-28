@@ -30,6 +30,20 @@ type FetchRequest struct {
 	signalObj *goja.Object           // 🔥 AbortSignal 对象（用于获取 reason）
 }
 
+// prefetchedReadCloser 将已预读的数据与原始 Body 组合在一起
+// 用于在缓冲失败时回退到流式模式，确保已经读取的数据不会丢失
+type prefetchedReadCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (p *prefetchedReadCloser) Close() error {
+	if p.closer != nil {
+		return p.closer.Close()
+	}
+	return nil
+}
+
 // FetchResult 表示请求结果
 type FetchResult struct {
 	response    *ResponseData // 响应数据
@@ -453,12 +467,19 @@ func ExecuteRequestAsync(
 
 		// 🔥 判断是否使用缓冲模式或流式模式
 		// 策略：
-		// 1. 已知 Content-Length 且 <= MaxResponseSize 时才尝试缓冲
-		// 2. 其他情况（未知长度或已知大于限制）直接走流式，保持旧行为
-		shouldTryBuffering := resp.ContentLength > 0 && resp.ContentLength <= config.MaxResponseSize
-		// 使用 AbortSignal 时强制走流式，确保响应体可以被取消（与 Node fetch 对齐）
-		if req.signalObj != nil {
-			shouldTryBuffering = false
+		// 1. Content-Length 已知且 <= MaxResponseSize：直接缓冲
+		// 2. Content-Length 未知/<=0：尝试缓冲，读取过程中使用 LimitReader 控制上限
+		// 3. 其他情况（明确超过限制）走流式，保持旧行为
+		shouldTryBuffering := false
+		if config.MaxResponseSize > 0 && req.signalObj == nil {
+			switch {
+			case resp.ContentLength > 0:
+				shouldTryBuffering = resp.ContentLength <= config.MaxResponseSize
+			case resp.ContentLength == 0:
+				shouldTryBuffering = true
+			default: // Content-Length < 0（未知，例如 chunked 编码）
+				shouldTryBuffering = true
+			}
 		}
 
 		// 🔥 请求成功：创建响应
@@ -499,41 +520,58 @@ func ExecuteRequestAsync(
 			return
 		}
 
+		var bufferedBody []byte
+		bodyForStreaming := resp.Body
+
 		if shouldTryBuffering {
 			// 尝试缓冲模式：读取最多 MaxResponseSize+1 字节
-			bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, config.MaxResponseSize+1))
+			limitedReader := io.LimitReader(resp.Body, config.MaxResponseSize+1)
+			bodyBytes, readErr := io.ReadAll(limitedReader)
 			if readErr != nil {
 				req.resultCh <- FetchResult{nil, fmt.Errorf("读取响应失败: %w", readErr), nil}
 				return
 			}
 
-			// 检查是否超过限制
 			if int64(len(bodyBytes)) > config.MaxResponseSize {
-				sizeMB := float64(len(bodyBytes)) / 1024 / 1024
-				limitMB := float64(config.MaxResponseSize) / 1024 / 1024
-				req.resultCh <- FetchResult{
-					nil,
-					fmt.Errorf(
-						"响应大小超过缓冲限制: %d 字节 (%.3fMB) > %d 字节 (%.2fMB)",
-						len(bodyBytes), sizeMB, config.MaxResponseSize, limitMB,
-					),
-					nil,
+				// Content-Length 未知时，超出限制则回退到流式模式：将已读取的数据重新拼接回去
+				if resp.ContentLength <= 0 {
+					bodyForStreaming = &prefetchedReadCloser{
+						Reader: io.MultiReader(bytes.NewReader(bodyBytes), resp.Body),
+						closer: resp.Body,
+					}
+					bufferedBody = nil
+				} else {
+					// 已知 Content-Length 的响应超过限制，直接报错（保持旧行为）
+					sizeMB := float64(len(bodyBytes)) / 1024 / 1024
+					limitMB := float64(config.MaxResponseSize) / 1024 / 1024
+					req.resultCh <- FetchResult{
+						nil,
+						fmt.Errorf(
+							"响应大小超过缓冲限制: %d 字节 (%.3fMB) > %d 字节 (%.2fMB)",
+							len(bodyBytes), sizeMB, config.MaxResponseSize, limitMB,
+						),
+						nil,
+					}
+					return
 				}
-				return
+			} else {
+				bufferedBody = bodyBytes
 			}
+		}
 
+		if bufferedBody != nil {
 			// 发送缓冲响应
 			req.resultCh <- FetchResult{
 				response: &ResponseData{
 					StatusCode:    resp.StatusCode,
 					Status:        statusText,
 					Headers:       resp.Header,
-					Body:          bodyBytes,
+					Body:          bufferedBody,
 					IsStreaming:   false, // 缓冲模式
 					FinalURL:      resp.Request.URL.String(),
 					Redirected:    redirected,
 					ResponseType:  responseType,
-					ContentLength: int64(len(bodyBytes)),
+					ContentLength: int64(len(bufferedBody)),
 					AbortCh:       req.abortCh,
 					Signal:        req.signalObj,
 				},
@@ -546,8 +584,8 @@ func ExecuteRequestAsync(
 			shouldCancelContext = true
 
 		} else {
-			// 流式模式：已知大小 > MaxResponseSize，使用 bodyWrapper
-			bodyWrapper := createBodyWrapper(resp.Body, resp.ContentLength, config.ResponseReadTimeout, reqCancel)
+			// 流式模式：已知大小 > MaxResponseSize 或 Content-Length 未知但超过限制
+			bodyWrapper := createBodyWrapper(bodyForStreaming, resp.ContentLength, config.ResponseReadTimeout, reqCancel)
 
 			req.resultCh <- FetchResult{
 				response: &ResponseData{

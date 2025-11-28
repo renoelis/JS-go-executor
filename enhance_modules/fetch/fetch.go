@@ -113,6 +113,60 @@ const readableStreamConsumerJS = `
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 `
 
+const requestStreamHelperJS = `
+(function (global) {
+  if (typeof global.__flowPipeReadableStream === 'function') {
+    return;
+  }
+
+  function normalizeChunk(value) {
+    if (value == null) {
+      return new Uint8Array(0);
+    }
+    if (value instanceof Uint8Array) {
+      return value;
+    }
+    if (ArrayBuffer.isView(value)) {
+      return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    }
+    if (value instanceof ArrayBuffer) {
+      return new Uint8Array(value);
+    }
+    if (typeof value === 'string') {
+      if (typeof TextEncoder === 'undefined') {
+        var arr = new Uint8Array(value.length);
+        for (var i = 0; i < value.length; i++) {
+          arr[i] = value.charCodeAt(i) & 255;
+        }
+        return arr;
+      }
+      return new TextEncoder().encode(value);
+    }
+    return normalizeChunk(String(value));
+  }
+
+  global.__flowPipeReadableStream = function (stream, writerId) {
+    if (!stream || typeof stream.getReader !== 'function') {
+      throw new TypeError('Body is not a ReadableStream');
+    }
+    var reader = stream.getReader();
+    function pump() {
+      return reader.read().then(function (result) {
+        if (result.done) {
+          global.__flowRequestBodyClose(writerId);
+          return;
+        }
+        global.__flowRequestBodyWrite(writerId, normalizeChunk(result.value));
+        return pump();
+      }).catch(function (err) {
+        global.__flowRequestBodyError(writerId, err);
+      });
+    }
+    pump();
+  };
+})();
+`
+
 // ==================== FetchEnhancer ====================
 
 // FetchEnhancer Fetch 增强器（集成所有功能）
@@ -147,6 +201,10 @@ type FetchEnhancer struct {
 	config      *FetchConfig          // 配置管理器
 	client      *http.Client          // HTTP 客户端
 	bodyHandler *body.BodyTypeHandler // Body 类型处理器
+
+	requestStreamMu      sync.Mutex
+	requestStreamWriters map[string]*requestStreamWriter
+	requestStreamSeq     uint64
 }
 
 // ==================== 构造器 ====================
@@ -183,9 +241,10 @@ func NewFetchEnhancerWithConfig(config *FetchConfig) *FetchEnhancer {
 	bodyHandler := body.NewBodyTypeHandler(config.MaxBlobFileSize)
 
 	return &FetchEnhancer{
-		config:      config,
-		client:      client,
-		bodyHandler: bodyHandler,
+		config:               config,
+		client:               client,
+		bodyHandler:          bodyHandler,
+		requestStreamWriters: make(map[string]*requestStreamWriter),
 	}
 }
 
@@ -1158,6 +1217,18 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 			panic(runtime.NewTypeError("fetch 需要至少 1 个参数"))
 		}
 
+		registeredStreamWriterIDs := make([]string, 0)
+		defer func() {
+			if len(registeredStreamWriterIDs) == 0 {
+				return
+			}
+			for _, id := range registeredStreamWriterIDs {
+				if writer := fe.removeRequestStreamWriter(id); writer != nil {
+					writer.closeWithError(fmt.Errorf("request aborted"))
+				}
+			}
+		}()
+
 		// 1. 解析 URL（支持 string 或 Request 对象）
 		var url string
 		var options map[string]interface{}
@@ -1411,53 +1482,144 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 		// 4. 处理特殊 Body 类型（必须在 Promise 创建之后）
 		if rawBodyObj, exists := options["__rawBodyObject"]; exists {
 			if bodyObj, ok := rawBodyObj.(*goja.Object); ok {
+				handledRawBody := false
+
+				// 4.0 ReadableStream 作为 body（启用真实流式写入）
+				if isReadableStreamObject(bodyObj) {
+					pipeReader, pipeWriter := io.Pipe()
+					writerID := fe.registerRequestStreamWriter(pipeWriter)
+					registeredStreamWriterIDs = append(registeredStreamWriterIDs, writerID)
+					if err := fe.startReadableStreamPump(runtime, bodyObj, writerID); err != nil {
+						if writer := fe.removeRequestStreamWriter(writerID); writer != nil {
+							writer.closeWithError(err)
+						}
+						pipeWriter.CloseWithError(err)
+						reject(runtime.NewTypeError("读取 ReadableStream body 失败: " + err.Error()))
+						return runtime.ToValue(promise)
+					}
+					options["body"] = pipeReader
+					handledRawBody = true
+				}
+
 				// 4.1 检查是否是 Node.js FormData（优先检查）
-				isNodeFormDataVal := bodyObj.Get("__isNodeFormData")
-				if !goja.IsUndefined(isNodeFormDataVal) && isNodeFormDataVal != nil && isNodeFormDataVal.ToBoolean() {
-					// 🔥 Node.js FormData 处理
-					// 方案1：尝试获取底层 StreamingFormData 对象（高效）
-					if goStreamingFD := bodyObj.Get("__getGoStreamingFormData"); !goja.IsUndefined(goStreamingFD) {
-						if streamingFormData, ok := goStreamingFD.Export().(*formdata.StreamingFormData); ok {
-							// 🔥 判断使用缓冲模式还是流式模式
-							totalSize := streamingFormData.GetTotalSize()
-							boundary := streamingFormData.GetBoundary()
+				if !handledRawBody {
+					isNodeFormDataVal := bodyObj.Get("__isNodeFormData")
+					if !goja.IsUndefined(isNodeFormDataVal) && isNodeFormDataVal != nil && isNodeFormDataVal.ToBoolean() {
+						handledRawBody = true
+						// 🔥 Node.js FormData 处理
+						// 方案1：尝试获取底层 StreamingFormData 对象（高效）
+						if goStreamingFD := bodyObj.Get("__getGoStreamingFormData"); !goja.IsUndefined(goStreamingFD) {
+							if streamingFormData, ok := goStreamingFD.Export().(*formdata.StreamingFormData); ok {
+								// 🔥 判断使用缓冲模式还是流式模式
+								totalSize := streamingFormData.GetTotalSize()
+								boundary := streamingFormData.GetBoundary()
 
-							// 🔥 如果总大小 <= 缓冲阈值，使用缓冲模式（返回 []byte）
-							// 注意：totalSize == 0 的情况（空表单）也应该缓冲
-							var bodyReaderOrBytes interface{}
-							if totalSize >= 0 && totalSize <= fe.config.FormDataConfig.MaxBufferedFormDataSize {
-								// 缓冲模式：一次性读取到内存
-								reader, err := streamingFormData.CreateReader()
-								if err != nil {
-									reject(runtime.NewTypeError("创建 FormData reader 失败: " + err.Error()))
-									return runtime.ToValue(promise)
+								// 🔥 如果总大小 <= 缓冲阈值，使用缓冲模式（返回 []byte）
+								// 注意：totalSize == 0 的情况（空表单）也应该缓冲
+								var bodyReaderOrBytes interface{}
+								if totalSize >= 0 && totalSize <= fe.config.FormDataConfig.MaxBufferedFormDataSize {
+									// 缓冲模式：一次性读取到内存
+									reader, err := streamingFormData.CreateReader()
+									if err != nil {
+										reject(runtime.NewTypeError("创建 FormData reader 失败: " + err.Error()))
+										return runtime.ToValue(promise)
+									}
+
+									// 读取所有数据
+									data, err := io.ReadAll(reader)
+									if err != nil {
+										reject(runtime.NewTypeError("读取 FormData 失败: " + err.Error()))
+										return runtime.ToValue(promise)
+									}
+
+									// 返回 []byte（带 Content-Length）
+									bodyReaderOrBytes = data
+								} else {
+									// 流式模式：返回 Reader（chunked 传输）
+									reader, err := streamingFormData.CreateReader()
+									if err != nil {
+										reject(runtime.NewTypeError("创建 FormData reader 失败: " + err.Error()))
+										return runtime.ToValue(promise)
+									}
+									bodyReaderOrBytes = reader
+									// 🔥 保存 StreamingFormData 对象，以便在请求执行时立即注入 context
+									options["__streamingFormData"] = streamingFormData
 								}
 
-								// 读取所有数据
-								data, err := io.ReadAll(reader)
-								if err != nil {
-									reject(runtime.NewTypeError("读取 FormData 失败: " + err.Error()))
-									return runtime.ToValue(promise)
-								}
+								options["__formDataBody"] = bodyReaderOrBytes
+								options["__formDataBoundary"] = boundary
 
-								// 返回 []byte（带 Content-Length）
-								bodyReaderOrBytes = data
+								// 自动设置 Content-Type（如果用户没有手动设置）
+								if headers, ok := options["headers"].(map[string]interface{}); ok {
+									if _, hasContentType := headers["content-type"]; !hasContentType {
+										headers["content-type"] = fmt.Sprintf("multipart/form-data; boundary=%s", boundary)
+									}
+								} else {
+									options["headers"] = map[string]interface{}{
+										"content-type": fmt.Sprintf("multipart/form-data; boundary=%s", boundary),
+									}
+								}
 							} else {
-								// 流式模式：返回 Reader（chunked 传输）
-								reader, err := streamingFormData.CreateReader()
-								if err != nil {
-									reject(runtime.NewTypeError("创建 FormData reader 失败: " + err.Error()))
-									return runtime.ToValue(promise)
-								}
-								bodyReaderOrBytes = reader
-								// 🔥 保存 StreamingFormData 对象，以便在请求执行时立即注入 context
-								options["__streamingFormData"] = streamingFormData
+								reject(runtime.NewTypeError("无效的 Node.js FormData 对象"))
+								return runtime.ToValue(promise)
+							}
+						} else {
+							// 方案2：降级到 getBuffer()
+							getBufferFunc := bodyObj.Get("getBuffer")
+							if goja.IsUndefined(getBufferFunc) {
+								reject(runtime.NewTypeError("Node.js FormData 缺少 getBuffer 方法"))
+								return runtime.ToValue(promise)
 							}
 
-							options["__formDataBody"] = bodyReaderOrBytes
+							getBuffer, ok := goja.AssertFunction(getBufferFunc)
+							if !ok {
+								reject(runtime.NewTypeError("getBuffer 不是一个函数"))
+								return runtime.ToValue(promise)
+							}
+
+							// 调用 getBuffer() 获取数据
+							bufferVal, err := getBuffer(bodyObj)
+							if err != nil {
+								reject(runtime.NewTypeError("调用 getBuffer 失败: " + err.Error()))
+								return runtime.ToValue(promise)
+							}
+
+							// 提取 Buffer 数据
+							bufferObj := bufferVal.ToObject(runtime)
+							if bufferObj == nil {
+								reject(runtime.NewTypeError("getBuffer 没有返回 Buffer"))
+								return runtime.ToValue(promise)
+							}
+
+							// 从 Buffer 提取字节数据
+							data, err := fe.extractBufferBytes(bufferObj)
+							if err != nil {
+								reject(runtime.NewTypeError("提取 buffer 数据失败: " + err.Error()))
+								return runtime.ToValue(promise)
+							}
+
+							// 获取 boundary
+							boundaryVal := bodyObj.Get("getBoundary")
+							if goja.IsUndefined(boundaryVal) {
+								reject(runtime.NewTypeError("Node.js FormData 缺少 getBoundary 方法"))
+								return runtime.ToValue(promise)
+							}
+							getBoundaryFunc, ok := goja.AssertFunction(boundaryVal)
+							if !ok {
+								reject(runtime.NewTypeError("getBoundary 不是一个函数"))
+								return runtime.ToValue(promise)
+							}
+							boundaryResult, err := getBoundaryFunc(bodyObj)
+							if err != nil {
+								reject(runtime.NewTypeError("调用 getBoundary 失败: " + err.Error()))
+								return runtime.ToValue(promise)
+							}
+							boundary := boundaryResult.String()
+
+							options["__formDataBody"] = data
 							options["__formDataBoundary"] = boundary
 
-							// 自动设置 Content-Type（如果用户没有手动设置）
+							// 自动设置 Content-Type
 							if headers, ok := options["headers"].(map[string]interface{}); ok {
 								if _, hasContentType := headers["content-type"]; !hasContentType {
 									headers["content-type"] = fmt.Sprintf("multipart/form-data; boundary=%s", boundary)
@@ -1467,129 +1629,69 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 									"content-type": fmt.Sprintf("multipart/form-data; boundary=%s", boundary),
 								}
 							}
-						} else {
-							reject(runtime.NewTypeError("无效的 Node.js FormData 对象"))
-							return runtime.ToValue(promise)
-						}
-					} else {
-						// 方案2：降级到 getBuffer()
-						getBufferFunc := bodyObj.Get("getBuffer")
-						if goja.IsUndefined(getBufferFunc) {
-							reject(runtime.NewTypeError("Node.js FormData 缺少 getBuffer 方法"))
-							return runtime.ToValue(promise)
-						}
-
-						getBuffer, ok := goja.AssertFunction(getBufferFunc)
-						if !ok {
-							reject(runtime.NewTypeError("getBuffer 不是一个函数"))
-							return runtime.ToValue(promise)
-						}
-
-						// 调用 getBuffer() 获取数据
-						bufferVal, err := getBuffer(bodyObj)
-						if err != nil {
-							reject(runtime.NewTypeError("调用 getBuffer 失败: " + err.Error()))
-							return runtime.ToValue(promise)
-						}
-
-						// 提取 Buffer 数据
-						bufferObj := bufferVal.ToObject(runtime)
-						if bufferObj == nil {
-							reject(runtime.NewTypeError("getBuffer 没有返回 Buffer"))
-							return runtime.ToValue(promise)
-						}
-
-						// 从 Buffer 提取字节数据
-						data, err := fe.extractBufferBytes(bufferObj)
-						if err != nil {
-							reject(runtime.NewTypeError("提取 buffer 数据失败: " + err.Error()))
-							return runtime.ToValue(promise)
-						}
-
-						// 获取 boundary
-						boundaryVal := bodyObj.Get("getBoundary")
-						if goja.IsUndefined(boundaryVal) {
-							reject(runtime.NewTypeError("Node.js FormData 缺少 getBoundary 方法"))
-							return runtime.ToValue(promise)
-						}
-						getBoundaryFunc, ok := goja.AssertFunction(boundaryVal)
-						if !ok {
-							reject(runtime.NewTypeError("getBoundary 不是一个函数"))
-							return runtime.ToValue(promise)
-						}
-						boundaryResult, err := getBoundaryFunc(bodyObj)
-						if err != nil {
-							reject(runtime.NewTypeError("调用 getBoundary 失败: " + err.Error()))
-							return runtime.ToValue(promise)
-						}
-						boundary := boundaryResult.String()
-
-						options["__formDataBody"] = data
-						options["__formDataBoundary"] = boundary
-
-						// 自动设置 Content-Type
-						if headers, ok := options["headers"].(map[string]interface{}); ok {
-							if _, hasContentType := headers["content-type"]; !hasContentType {
-								headers["content-type"] = fmt.Sprintf("multipart/form-data; boundary=%s", boundary)
-							}
-						} else {
-							options["headers"] = map[string]interface{}{
-								"content-type": fmt.Sprintf("multipart/form-data; boundary=%s", boundary),
-							}
 						}
 					}
-				} else if isFormDataVal := bodyObj.Get("__isFormData"); !goja.IsUndefined(isFormDataVal) && isFormDataVal != nil && isFormDataVal.ToBoolean() {
-					// 4.2 浏览器 FormData 处理
-					// 🔥 关键：在当前 goroutine 中提取 FormData 数据
-					bodyReaderOrBytes, boundary, err := fe.extractFormDataInCurrentThread(runtime, bodyObj)
-					if err != nil {
-						reject(runtime.NewTypeError("提取 FormData 失败: " + err.Error()))
-						return runtime.ToValue(promise)
-					}
 
-					// 🔥 支持流式 Reader 或字节数组
-					options["__formDataBody"] = bodyReaderOrBytes
-					options["__formDataBoundary"] = boundary
+				}
+
+				if handledRawBody {
+					delete(options, "__rawBodyObject")
 				} else {
-					// 4.3 处理其他特殊 Body 类型（TypedArray、URLSearchParams 等）
-					if fe.bodyHandler == nil {
-						reject(runtime.NewTypeError("bodyHandler 为 nil"))
-						return runtime.ToValue(promise)
-					}
+					if isFormDataVal := bodyObj.Get("__isFormData"); !goja.IsUndefined(isFormDataVal) && isFormDataVal != nil && isFormDataVal.ToBoolean() {
+						// 4.2 浏览器 FormData 处理
+						// 🔥 关键：在当前 goroutine 中提取 FormData 数据
+						bodyReaderOrBytes, boundary, err := fe.extractFormDataInCurrentThread(runtime, bodyObj)
+						if err != nil {
+							reject(runtime.NewTypeError("提取 FormData 失败: " + err.Error()))
+							return runtime.ToValue(promise)
+						}
 
-					data, reader, ct, err := fe.bodyHandler.ProcessBody(runtime, bodyObj)
-					if err != nil {
-						reject(runtime.NewTypeError("处理 body 失败: " + err.Error()))
-						return runtime.ToValue(promise)
-					}
+						// 🔥 支持流式 Reader 或字节数组
+						options["__formDataBody"] = bodyReaderOrBytes
+						options["__formDataBoundary"] = boundary
+					} else {
+						// 4.3 处理其他特殊 Body 类型（TypedArray、URLSearchParams 等）
+						if fe.bodyHandler == nil {
+							reject(runtime.NewTypeError("bodyHandler 为 nil"))
+							return runtime.ToValue(promise)
+						}
 
-					if data != nil {
-						// 已知大小的数据
-						options["body"] = data
-						if ct != "" {
-							// 如果没有手动设置 Content-Type，则使用自动检测的
-							// 🔥 修复：大小写不敏感检查 Content-Type
-							if headers, ok := options["headers"].(map[string]interface{}); ok {
-								hasContentType := false
-								for key := range headers {
-									if strings.EqualFold(key, "Content-Type") {
-										hasContentType = true
-										break
+						data, reader, ct, err := fe.bodyHandler.ProcessBody(runtime, bodyObj)
+						if err != nil {
+							reject(runtime.NewTypeError("处理 body 失败: " + err.Error()))
+							return runtime.ToValue(promise)
+						}
+
+						if data != nil {
+							// 已知大小的数据
+							options["body"] = data
+							if ct != "" {
+								// 如果没有手动设置 Content-Type，则使用自动检测的
+								// 🔥 修复：大小写不敏感检查 Content-Type
+								if headers, ok := options["headers"].(map[string]interface{}); ok {
+									hasContentType := false
+									for key := range headers {
+										if strings.EqualFold(key, "Content-Type") {
+											hasContentType = true
+											break
+										}
+									}
+									if !hasContentType {
+										headers["Content-Type"] = ct
+									}
+								} else {
+									options["headers"] = map[string]interface{}{
+										"Content-Type": ct,
 									}
 								}
-								if !hasContentType {
-									headers["Content-Type"] = ct
-								}
-							} else {
-								options["headers"] = map[string]interface{}{
-									"Content-Type": ct,
-								}
 							}
+						} else if reader != nil {
+							// 真正的流式数据
+							options["body"] = reader
 						}
-					} else if reader != nil {
-						// 真正的流式数据
-						options["body"] = reader
 					}
+
+					delete(options, "__rawBodyObject")
 				}
 			}
 			// 清理临时字段
@@ -1684,6 +1786,7 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 
 		// 7. 异步执行请求（不阻塞 EventLoop）
 		go ExecuteRequestAsync(fe.config, fe.client, req, fe.createBodyWrapper)
+		registeredStreamWriterIDs = nil
 
 		// 8. 检查是否在 EventLoop 环境中
 		setImmediateFn := runtime.Get("setImmediate")
@@ -2064,27 +2167,31 @@ func (fe *FetchEnhancer) attachJSReadableStreamBody(runtime *goja.Runtime, respO
 			panic(runtime.NewTypeError(responseCloneConsumedMessage))
 		}
 
-		teeVal := currentStream.Get("tee")
-		teeFunc, ok := goja.AssertFunction(teeVal)
-		if !ok {
-			panic(runtime.NewTypeError("ReadableStream.tee is not available"))
-		}
-
-		result, err := teeFunc(currentStream)
-		if err != nil {
-			panic(err)
-		}
-		branches := result.ToObject(runtime)
-		if branches == nil {
-			panic(runtime.NewTypeError("ReadableStream.tee returned invalid result"))
-		}
-
-		firstVal := branches.Get("0")
-		secondVal := branches.Get("1")
-		first := firstVal.ToObject(runtime)
-		second := secondVal.ToObject(runtime)
-		if first == nil || second == nil {
-			panic(runtime.NewTypeError("ReadableStream.tee returned invalid branches"))
+		var first, second *goja.Object
+		if helperFirst, helperSecond, err := fe.teeReadableStream(runtime, currentStream); err == nil {
+			first = helperFirst
+			second = helperSecond
+		} else {
+			teeVal := currentStream.Get("tee")
+			teeFunc, ok := goja.AssertFunction(teeVal)
+			if !ok {
+				panic(runtime.NewTypeError("ReadableStream.tee is not available"))
+			}
+			result, err := teeFunc(currentStream)
+			if err != nil {
+				panic(err)
+			}
+			branches := result.ToObject(runtime)
+			if branches == nil {
+				panic(runtime.NewTypeError("ReadableStream.tee returned invalid result"))
+			}
+			firstVal := branches.Get("0")
+			secondVal := branches.Get("1")
+			first = firstVal.ToObject(runtime)
+			second = secondVal.ToObject(runtime)
+			if first == nil || second == nil {
+				panic(runtime.NewTypeError("ReadableStream.tee returned invalid branches"))
+			}
 		}
 
 		currentStream = first
@@ -2121,617 +2228,84 @@ const (
 // 🔥 重要：text/json/arrayBuffer/blob 方法受 MaxResponseSize 限制（防止大响应占满内存）
 // 🔥 线程安全：使用 setImmediate 替代 goroutine，确保所有 goja Runtime 操作在 EventLoop 中执行
 func (fe *FetchEnhancer) attachStreamingBodyMethods(runtime *goja.Runtime, respObj *goja.Object, data *ResponseData) {
-	// 创建 StreamReader（包装 BodyStream）
-	// 🔥 P2: 传入 ResponseReadTimeout 用于 abort watcher 超时保护
 	streamReader := NewStreamReader(data.BodyStream, runtime, fe.config.MaxStreamingSize, data.ContentLength, data.AbortCh, data.Signal, fe.config.ResponseReadTimeout)
 
-	// 🔥 创建 StreamingResponse（支持 Node.js + Web Streams）
-	streamingResponse := NewStreamingResponse(streamReader, runtime, false) // cloneable=false，避免缓存占满内存
-
-	// 🔥 保障底层流只关闭一次，避免资源悬挂
 	var closeStreamingOnce sync.Once
-	var autoCleanupTimer *time.Timer // 🔥 P1: 保存 timer 引用以便停止
+	var autoCleanupTimer *time.Timer
 	closeStreaming := func() {
 		closeStreamingOnce.Do(func() {
-			// 🔥 P1: 停止自动清理 timer,防止 timer 累积
 			if autoCleanupTimer != nil {
 				autoCleanupTimer.Stop()
 			}
-			_ = streamingResponse.Close()
+			_ = streamReader.Close()
 		})
 	}
 
-	// 🔥 取消状态标志（body.cancel() 后阻止读取）
-	var cancelled bool
-	var cancelledMutex sync.Mutex
-
-	// 🔥 创建自定义 body 对象（包装 StreamingResponse.GetReader()）
-	bodyObj := runtime.NewObject()
-	streams.AttachReadableStreamPrototype(runtime, bodyObj)
-	bodyObj.Set("__streamReader", streamReader)
-
-	var bodyLocked bool
-	var bodyLockOwnerID uint64
-	var bodyLockCounter uint64
-	var bodyLockMutex sync.Mutex
-
-	// 🔥 bodyUsed 状态
-	var bodyConsumed bool
-	var bodyUsedMutex sync.Mutex
-
-	markBodyUsed := func() bool {
-		bodyUsedMutex.Lock()
-		defer bodyUsedMutex.Unlock()
-
-		if bodyConsumed {
-			return false
-		}
-		bodyConsumed = true
-		setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", true)
-		return true
-	}
-
-	releaseAllLocks := func() {
-		bodyLockMutex.Lock()
-		bodyLocked = false
-		bodyLockOwnerID = 0
-		bodyObj.Set("locked", false)
-		bodyLockMutex.Unlock()
-	}
-
-	releaseReaderByID := func(ownerID uint64) {
-		bodyLockMutex.Lock()
-		if bodyLocked && bodyLockOwnerID == ownerID {
-			bodyLocked = false
-			bodyLockOwnerID = 0
-			bodyObj.Set("locked", false)
-		}
-		bodyLockMutex.Unlock()
-	}
-
-	// getReader() 方法
-	bodyObj.Set("getReader", func(call goja.FunctionCall) goja.Value {
-		bodyLockMutex.Lock()
-		if bodyLocked {
-			bodyLockMutex.Unlock()
-			panic(runtime.NewTypeError("ReadableStream is already locked"))
-		}
-		bodyLocked = true
-		bodyLockCounter++
-		currentReaderID := bodyLockCounter
-		bodyLockOwnerID = currentReaderID
-		bodyObj.Set("locked", true)
-		bodyLockMutex.Unlock()
-
-		reader := streamingResponse.GetReader()
-		if reader == nil {
-			releaseReaderByID(currentReaderID)
-			panic(runtime.NewTypeError("Failed to acquire ReadableStream reader"))
-		}
-
-		releaseReader := func() {
-			releaseReaderByID(currentReaderID)
-		}
-
-		if readVal := reader.Get("read"); readVal != nil {
-			if readFunc, ok := goja.AssertFunction(readVal); ok {
-				reader.Set("read", func(call goja.FunctionCall) goja.Value {
-					markBodyUsed()
-					result, err := readFunc(call.This, call.Arguments...)
-					if err != nil {
-						panic(err)
-					}
-					return result
-				})
-			}
-		}
-
-		if cancelVal := reader.Get("cancel"); cancelVal != nil {
-			if cancelFunc, ok := goja.AssertFunction(cancelVal); ok {
-				reader.Set("cancel", func(call goja.FunctionCall) goja.Value {
-					defer releaseReader()
-					markBodyUsed()
-					result, err := cancelFunc(call.This, call.Arguments...)
-					if err != nil {
-						panic(err)
-					}
-					return result
-				})
-			}
-		}
-
-		reader.Set("releaseLock", func(call goja.FunctionCall) goja.Value {
-			releaseReader()
-			return goja.Undefined()
-		})
-
-		if closedVal := reader.Get("closed"); closedVal != nil && !goja.IsUndefined(closedVal) && !goja.IsNull(closedVal) {
-			if closedObj := closedVal.ToObject(runtime); closedObj != nil {
-				if thenVal := closedObj.Get("then"); thenVal != nil {
-					if thenFunc, ok := goja.AssertFunction(thenVal); ok {
-						releaseCallback := runtime.ToValue(func(call goja.FunctionCall) goja.Value {
-							releaseReader()
-							return goja.Undefined()
-						})
-						if _, err := thenFunc(closedObj, releaseCallback, releaseCallback); err != nil {
-							panic(err)
-						}
-					}
-				}
-			}
-		}
-
-		return reader
-	})
-
-	// cancel() 方法 - 设置取消标志并关闭流
-	bodyObj.Set("cancel", func(call goja.FunctionCall) goja.Value {
-		promise, resolve, _ := runtime.NewPromise()
-
-		cancelledMutex.Lock()
-		cancelled = true
-		cancelledMutex.Unlock()
-		markBodyUsed()
-
-		// 关闭底层流
-		closeStreaming()
-		releaseAllLocks()
-
-		resolve(goja.Undefined())
-		return runtime.ToValue(promise)
-	})
-
-	// locked 属性
-	bodyObj.Set("locked", false)
-
-	respObj.Set("body", bodyObj)
-	// 🔥 数据缓存机制（确保只读取一次）
-	var cachedData []byte
-	var cacheError error
-	var cacheOnce sync.Once
-	var cacheMutex sync.RWMutex
-
-	// 🔥 将流式读取错误转换为 JS 可识别的错误对象
-	convertStreamError := func(err error) goja.Value {
-		if err == nil {
-			return goja.Undefined()
-		}
-
-		switch e := err.(type) {
-		case *AbortReasonError:
-			reason := e.Reason()
-			if reason == nil || goja.IsUndefined(reason) || goja.IsNull(reason) {
-				reason = CreateDOMException(runtime, "This operation was aborted", "AbortError")
-			}
-			return reason
-		case *AbortError:
-			return CreateAbortErrorObject(runtime, err)
-		default:
-			return runtime.NewGoError(err)
-		}
-	}
-
-	handleBodyReadError := func(err error, reject func(interface{}) error) bool {
-		if err == nil {
-			return false
-		}
-		closeStreaming()
-		reject(convertStreamError(err))
-		return true
-	}
-
-	readStreamIntoCache := func() {
-		defer closeStreaming()
-		defer func() {
-			if r := recover(); r != nil {
-				cacheMutex.Lock()
-				cacheError = fmt.Errorf("读取响应流时发生内部错误: %v", r)
-				cacheMutex.Unlock()
-			}
-		}()
-
-		var buffer bytes.Buffer
-
-		for {
-			chunk, done, err := streamReader.Read(0)
-			if err != nil {
-				cacheMutex.Lock()
-				cacheError = err
-				cacheMutex.Unlock()
-				return
-			}
-
-			if len(chunk) > 0 {
-				if fe.config.MaxResponseSize > 0 && int64(buffer.Len()+len(chunk)) > fe.config.MaxResponseSize {
-					cacheMutex.Lock()
-					cacheError = fmt.Errorf(
-						"响应大小超过缓冲限制: %.2fMB > %.2fMB (使用 .body.getReader() 进行流式读取)",
-						float64(buffer.Len()+len(chunk))/1024/1024,
-						float64(fe.config.MaxResponseSize)/1024/1024,
-					)
-					cacheMutex.Unlock()
-					return
-				}
-				_, _ = buffer.Write(chunk)
-			}
-
-			if done {
-				break
-			}
-		}
-
-		cacheMutex.Lock()
-		cachedData = buffer.Bytes()
-		cacheMutex.Unlock()
-	}
-
-	// 🔥 P1 优化: 自动清理机制 - 使用可停止的 timer
-	// 在 ResponseBodyIdleTimeout 内完全未读取任何数据时关闭流，防止长时间占用连接
 	autoCleanupTimeout := fe.config.ResponseBodyIdleTimeout
 	if autoCleanupTimeout <= 0 {
 		autoCleanupTimeout = 30 * time.Second
 	}
 	autoCleanupTimer = time.AfterFunc(autoCleanupTimeout, func() {
-		// 如果流已经关闭或已被显式取消，则不再处理
 		if streamReader == nil || streamReader.IsClosed() {
 			return
 		}
-
-		cancelledMutex.Lock()
-		isCancelled := cancelled
-		cancelledMutex.Unlock()
-		if isCancelled {
-			return
-		}
-
-		// 仅在完全没有读取任何字节（GetTotalRead == 0）时触发自动关闭
 		if streamReader.GetTotalRead() == 0 {
 			closeStreaming()
 		}
 	})
 
-	// 通用的数据获取函数：优先使用缓存，缓存不存在时读取流
-	getResponseData := func() ([]byte, error) {
-		// 🔥 检查是否已取消（cancel 后返回空数据）
-		cancelledMutex.Lock()
-		isCancelled := cancelled
-		cancelledMutex.Unlock()
+	var cancelled bool
+	var cancelledMutex sync.Mutex
 
-		if isCancelled {
-			closeStreaming()
-			return []byte{}, nil // cancel 后返回空数据
-		}
-
-		cacheOnce.Do(func() {
-			// 🔥 再次检查取消状态（防止在 cacheOnce.Do 等待期间被取消）
+	bodyStream, err := fe.newResponseReadableStream(
+		runtime,
+		streamReader,
+		func() {
+			if autoCleanupTimer != nil {
+				autoCleanupTimer.Stop()
+				autoCleanupTimer = nil
+			}
+		},
+		func() {
 			cancelledMutex.Lock()
-			if cancelled {
-				cancelledMutex.Unlock()
-				return
-			}
+			cancelled = true
 			cancelledMutex.Unlock()
-
-			readStreamIntoCache()
-		})
-
-		// 🔥 最终检查：即使有缓存数据，如果已取消也返回空
-		cancelledMutex.Lock()
-		isCancelled = cancelled
-		cancelledMutex.Unlock()
-
-		if isCancelled {
 			closeStreaming()
-			return []byte{}, nil
-		}
-
-		cacheMutex.RLock()
-		defer cacheMutex.RUnlock()
-		return cachedData, cacheError
+		},
+		func(err error) goja.Value {
+			if err == nil {
+				return goja.Undefined()
+			}
+			switch e := err.(type) {
+			case *AbortReasonError:
+				reason := e.Reason()
+				if reason == nil || goja.IsUndefined(reason) || goja.IsNull(reason) {
+					reason = CreateDOMException(runtime, "This operation was aborted", "AbortError")
+				}
+				return reason
+			case *AbortError:
+				return CreateAbortErrorObject(runtime, err)
+			default:
+				return runtime.NewGoError(err)
+			}
+		},
+		func() bool {
+			cancelledMutex.Lock()
+			defer cancelledMutex.Unlock()
+			return cancelled
+		},
+	)
+	if err != nil {
+		panic(runtime.NewGoError(err))
 	}
+	bodyStream.Set("__streamReader", streamReader)
 
-	// 检查并标记 body 为已使用
-	checkAndMarkBodyUsed := func() error {
-		if !markBodyUsed() {
-			return errors.New(bodyAlreadyUsedErrorMessage)
-		}
-		return nil
-	}
+	cloned := *data
+	cloned.JSReadableBody = bodyStream
+	cloned.IsStreaming = false
+	cloned.BodyStream = nil
 
-	isBodyConsumed := func() bool {
-		bodyUsedMutex.Lock()
-		defer bodyUsedMutex.Unlock()
-		return bodyConsumed
-	}
-
-	// text() - 读取为文本
-	// 🔥 使用 setImmediate 替代 goroutine，确保线程安全
-	respObj.Set("text", func(call goja.FunctionCall) goja.Value {
-		promise, resolve, reject := runtime.NewPromise()
-
-		// 防御性保护
-		defer func() {
-			if r := recover(); r != nil {
-				reject(runtime.NewGoError(fmt.Errorf("response.text internal error: %v", r)))
-			}
-		}()
-
-		// 检查 body 是否已被使用
-		if err := checkAndMarkBodyUsed(); err != nil {
-			reject(runtime.NewTypeError(err.Error()))
-			return runtime.ToValue(promise)
-		}
-
-		setImmediate := runtime.Get("setImmediate")
-		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
-			callback := func(call goja.FunctionCall) goja.Value {
-				defer func() {
-					if r := recover(); r != nil {
-						reject(runtime.NewGoError(fmt.Errorf("response.text internal error: %v", r)))
-					}
-				}()
-
-				allData, err := getResponseData()
-				if handleBodyReadError(err, reject) {
-					return goja.Undefined()
-				}
-				resolve(runtime.ToValue(string(allData)))
-				return goja.Undefined()
-			}
-			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
-		} else {
-			// 降级：同步执行
-			allData, err := getResponseData()
-			if handleBodyReadError(err, reject) {
-				return runtime.ToValue(promise)
-			}
-			resolve(runtime.ToValue(string(allData)))
-		}
-
-		return runtime.ToValue(promise)
-	})
-
-	// json() - 读取为 JSON
-	// 🔥 使用 setImmediate 替代 goroutine
-	respObj.Set("json", func(call goja.FunctionCall) goja.Value {
-		promise, resolve, reject := runtime.NewPromise()
-
-		// 检查 body 是否已被使用
-		if err := checkAndMarkBodyUsed(); err != nil {
-			reject(runtime.NewTypeError(err.Error()))
-			return runtime.ToValue(promise)
-		}
-
-		rejectJSONError := func(parseErr error) {
-			if exc, ok := parseErr.(*goja.Exception); ok {
-				reject(exc.Value())
-			} else {
-				reject(runtime.NewGoError(parseErr))
-			}
-		}
-
-		setImmediate := runtime.Get("setImmediate")
-		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
-			callback := func(call goja.FunctionCall) goja.Value {
-				defer func() {
-					if r := recover(); r != nil {
-						reject(runtime.NewGoError(fmt.Errorf("response.json internal error: %v", r)))
-					}
-				}()
-
-				allData, err := getResponseData()
-				if handleBodyReadError(err, reject) {
-					return goja.Undefined()
-				}
-
-				parsedVal, parseErr := parseJSONBytes(runtime, allData)
-				if parseErr != nil {
-					rejectJSONError(parseErr)
-				} else {
-					resolve(parsedVal)
-				}
-				return goja.Undefined()
-			}
-			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
-		} else {
-			// 降级：同步执行
-			allData, err := getResponseData()
-			if handleBodyReadError(err, reject) {
-				return runtime.ToValue(promise)
-			}
-
-			parsedVal, parseErr := parseJSONBytes(runtime, allData)
-			if parseErr != nil {
-				rejectJSONError(parseErr)
-			} else {
-				resolve(parsedVal)
-			}
-		}
-
-		return runtime.ToValue(promise)
-	})
-
-	// arrayBuffer() - 读取为 ArrayBuffer
-	// 🔥 使用 setImmediate 替代 goroutine
-	respObj.Set("arrayBuffer", func(call goja.FunctionCall) goja.Value {
-		promise, resolve, reject := runtime.NewPromise()
-
-		// 检查 body 是否已被使用
-		if err := checkAndMarkBodyUsed(); err != nil {
-			reject(runtime.NewTypeError(err.Error()))
-			return runtime.ToValue(promise)
-		}
-
-		setImmediate := runtime.Get("setImmediate")
-		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
-			callback := func(call goja.FunctionCall) goja.Value {
-				defer func() {
-					if r := recover(); r != nil {
-						reject(runtime.NewGoError(fmt.Errorf("response.arrayBuffer internal error: %v", r)))
-					}
-				}()
-
-				allData, err := getResponseData()
-				if handleBodyReadError(err, reject) {
-					return goja.Undefined()
-				}
-				arrayBuffer := runtime.NewArrayBuffer(allData)
-				resolve(runtime.ToValue(arrayBuffer))
-				return goja.Undefined()
-			}
-			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
-		} else {
-			// 降级：同步执行
-			allData, err := getResponseData()
-			if handleBodyReadError(err, reject) {
-				return runtime.ToValue(promise)
-			}
-			arrayBuffer := runtime.NewArrayBuffer(allData)
-			resolve(runtime.ToValue(arrayBuffer))
-		}
-
-		return runtime.ToValue(promise)
-	})
-
-	// blob() - 读取为 Blob
-	// 🔥 使用 setImmediate 替代 goroutine
-	respObj.Set("blob", func(call goja.FunctionCall) goja.Value {
-		promise, resolve, reject := runtime.NewPromise()
-
-		// 检查 body 是否已被使用
-		if err := checkAndMarkBodyUsed(); err != nil {
-			reject(runtime.NewTypeError(err.Error()))
-			return runtime.ToValue(promise)
-		}
-
-		setImmediate := runtime.Get("setImmediate")
-		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
-			callback := func(call goja.FunctionCall) goja.Value {
-				defer func() {
-					if r := recover(); r != nil {
-						reject(runtime.NewGoError(fmt.Errorf("response.blob internal error: %v", r)))
-					}
-				}()
-
-				allData, err := getResponseData()
-				if handleBodyReadError(err, reject) {
-					return goja.Undefined()
-				}
-
-				// 从响应头获取 Content-Type
-				contentType := "application/octet-stream"
-				if ct := data.Headers.Get("Content-Type"); ct != "" {
-					contentType = ct
-				}
-
-				blobObj, blobErr := fe.createBlobFromBytes(runtime, allData, contentType)
-				if blobErr != nil {
-					reject(runtime.NewGoError(fmt.Errorf("create Blob failed: %v", blobErr)))
-					return goja.Undefined()
-				}
-
-				resolve(blobObj)
-				return goja.Undefined()
-			}
-			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
-		} else {
-			// 降级：同步执行
-			allData, err := getResponseData()
-			if handleBodyReadError(err, reject) {
-				return runtime.ToValue(promise)
-			}
-
-			contentType := "application/octet-stream"
-			if ct := data.Headers.Get("Content-Type"); ct != "" {
-				contentType = ct
-			}
-
-			blobObj, blobErr := fe.createBlobFromBytes(runtime, allData, contentType)
-			if blobErr != nil {
-				reject(runtime.NewGoError(fmt.Errorf("create Blob failed: %v", blobErr)))
-				return runtime.ToValue(promise)
-			}
-
-			resolve(blobObj)
-		}
-
-		return runtime.ToValue(promise)
-	})
-
-	// formData() - 读取为 FormData
-	respObj.Set("formData", func(call goja.FunctionCall) goja.Value {
-		promise, resolve, reject := runtime.NewPromise()
-
-		if err := checkAndMarkBodyUsed(); err != nil {
-			reject(runtime.NewTypeError(err.Error()))
-			return runtime.ToValue(promise)
-		}
-
-		execute := func() {
-			defer func() {
-				if r := recover(); r != nil {
-					reject(runtime.NewGoError(fmt.Errorf("response.formData internal error: %v", r)))
-				}
-			}()
-
-			allData, err := getResponseData()
-			if handleBodyReadError(err, reject) {
-				return
-			}
-
-			formDataObj, parseErr := fe.parseBodyToFormData(runtime, data.Headers, allData)
-			if parseErr != nil {
-				reject(runtime.NewTypeError(parseErr.Error()))
-				return
-			}
-
-			resolve(formDataObj)
-		}
-
-		setImmediate := runtime.Get("setImmediate")
-		if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
-			callback := func(call goja.FunctionCall) goja.Value {
-				execute()
-				return goja.Undefined()
-			}
-			setImmediateFn(goja.Undefined(), runtime.ToValue(callback))
-		} else {
-			execute()
-		}
-
-		return runtime.ToValue(promise)
-	})
-
-	// bodyUsed 属性
-	setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", false)
-
-	// 🔥 clone() 方法 - 使用缓存机制（性能优化：共享缓存，避免深拷贝）
-	respObj.Set("clone", func(call goja.FunctionCall) goja.Value {
-		if isBodyConsumed() {
-			panic(runtime.NewTypeError(responseCloneConsumedMessage))
-		}
-		// 🔥 先读取并缓存数据（确保原始和克隆都能读取）
-		localData, err := getResponseData()
-		if err != nil {
-			panic(convertStreamError(err))
-		}
-
-		// 🔥 创建克隆的 ResponseData（非流式，共享缓存数据）
-		clonedData := &ResponseData{
-			StatusCode:    data.StatusCode,
-			Status:        data.Status,
-			Headers:       data.Headers.Clone(),
-			Body:          localData, // 共享缓存，避免深拷贝
-			IsStreaming:   false,     // 克隆为非流式
-			FinalURL:      data.FinalURL,
-			Redirected:    data.Redirected,
-			ResponseType:  data.ResponseType,
-			ContentLength: int64(len(localData)),
-			AbortCh:       data.AbortCh,
-			Signal:        data.Signal,
-		}
-
-		return fe.recreateResponse(runtime, clonedData)
-	})
+	fe.attachJSReadableStreamBody(runtime, respObj, &cloned)
 }
 
 // attachBufferedBodyMethods 附加缓冲 Body 方法
@@ -2886,87 +2460,78 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 	if data != nil && data.ForceNullBody {
 		respObj.Set("body", goja.Null())
 	} else {
-		// 🔥 body 属性（ReadableStream 对象，支持 cancel 和 getReader）
-		bodyObj := runtime.NewObject()
-		streams.AttachReadableStreamPrototype(runtime, bodyObj)
+		bodyStream := runtime.NewObject()
+		streams.AttachReadableStreamPrototype(runtime, bodyStream)
+		bodyStream.Set("__bufferedBody__", bodyData)
+		bodyStream.Set("locked", false)
 
-		var bodyLocked bool
-		var bodyLockOwnerID uint64
-		var bodyLockCounter uint64
-		var bodyLockMutex sync.Mutex
+		var streamLocked bool
+		var streamLockMu sync.Mutex
 
-		releaseAllLocks := func() {
-			bodyLockMutex.Lock()
-			bodyLocked = false
-			bodyLockOwnerID = 0
-			bodyObj.Set("locked", false)
-			bodyLockMutex.Unlock()
-		}
-
-		releaseReaderByID := func(ownerID uint64) {
-			bodyLockMutex.Lock()
-			if bodyLocked && bodyLockOwnerID == ownerID {
-				bodyLocked = false
-				bodyLockOwnerID = 0
-				bodyObj.Set("locked", false)
-			}
-			bodyLockMutex.Unlock()
-		}
-
-		// getReader() 方法
-		bodyObj.Set("getReader", func(call goja.FunctionCall) goja.Value {
+		getReaderFn := func(call goja.FunctionCall) goja.Value {
 			if isBodyConsumed() {
 				panic(runtime.NewTypeError(bodyAlreadyUsedErrorMessage))
 			}
 
-			bodyLockMutex.Lock()
-			if bodyLocked {
-				bodyLockMutex.Unlock()
+			streamLockMu.Lock()
+			if streamLocked {
+				streamLockMu.Unlock()
 				panic(runtime.NewTypeError("ReadableStream is already locked"))
 			}
-			bodyLocked = true
-			bodyLockCounter++
-			currentReaderID := bodyLockCounter
-			bodyLockOwnerID = currentReaderID
-			bodyObj.Set("locked", true)
-			bodyLockMutex.Unlock()
+			streamLocked = true
+			bodyStream.Set("locked", true)
+			streamLockMu.Unlock()
 
 			reader := runtime.NewObject()
-			localIndex := 0
-			closedPromise, resolveClosedPromise, _ := runtime.NewPromise()
+			dataCopy := append([]byte(nil), bodyData...)
+			var idx int
+			closedPromise, resolveClosed, _ := runtime.NewPromise()
 			var closeOnce sync.Once
 			closeReader := func() {
 				closeOnce.Do(func() {
-					resolveClosedPromise(goja.Undefined())
-					releaseReaderByID(currentReaderID)
+					resolveClosed(goja.Undefined())
+					streamLockMu.Lock()
+					streamLocked = false
+					bodyStream.Set("locked", false)
+					streamLockMu.Unlock()
 				})
 			}
 			reader.Set("closed", closedPromise)
 
-			// read() 方法
-			reader.Set("read", func(call goja.FunctionCall) goja.Value {
-				promise, resolve, _ := runtime.NewPromise()
-				result := runtime.NewObject()
+			var readerClaimed bool
+			claimReader := func() bool {
+				if readerClaimed {
+					return true
+				}
+				if !markBodyUsed() {
+					return false
+				}
+				readerClaimed = true
+				return true
+			}
 
+			reader.Set("read", func(call goja.FunctionCall) goja.Value {
+				promise, resolve, reject := runtime.NewPromise()
+				if !claimReader() {
+					reject(runtime.NewTypeError(bodyAlreadyUsedErrorMessage))
+					return runtime.ToValue(promise)
+				}
+
+				result := runtime.NewObject()
 				cancelledMutex.RLock()
 				isCancelled := cancelled
 				cancelledMutex.RUnlock()
-
 				if isCancelled {
-					// 已取消：直接返回 done
 					result.Set("value", goja.Undefined())
 					result.Set("done", true)
 					resolve(result)
 					return runtime.ToValue(promise)
 				}
 
-				markBodyUsed()
-
-				if localIndex < len(bodyData) {
-					// 返回所有数据（一次性，chunk 类型保持与 Node fetch 一致）
-					result.Set("value", createUint8ArrayValue(runtime, bodyData[localIndex:]))
+				if idx < len(dataCopy) {
+					result.Set("value", createUint8ArrayValue(runtime, dataCopy[idx:]))
 					result.Set("done", false)
-					localIndex = len(bodyData)
+					idx = len(dataCopy)
 				} else {
 					result.Set("value", goja.Undefined())
 					result.Set("done", true)
@@ -2977,39 +2542,39 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 				return runtime.ToValue(promise)
 			})
 
-			// cancel() 方法
 			reader.Set("cancel", func(call goja.FunctionCall) goja.Value {
 				promise, resolve, _ := runtime.NewPromise()
-				localIndex = len(bodyData) // 标记为已消费
-				markBodyUsed()
+				claimReader()
 				markCancelled()
+				idx = len(dataCopy)
 				closeReader()
 				resolve(goja.Undefined())
 				return runtime.ToValue(promise)
 			})
 
 			reader.Set("releaseLock", func(call goja.FunctionCall) goja.Value {
-				releaseReaderByID(currentReaderID)
+				closeReader()
 				return goja.Undefined()
 			})
 
 			return reader
-		})
+		}
 
-		// cancel() 方法
-		bodyObj.Set("cancel", func(call goja.FunctionCall) goja.Value {
+		bodyStream.Set("getReader", getReaderFn)
+		bodyStream.Set("cancel", func(call goja.FunctionCall) goja.Value {
 			promise, resolve, _ := runtime.NewPromise()
-			markBodyUsed()
-			markCancelled()
-			releaseAllLocks()
+			if markBodyUsed() {
+				markCancelled()
+			}
+			streamLockMu.Lock()
+			streamLocked = false
+			bodyStream.Set("locked", false)
+			streamLockMu.Unlock()
 			resolve(goja.Undefined())
 			return runtime.ToValue(promise)
 		})
 
-		// locked 属性
-		bodyObj.Set("locked", false)
-
-		respObj.Set("body", bodyObj)
+		respObj.Set("body", bodyStream)
 	}
 
 	setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", false)
@@ -3429,6 +2994,284 @@ func (fe *FetchEnhancer) consumeReadableStream(runtime *goja.Runtime, stream *go
 	return consumeFn(goja.Undefined(), stream, runtime.ToValue(mode))
 }
 
+func (fe *FetchEnhancer) newResponseReadableStream(
+	runtime *goja.Runtime,
+	streamReader *StreamReader,
+	onConsume func(),
+	onCancel func(),
+	convertStreamError func(error) goja.Value,
+	isCancelled func() bool,
+) (*goja.Object, error) {
+	if runtime == nil || streamReader == nil {
+		return nil, fmt.Errorf("runtime or streamReader is nil")
+	}
+
+	streamCtor := runtime.Get("ReadableStream")
+	if streamCtor == nil || goja.IsUndefined(streamCtor) || goja.IsNull(streamCtor) {
+		return nil, fmt.Errorf("ReadableStream constructor is unavailable")
+	}
+
+	source := runtime.NewObject()
+	source.Set("pull", func(call goja.FunctionCall) goja.Value {
+		controller := call.Argument(0).ToObject(runtime)
+		if controller == nil {
+			return goja.Undefined()
+		}
+
+		enqueueVal := controller.Get("enqueue")
+		closeVal := controller.Get("close")
+		errorVal := controller.Get("error")
+
+		if isCancelled != nil && isCancelled() {
+			if closeFn, ok := goja.AssertFunction(closeVal); ok {
+				if _, err := closeFn(controller); err != nil {
+					panic(err)
+				}
+			}
+			return goja.Undefined()
+		}
+
+		if onConsume != nil {
+			onConsume()
+		}
+
+		type readResult struct {
+			data []byte
+			done bool
+			err  error
+		}
+
+		resultCh := make(chan readResult, 1)
+		go func() {
+			data, done, err := streamReader.Read(0)
+			resultCh <- readResult{
+				data: data,
+				done: done,
+				err:  err,
+			}
+		}()
+
+		handleResult := func(res readResult) {
+			if res.err != nil {
+				var value goja.Value = runtime.NewGoError(res.err)
+				if convertStreamError != nil {
+					value = convertStreamError(res.err)
+				}
+				if errorFn, ok := goja.AssertFunction(errorVal); ok {
+					if _, callErr := errorFn(controller, value); callErr != nil {
+						panic(callErr)
+					}
+				}
+				return
+			}
+
+			if len(res.data) > 0 {
+				if enqueueFn, ok := goja.AssertFunction(enqueueVal); ok {
+					if _, err := enqueueFn(controller, createUint8ArrayValue(runtime, res.data)); err != nil {
+						panic(err)
+					}
+				}
+			}
+
+			if res.done {
+				if onCancel != nil {
+					onCancel()
+				}
+				if closeFn, ok := goja.AssertFunction(closeVal); ok {
+					if _, err := closeFn(controller); err != nil {
+						panic(err)
+					}
+				}
+			}
+		}
+
+		setImmediateVal := runtime.Get("setImmediate")
+		if setImmediateVal != nil && !goja.IsUndefined(setImmediateVal) && !goja.IsNull(setImmediateVal) {
+			if setImmediateFn, ok := goja.AssertFunction(setImmediateVal); ok {
+				var pump func(goja.FunctionCall) goja.Value
+				pump = func(call goja.FunctionCall) goja.Value {
+					select {
+					case res := <-resultCh:
+						handleResult(res)
+					default:
+						setImmediateFn(goja.Undefined(), runtime.ToValue(pump), runtime.ToValue(1))
+					}
+					return goja.Undefined()
+				}
+				setImmediateFn(goja.Undefined(), runtime.ToValue(pump), runtime.ToValue(1))
+				return goja.Undefined()
+			}
+		}
+
+		res := <-resultCh
+		handleResult(res)
+		return goja.Undefined()
+	})
+
+	source.Set("cancel", func(call goja.FunctionCall) goja.Value {
+		if onCancel != nil {
+			onCancel()
+		}
+		return goja.Undefined()
+	})
+
+	streamVal, err := runtime.New(streamCtor, source)
+	if err != nil {
+		return nil, err
+	}
+	return streamVal.ToObject(runtime), nil
+}
+
+func (fe *FetchEnhancer) teeReadableStream(runtime *goja.Runtime, stream *goja.Object) (*goja.Object, *goja.Object, error) {
+	if stream == nil {
+		return nil, nil, fmt.Errorf("stream is nil")
+	}
+	helper, err := fe.ensureReadableStreamTeeHelper(runtime)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	result, err := helper(goja.Undefined(), stream)
+	if err != nil {
+		return nil, nil, err
+	}
+	arr := result.ToObject(runtime)
+	if arr == nil {
+		return nil, nil, fmt.Errorf("tee helper returned invalid result")
+	}
+
+	firstVal := arr.Get("0")
+	secondVal := arr.Get("1")
+	first := firstVal.ToObject(runtime)
+	second := secondVal.ToObject(runtime)
+	if first == nil || second == nil {
+		return nil, nil, fmt.Errorf("tee helper returned invalid branches")
+	}
+	return first, second, nil
+}
+
+func (fe *FetchEnhancer) ensureReadableStreamTeeHelper(runtime *goja.Runtime) (goja.Callable, error) {
+	helper := runtime.Get("__flowReadableStreamTee")
+	if helper == nil || goja.IsUndefined(helper) || goja.IsNull(helper) {
+		if _, err := runtime.RunString(readableStreamTeeHelperJS); err != nil {
+			return nil, err
+		}
+		helper = runtime.Get("__flowReadableStreamTee")
+	}
+	fn, ok := goja.AssertFunction(helper)
+	if !ok {
+		return nil, fmt.Errorf("__flowReadableStreamTee is not callable")
+	}
+	return fn, nil
+}
+
+const readableStreamTeeHelperJS = `
+(function () {
+  if (typeof globalThis === 'undefined') {
+    return;
+  }
+  if (typeof globalThis.__flowReadableStreamTee === 'function') {
+    return;
+  }
+
+  function __flowCloneReadableChunk(value) {
+    if (value == null) {
+      return value;
+    }
+    if (typeof Buffer !== 'undefined' && Buffer.isBuffer && Buffer.isBuffer(value)) {
+      return Buffer.from(value);
+    }
+    if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
+      return value.slice(0);
+    }
+    if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(value)) {
+      try {
+        return new value.constructor(value);
+      } catch (err) {
+      }
+    }
+    if (typeof value.slice === 'function') {
+      try {
+        return value.slice(0);
+      } catch (err) {
+      }
+    }
+    return value;
+  }
+
+  globalThis.__flowReadableStreamTee = function (stream) {
+    if (!stream || typeof stream.getReader !== 'function') {
+      throw new TypeError('ReadableStream tee requires a valid ReadableStream');
+    }
+
+    const reader = stream.getReader();
+    const controllers = [null, null];
+    const branchCancelled = [false, false];
+    let readerCancelled = false;
+
+    function tryCancelReader(reason) {
+      if (readerCancelled) {
+        return;
+      }
+      if (!branchCancelled[0] || !branchCancelled[1]) {
+        return;
+      }
+      readerCancelled = true;
+      if (typeof reader.cancel === 'function') {
+        Promise.resolve().then(function () {
+          reader.cancel(reason).catch(function () {});
+        });
+      }
+    }
+
+    function createBranch(index) {
+      return new ReadableStream({
+        start(controller) {
+          controllers[index] = controller;
+        },
+        cancel(reason) {
+          branchCancelled[index] = true;
+          tryCancelReader(reason);
+        }
+      });
+    }
+
+    const branch1 = createBranch(0);
+    const branch2 = createBranch(1);
+
+    (async () => {
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) {
+            controllers.forEach(ctrl => ctrl && ctrl.close());
+            break;
+          }
+          const chunkA = __flowCloneReadableChunk(value);
+          const chunkB = __flowCloneReadableChunk(value);
+          if (controllers[0]) {
+            controllers[0].enqueue(chunkA);
+          }
+          if (controllers[1]) {
+            controllers[1].enqueue(chunkB);
+          }
+        }
+      } catch (error) {
+        controllers.forEach(ctrl => ctrl && ctrl.error(error));
+      } finally {
+        if (typeof reader.releaseLock === 'function') {
+          try {
+            reader.releaseLock();
+          } catch (err) {}
+        }
+      }
+    })();
+
+    return [branch1, branch2];
+  };
+})();
+`
+
 // ==================== 辅助方法 ====================
 
 func isReadableStreamObject(obj *goja.Object) bool {
@@ -3441,6 +3284,183 @@ func isReadableStreamObject(obj *goja.Object) bool {
 	}
 	_, ok := goja.AssertFunction(getReaderVal)
 	return ok
+}
+
+func exportReadableStreamChunk(runtime *goja.Runtime, value goja.Value) ([]byte, error) {
+	if runtime == nil {
+		return nil, fmt.Errorf("runtime is nil")
+	}
+
+	var data []byte
+	if err := runtime.ExportTo(value, &data); err == nil {
+		copied := append([]byte(nil), data...)
+		return copied, nil
+	}
+
+	if obj, ok := value.(*goja.Object); ok {
+		switch exported := obj.Export().(type) {
+		case []byte:
+			copied := append([]byte(nil), exported...)
+			return copied, nil
+		case goja.ArrayBuffer:
+			bytes := exported.Bytes()
+			copied := append([]byte(nil), bytes...)
+			return copied, nil
+		}
+	}
+
+	return nil, fmt.Errorf("unsupported ReadableStream chunk type")
+}
+
+type requestStreamWriter struct {
+	id     string
+	writer *io.PipeWriter
+
+	mu     sync.Mutex
+	closed bool
+}
+
+func (w *requestStreamWriter) write(data []byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return io.ErrClosedPipe
+	}
+	_, err := w.writer.Write(data)
+	return err
+}
+
+func (w *requestStreamWriter) closeWithError(err error) {
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	w.closed = true
+	writer := w.writer
+	w.mu.Unlock()
+
+	if writer != nil {
+		_ = writer.CloseWithError(err)
+	}
+}
+
+func (fe *FetchEnhancer) registerRequestStreamWriter(pw *io.PipeWriter) string {
+	fe.requestStreamMu.Lock()
+	defer fe.requestStreamMu.Unlock()
+	fe.requestStreamSeq++
+	id := fmt.Sprintf("rsw_%d", fe.requestStreamSeq)
+	fe.requestStreamWriters[id] = &requestStreamWriter{
+		id:     id,
+		writer: pw,
+	}
+	return id
+}
+
+func (fe *FetchEnhancer) getRequestStreamWriter(id string) *requestStreamWriter {
+	fe.requestStreamMu.Lock()
+	defer fe.requestStreamMu.Unlock()
+	return fe.requestStreamWriters[id]
+}
+
+func (fe *FetchEnhancer) removeRequestStreamWriter(id string) *requestStreamWriter {
+	fe.requestStreamMu.Lock()
+	defer fe.requestStreamMu.Unlock()
+	writer := fe.requestStreamWriters[id]
+	delete(fe.requestStreamWriters, id)
+	return writer
+}
+
+func (fe *FetchEnhancer) ensureRequestStreamHelpers(runtime *goja.Runtime) error {
+	if runtime == nil {
+		return fmt.Errorf("runtime is nil")
+	}
+
+	flag := runtime.Get("__flowRequestBodyHelpersReady")
+	if flag != nil && !goja.IsUndefined(flag) && !goja.IsNull(flag) && flag.ToBoolean() {
+		return nil
+	}
+
+	runtime.Set("__flowRequestBodyHelpersReady", true)
+	runtime.Set("__flowRequestBodyWrite", fe.requestBodyWriteFunc(runtime))
+	runtime.Set("__flowRequestBodyClose", fe.requestBodyCloseFunc(runtime))
+	runtime.Set("__flowRequestBodyError", fe.requestBodyErrorFunc(runtime))
+
+	if _, err := runtime.RunString(requestStreamHelperJS); err != nil {
+		return fmt.Errorf("注入请求流辅助脚本失败: %w", err)
+	}
+	return nil
+}
+
+func (fe *FetchEnhancer) requestBodyWriteFunc(runtime *goja.Runtime) func(goja.FunctionCall) goja.Value {
+	return func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) < 2 {
+			return goja.Undefined()
+		}
+		id := call.Argument(0).String()
+		writer := fe.getRequestStreamWriter(id)
+		if writer == nil {
+			panic(runtime.NewTypeError("request body writer not found"))
+		}
+
+		data, err := exportReadableStreamChunk(runtime, call.Argument(1))
+		if err != nil {
+			panic(runtime.NewTypeError(err.Error()))
+		}
+		if err := writer.write(data); err != nil {
+			panic(runtime.NewGoError(err))
+		}
+		return goja.Undefined()
+	}
+}
+
+func (fe *FetchEnhancer) requestBodyCloseFunc(runtime *goja.Runtime) func(goja.FunctionCall) goja.Value {
+	return func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			return goja.Undefined()
+		}
+		id := call.Argument(0).String()
+		if writer := fe.removeRequestStreamWriter(id); writer != nil {
+			writer.closeWithError(nil)
+		}
+		return goja.Undefined()
+	}
+}
+
+func (fe *FetchEnhancer) requestBodyErrorFunc(runtime *goja.Runtime) func(goja.FunctionCall) goja.Value {
+	return func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			return goja.Undefined()
+		}
+		id := call.Argument(0).String()
+		var message string
+		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Argument(1)) && !goja.IsNull(call.Argument(1)) {
+			message = call.Argument(1).String()
+		} else {
+			message = "ReadableStream aborted"
+		}
+		if writer := fe.removeRequestStreamWriter(id); writer != nil {
+			writer.closeWithError(fmt.Errorf(message))
+		}
+		return goja.Undefined()
+	}
+}
+
+func (fe *FetchEnhancer) startReadableStreamPump(runtime *goja.Runtime, streamObj *goja.Object, writerID string) error {
+	if runtime == nil || streamObj == nil {
+		return fmt.Errorf("invalid parameters for stream pump")
+	}
+	if err := fe.ensureRequestStreamHelpers(runtime); err != nil {
+		return err
+	}
+
+	pipeVal := runtime.Get("__flowPipeReadableStream")
+	pipeFn, ok := goja.AssertFunction(pipeVal)
+	if !ok {
+		return fmt.Errorf("__flowPipeReadableStream is not callable")
+	}
+	_, err := pipeFn(goja.Undefined(), streamObj, runtime.ToValue(writerID))
+	return err
 }
 
 // extractBufferBytes 从 Buffer 对象提取字节数据
