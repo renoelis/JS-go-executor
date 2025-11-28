@@ -164,7 +164,7 @@ const requestStreamHelperJS = `
     }
     pump();
   };
-})();
+})(typeof globalThis !== 'undefined' ? globalThis : this);
 `
 
 // ==================== FetchEnhancer ====================
@@ -2460,119 +2460,204 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 	if data != nil && data.ForceNullBody {
 		respObj.Set("body", goja.Null())
 	} else {
-		bodyStream := runtime.NewObject()
-		streams.AttachReadableStreamPrototype(runtime, bodyStream)
-		bodyStream.Set("__bufferedBody__", bodyData)
-		bodyStream.Set("locked", false)
-
-		var streamLocked bool
-		var streamLockMu sync.Mutex
-
-		getReaderFn := func(call goja.FunctionCall) goja.Value {
-			if isBodyConsumed() {
-				panic(runtime.NewTypeError(bodyAlreadyUsedErrorMessage))
-			}
-
-			streamLockMu.Lock()
-			if streamLocked {
-				streamLockMu.Unlock()
-				panic(runtime.NewTypeError("ReadableStream is already locked"))
-			}
-			streamLocked = true
-			bodyStream.Set("locked", true)
-			streamLockMu.Unlock()
-
-			reader := runtime.NewObject()
-			dataCopy := append([]byte(nil), bodyData...)
-			var idx int
-			closedPromise, resolveClosed, _ := runtime.NewPromise()
-			var closeOnce sync.Once
-			closeReader := func() {
-				closeOnce.Do(func() {
-					resolveClosed(goja.Undefined())
-					streamLockMu.Lock()
-					streamLocked = false
-					bodyStream.Set("locked", false)
-					streamLockMu.Unlock()
-				})
-			}
-			reader.Set("closed", closedPromise)
-
-			var readerClaimed bool
-			claimReader := func() bool {
-				if readerClaimed {
-					return true
-				}
-				if !markBodyUsed() {
-					return false
-				}
-				readerClaimed = true
-				return true
-			}
-
-			reader.Set("read", func(call goja.FunctionCall) goja.Value {
-				promise, resolve, reject := runtime.NewPromise()
-				if !claimReader() {
-					reject(runtime.NewTypeError(bodyAlreadyUsedErrorMessage))
-					return runtime.ToValue(promise)
-				}
-
-				result := runtime.NewObject()
-				cancelledMutex.RLock()
-				isCancelled := cancelled
-				cancelledMutex.RUnlock()
-				if isCancelled {
-					result.Set("value", goja.Undefined())
-					result.Set("done", true)
-					resolve(result)
-					return runtime.ToValue(promise)
-				}
-
-				if idx < len(dataCopy) {
-					result.Set("value", createUint8ArrayValue(runtime, dataCopy[idx:]))
-					result.Set("done", false)
-					idx = len(dataCopy)
-				} else {
-					result.Set("value", goja.Undefined())
-					result.Set("done", true)
-					closeReader()
-				}
-
-				resolve(result)
-				return runtime.ToValue(promise)
-			})
-
-			reader.Set("cancel", func(call goja.FunctionCall) goja.Value {
-				promise, resolve, _ := runtime.NewPromise()
-				claimReader()
-				markCancelled()
-				idx = len(dataCopy)
-				closeReader()
-				resolve(goja.Undefined())
-				return runtime.ToValue(promise)
-			})
-
-			reader.Set("releaseLock", func(call goja.FunctionCall) goja.Value {
-				closeReader()
-				return goja.Undefined()
-			})
-
-			return reader
+		streamCtor := runtime.Get("ReadableStream")
+		if streamCtor == nil || goja.IsUndefined(streamCtor) || goja.IsNull(streamCtor) {
+			panic(runtime.NewTypeError("ReadableStream constructor is unavailable"))
 		}
 
-		bodyStream.Set("getReader", getReaderFn)
-		bodyStream.Set("cancel", func(call goja.FunctionCall) goja.Value {
-			promise, resolve, _ := runtime.NewPromise()
-			if markBodyUsed() {
-				markCancelled()
+		chunks := make([][]byte, 0, 1)
+		if len(bodyData) > 0 {
+			chunks = append(chunks, bodyData)
+		}
+
+		var chunkIndex int
+		var controllerRef *goja.Object
+		var abortCleanup func()
+		var pendingClose bool
+		var closeOnce sync.Once
+		var aborted bool
+
+		closeController := func(controller *goja.Object) {
+			if aborted {
+				return
 			}
-			streamLockMu.Lock()
-			streamLocked = false
-			bodyStream.Set("locked", false)
-			streamLockMu.Unlock()
-			resolve(goja.Undefined())
-			return runtime.ToValue(promise)
+			closeOnce.Do(func() {
+				if abortCleanup != nil {
+					abortCleanup()
+					abortCleanup = nil
+				}
+				target := controller
+				if target == nil {
+					target = controllerRef
+				}
+				if target == nil {
+					return
+				}
+				if closeFn, ok := goja.AssertFunction(target.Get("close")); ok {
+					if _, err := closeFn(target); err != nil {
+						panic(err)
+					}
+				}
+			})
+		}
+
+		scheduleClose := func(controller *goja.Object) {
+			if pendingClose || aborted {
+				return
+			}
+			pendingClose = true
+			if setImmediateVal := runtime.Get("setImmediate"); setImmediateVal != nil && !goja.IsUndefined(setImmediateVal) && !goja.IsNull(setImmediateVal) {
+				if setImmediateFn, ok := goja.AssertFunction(setImmediateVal); ok {
+					var cb goja.Value
+					cb = runtime.ToValue(func(goja.FunctionCall) goja.Value {
+						closeController(controller)
+						return goja.Undefined()
+					})
+					if _, err := setImmediateFn(goja.Undefined(), cb); err == nil {
+						return
+					}
+				}
+			}
+			closeController(controller)
+		}
+
+		triggerAbort := func(reason goja.Value) {
+			if reason == nil || goja.IsUndefined(reason) || goja.IsNull(reason) {
+				reason = CreateDOMException(runtime, "This operation was aborted", "AbortError")
+			}
+			if aborted {
+				return
+			}
+			aborted = true
+			markCancelled()
+			if abortCleanup != nil {
+				abortCleanup()
+				abortCleanup = nil
+			}
+			if controllerRef != nil {
+				if errorFn, ok := goja.AssertFunction(controllerRef.Get("error")); ok {
+					if _, err := errorFn(controllerRef, reason); err != nil {
+						panic(err)
+					}
+				}
+			}
+		}
+
+		source := runtime.NewObject()
+		source.Set("start", func(call goja.FunctionCall) goja.Value {
+			controllerRef = call.Argument(0).ToObject(runtime)
+			return goja.Undefined()
 		})
+
+		source.Set("pull", func(call goja.FunctionCall) goja.Value {
+			controller := call.Argument(0).ToObject(runtime)
+			if controller == nil || aborted {
+				return goja.Undefined()
+			}
+
+			cancelledMutex.RLock()
+			isCancelled := cancelled
+			cancelledMutex.RUnlock()
+			if isCancelled {
+				closeController(controller)
+				return goja.Undefined()
+			}
+
+			if chunkIndex < len(chunks) {
+				chunk := chunks[chunkIndex]
+				chunkIndex++
+				if len(chunk) > 0 {
+					if enqueueFn, ok := goja.AssertFunction(controller.Get("enqueue")); ok {
+						if _, err := enqueueFn(controller, createUint8ArrayValue(runtime, chunk)); err != nil {
+							panic(err)
+						}
+					}
+				}
+				if chunkIndex >= len(chunks) {
+					scheduleClose(controller)
+				}
+				return goja.Undefined()
+			}
+
+			closeController(controller)
+			return goja.Undefined()
+		})
+
+		source.Set("cancel", func(call goja.FunctionCall) goja.Value {
+			markCancelled()
+			closeController(nil)
+			return goja.Undefined()
+		})
+
+		streamVal, err := runtime.New(streamCtor, source)
+		if err != nil {
+			panic(runtime.NewGoError(err))
+		}
+		bodyStream := streamVal.ToObject(runtime)
+
+		if data.Signal != nil {
+			addVal := data.Signal.Get("addEventListener")
+			if addFn, ok := goja.AssertFunction(addVal); ok {
+				handler := runtime.ToValue(func(goja.FunctionCall) goja.Value {
+					reason := data.Signal.Get("reason")
+					triggerAbort(reason)
+					return goja.Undefined()
+				})
+				opts := runtime.NewObject()
+				opts.Set("once", true)
+				if _, err := addFn(data.Signal, runtime.ToValue("abort"), handler, opts); err == nil {
+					abortCleanup = func() {
+						if removeFn, ok := goja.AssertFunction(data.Signal.Get("removeEventListener")); ok {
+							_, _ = removeFn(data.Signal, runtime.ToValue("abort"), handler)
+						}
+					}
+				}
+				if abortedVal := data.Signal.Get("aborted"); abortedVal != nil && abortedVal.ToBoolean() {
+					reason := data.Signal.Get("reason")
+					triggerAbort(reason)
+				}
+			}
+		}
+
+		wrapStrictMethod := func(name string) {
+			methodVal := bodyStream.Get(name)
+			fn, ok := goja.AssertFunction(methodVal)
+			if !ok {
+				return
+			}
+			bodyStream.Set(name, func(call goja.FunctionCall) goja.Value {
+				if !markBodyUsed() {
+					panic(runtime.NewTypeError(bodyAlreadyUsedErrorMessage))
+				}
+				result, err := fn(call.This, call.Arguments...)
+				if err != nil {
+					panic(err)
+				}
+				return result
+			})
+		}
+
+		wrapStrictMethod("getReader")
+		wrapStrictMethod("tee")
+		wrapStrictMethod("pipeThrough")
+		wrapStrictMethod("pipeTo")
+		wrapStrictMethod("values")
+
+		if cancelVal := bodyStream.Get("cancel"); cancelVal != nil && !goja.IsUndefined(cancelVal) && !goja.IsNull(cancelVal) {
+			if cancelFn, ok := goja.AssertFunction(cancelVal); ok {
+				bodyStream.Set("cancel", func(call goja.FunctionCall) goja.Value {
+					marked := markBodyUsed()
+					if marked {
+						markCancelled()
+					}
+					result, err := cancelFn(call.This, call.Arguments...)
+					if err != nil {
+						panic(err)
+					}
+					return result
+				})
+			}
+		}
 
 		respObj.Set("body", bodyStream)
 	}
@@ -3023,11 +3108,6 @@ func (fe *FetchEnhancer) newResponseReadableStream(
 		errorVal := controller.Get("error")
 
 		if isCancelled != nil && isCancelled() {
-			if closeFn, ok := goja.AssertFunction(closeVal); ok {
-				if _, err := closeFn(controller); err != nil {
-					panic(err)
-				}
-			}
 			return goja.Undefined()
 		}
 
@@ -3074,13 +3154,19 @@ func (fe *FetchEnhancer) newResponseReadableStream(
 			}
 
 			if res.done {
+				shouldClose := true
+				if isCancelled != nil && isCancelled() {
+					shouldClose = false
+				}
+				if shouldClose {
+					if closeFn, ok := goja.AssertFunction(closeVal); ok {
+						if _, err := closeFn(controller); err != nil {
+							panic(err)
+						}
+					}
+				}
 				if onCancel != nil {
 					onCancel()
-				}
-				if closeFn, ok := goja.AssertFunction(closeVal); ok {
-					if _, err := closeFn(controller); err != nil {
-						panic(err)
-					}
 				}
 			}
 		}
