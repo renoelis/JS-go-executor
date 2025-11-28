@@ -344,6 +344,7 @@ func (fe *FetchEnhancer) attachResponseStaticMethods(runtime *goja.Runtime) erro
 			Redirected:    false,
 			ResponseType:  "error",
 			ContentLength: 0,
+			ForceNullBody: true,
 		}
 		return fe.recreateResponse(runtime, data)
 	})
@@ -385,6 +386,7 @@ func (fe *FetchEnhancer) attachResponseStaticMethods(runtime *goja.Runtime) erro
 			Redirected:    false,
 			ResponseType:  "default",
 			ContentLength: 0,
+			ForceNullBody: true,
 		}
 		return fe.recreateResponse(runtime, data)
 	})
@@ -449,6 +451,15 @@ func (fe *FetchEnhancer) attachResponseStaticMethods(runtime *goja.Runtime) erro
 func isValidResponseRedirectStatus(status int) bool {
 	switch status {
 	case 301, 302, 303, 307, 308:
+		return true
+	default:
+		return false
+	}
+}
+
+func isNullBodyStatus(status int) bool {
+	switch status {
+	case 101, 204, 205, 304:
 		return true
 	default:
 		return false
@@ -592,6 +603,7 @@ func (fe *FetchEnhancer) buildResponseDataFromConstructor(runtime *goja.Runtime,
 		Redirected:    false,
 		ResponseType:  "default",
 		ContentLength: int64(len(bodyBytes)),
+		ForceNullBody: isNullBodyStatus(status),
 	}
 	responseData.JSReadableBody = jsReadableBody
 
@@ -1735,6 +1747,19 @@ func (fe *FetchEnhancer) recreateResponse(runtime *goja.Runtime, data *ResponseD
 	// bodyUsed 默认为 false，供后续方法更新
 	setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", false)
 
+	if data.ForceNullBody {
+		if len(data.Body) == 0 {
+			data.Body = []byte{}
+		}
+		data.JSReadableBody = nil
+		if data.BodyStream != nil {
+			data.BodyStream.Close()
+			data.BodyStream = nil
+		}
+		data.IsStreaming = false
+		data.ContentLength = 0
+	}
+
 	// 🔥 核心：Body 读取方法（支持流式和缓冲）
 	// 🔥 注意：clone() 方法在 attachStreamingBodyMethods 和 attachBufferedBodyMethods 中设置
 	switch {
@@ -1776,6 +1801,27 @@ func (fe *FetchEnhancer) createResponseHeaders(runtime *goja.Runtime, httpHeader
 				setCookieValues = append(setCookieValues, v)
 			}
 		}
+	}
+
+	createIterator := func(items []interface{}) *goja.Object {
+		iterator := runtime.NewObject()
+		index := 0
+		iterator.Set("next", func(call goja.FunctionCall) goja.Value {
+			result := runtime.NewObject()
+			if index < len(items) {
+				result.Set("value", runtime.ToValue(items[index]))
+				result.Set("done", false)
+				index++
+			} else {
+				result.Set("value", goja.Undefined())
+				result.Set("done", true)
+			}
+			return result
+		})
+		iterator.SetSymbol(goja.SymIterator, func(call goja.FunctionCall) goja.Value {
+			return iterator
+		})
+		return iterator
 	}
 
 	// get(name) - 获取指定头部值
@@ -1839,6 +1885,61 @@ func (fe *FetchEnhancer) createResponseHeaders(runtime *goja.Runtime, httpHeader
 		return goja.Undefined()
 	})
 
+	headersObj.Set("entries", func(call goja.FunctionCall) goja.Value {
+		sortedKeys, originalKeys := sortedHTTPHeaderMapping(httpHeaders)
+		pairs := make([]interface{}, 0, len(sortedKeys))
+		for _, lowerKey := range sortedKeys {
+			originalKey := originalKeys[lowerKey]
+			values := httpHeaders[originalKey]
+			if len(values) == 0 {
+				continue
+			}
+
+			var value interface{}
+			if lowerKey == "set-cookie" && len(values) > 1 {
+				copied := append([]string(nil), values...)
+				value = copied
+			} else {
+				value = values[0]
+			}
+
+			pairs = append(pairs, []interface{}{lowerKey, value})
+		}
+		return createIterator(pairs)
+	})
+
+	headersObj.Set("keys", func(call goja.FunctionCall) goja.Value {
+		sortedKeys, originalKeys := sortedHTTPHeaderMapping(httpHeaders)
+		keys := make([]interface{}, 0, len(sortedKeys))
+		for _, lowerKey := range sortedKeys {
+			originalKey := originalKeys[lowerKey]
+			if values := httpHeaders[originalKey]; len(values) == 0 {
+				continue
+			}
+			keys = append(keys, lowerKey)
+		}
+		return createIterator(keys)
+	})
+
+	headersObj.Set("values", func(call goja.FunctionCall) goja.Value {
+		sortedKeys, originalKeys := sortedHTTPHeaderMapping(httpHeaders)
+		vals := make([]interface{}, 0, len(sortedKeys))
+		for _, lowerKey := range sortedKeys {
+			originalKey := originalKeys[lowerKey]
+			values := httpHeaders[originalKey]
+			if len(values) == 0 {
+				continue
+			}
+
+			if lowerKey == "set-cookie" && len(values) > 1 {
+				vals = append(vals, append([]string(nil), values...))
+			} else {
+				vals = append(vals, values[0])
+			}
+		}
+		return createIterator(vals)
+	})
+
 	// getSetCookie() - Node fetch 扩展：返回 Set-Cookie 数组
 	headersObj.Set("getSetCookie", func(call goja.FunctionCall) goja.Value {
 		if len(setCookieValues) == 0 {
@@ -1846,6 +1947,21 @@ func (fe *FetchEnhancer) createResponseHeaders(runtime *goja.Runtime, httpHeader
 		}
 		copyVals := append([]string(nil), setCookieValues...)
 		return runtime.ToValue(copyVals)
+	})
+
+	headersObj.SetSymbol(goja.SymIterator, func(call goja.FunctionCall) goja.Value {
+		entriesVal := headersObj.Get("entries")
+		if entriesVal == nil || goja.IsUndefined(entriesVal) {
+			return goja.Undefined()
+		}
+		if fn, ok := goja.AssertFunction(entriesVal); ok {
+			iter, err := fn(headersObj)
+			if err != nil {
+				panic(err)
+			}
+			return iter
+		}
+		return goja.Undefined()
 	})
 
 	attachConstructorPrototype(runtime, "Headers", headersObj)
@@ -2736,131 +2852,135 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 		return runtime.ToValue(promise)
 	})
 
-	// 🔥 body 属性（ReadableStream 对象，支持 cancel 和 getReader）
-	// Web API 标准：response.body 应该是 ReadableStream，不是 null
-	bodyObj := runtime.NewObject()
-	streams.AttachReadableStreamPrototype(runtime, bodyObj)
+	if data != nil && data.ForceNullBody {
+		respObj.Set("body", goja.Null())
+	} else {
+		// 🔥 body 属性（ReadableStream 对象，支持 cancel 和 getReader）
+		bodyObj := runtime.NewObject()
+		streams.AttachReadableStreamPrototype(runtime, bodyObj)
 
-	var bodyLocked bool
-	var bodyLockOwnerID uint64
-	var bodyLockCounter uint64
-	var bodyLockMutex sync.Mutex
+		var bodyLocked bool
+		var bodyLockOwnerID uint64
+		var bodyLockCounter uint64
+		var bodyLockMutex sync.Mutex
 
-	releaseAllLocks := func() {
-		bodyLockMutex.Lock()
-		bodyLocked = false
-		bodyLockOwnerID = 0
-		bodyObj.Set("locked", false)
-		bodyLockMutex.Unlock()
-	}
-
-	releaseReaderByID := func(ownerID uint64) {
-		bodyLockMutex.Lock()
-		if bodyLocked && bodyLockOwnerID == ownerID {
+		releaseAllLocks := func() {
+			bodyLockMutex.Lock()
 			bodyLocked = false
 			bodyLockOwnerID = 0
 			bodyObj.Set("locked", false)
-		}
-		bodyLockMutex.Unlock()
-	}
-
-	// getReader() 方法
-	bodyObj.Set("getReader", func(call goja.FunctionCall) goja.Value {
-		if isBodyConsumed() {
-			panic(runtime.NewTypeError(bodyAlreadyUsedErrorMessage))
-		}
-
-		bodyLockMutex.Lock()
-		if bodyLocked {
 			bodyLockMutex.Unlock()
-			panic(runtime.NewTypeError("ReadableStream is already locked"))
 		}
-		bodyLocked = true
-		bodyLockCounter++
-		currentReaderID := bodyLockCounter
-		bodyLockOwnerID = currentReaderID
-		bodyObj.Set("locked", true)
-		bodyLockMutex.Unlock()
 
-		reader := runtime.NewObject()
-		localIndex := 0
-		closedPromise, resolveClosedPromise, _ := runtime.NewPromise()
-		var closeOnce sync.Once
-		closeReader := func() {
-			closeOnce.Do(func() {
-				resolveClosedPromise(goja.Undefined())
-				releaseReaderByID(currentReaderID)
-			})
+		releaseReaderByID := func(ownerID uint64) {
+			bodyLockMutex.Lock()
+			if bodyLocked && bodyLockOwnerID == ownerID {
+				bodyLocked = false
+				bodyLockOwnerID = 0
+				bodyObj.Set("locked", false)
+			}
+			bodyLockMutex.Unlock()
 		}
-		reader.Set("closed", closedPromise)
 
-		// read() 方法
-		reader.Set("read", func(call goja.FunctionCall) goja.Value {
-			promise, resolve, _ := runtime.NewPromise()
-			result := runtime.NewObject()
+		// getReader() 方法
+		bodyObj.Set("getReader", func(call goja.FunctionCall) goja.Value {
+			if isBodyConsumed() {
+				panic(runtime.NewTypeError(bodyAlreadyUsedErrorMessage))
+			}
 
-			cancelledMutex.RLock()
-			isCancelled := cancelled
-			cancelledMutex.RUnlock()
+			bodyLockMutex.Lock()
+			if bodyLocked {
+				bodyLockMutex.Unlock()
+				panic(runtime.NewTypeError("ReadableStream is already locked"))
+			}
+			bodyLocked = true
+			bodyLockCounter++
+			currentReaderID := bodyLockCounter
+			bodyLockOwnerID = currentReaderID
+			bodyObj.Set("locked", true)
+			bodyLockMutex.Unlock()
 
-			if isCancelled {
-				// 已取消：直接返回 done
-				result.Set("value", goja.Undefined())
-				result.Set("done", true)
+			reader := runtime.NewObject()
+			localIndex := 0
+			closedPromise, resolveClosedPromise, _ := runtime.NewPromise()
+			var closeOnce sync.Once
+			closeReader := func() {
+				closeOnce.Do(func() {
+					resolveClosedPromise(goja.Undefined())
+					releaseReaderByID(currentReaderID)
+				})
+			}
+			reader.Set("closed", closedPromise)
+
+			// read() 方法
+			reader.Set("read", func(call goja.FunctionCall) goja.Value {
+				promise, resolve, _ := runtime.NewPromise()
+				result := runtime.NewObject()
+
+				cancelledMutex.RLock()
+				isCancelled := cancelled
+				cancelledMutex.RUnlock()
+
+				if isCancelled {
+					// 已取消：直接返回 done
+					result.Set("value", goja.Undefined())
+					result.Set("done", true)
+					resolve(result)
+					return runtime.ToValue(promise)
+				}
+
+				markBodyUsed()
+
+				if localIndex < len(bodyData) {
+					// 返回所有数据（一次性，chunk 类型保持与 Node fetch 一致）
+					result.Set("value", createUint8ArrayValue(runtime, bodyData[localIndex:]))
+					result.Set("done", false)
+					localIndex = len(bodyData)
+				} else {
+					result.Set("value", goja.Undefined())
+					result.Set("done", true)
+					closeReader()
+				}
+
 				resolve(result)
 				return runtime.ToValue(promise)
-			}
+			})
 
-			markBodyUsed()
-
-			if localIndex < len(bodyData) {
-				// 返回所有数据（一次性，chunk 类型保持与 Node fetch 一致）
-				result.Set("value", createUint8ArrayValue(runtime, bodyData[localIndex:]))
-				result.Set("done", false)
-				localIndex = len(bodyData)
-			} else {
-				result.Set("value", goja.Undefined())
-				result.Set("done", true)
+			// cancel() 方法
+			reader.Set("cancel", func(call goja.FunctionCall) goja.Value {
+				promise, resolve, _ := runtime.NewPromise()
+				localIndex = len(bodyData) // 标记为已消费
+				markBodyUsed()
+				markCancelled()
 				closeReader()
-			}
+				resolve(goja.Undefined())
+				return runtime.ToValue(promise)
+			})
 
-			resolve(result)
-			return runtime.ToValue(promise)
+			reader.Set("releaseLock", func(call goja.FunctionCall) goja.Value {
+				releaseReaderByID(currentReaderID)
+				return goja.Undefined()
+			})
+
+			return reader
 		})
 
 		// cancel() 方法
-		reader.Set("cancel", func(call goja.FunctionCall) goja.Value {
+		bodyObj.Set("cancel", func(call goja.FunctionCall) goja.Value {
 			promise, resolve, _ := runtime.NewPromise()
-			localIndex = len(bodyData) // 标记为已消费
 			markBodyUsed()
 			markCancelled()
-			closeReader()
+			releaseAllLocks()
 			resolve(goja.Undefined())
 			return runtime.ToValue(promise)
 		})
 
-		reader.Set("releaseLock", func(call goja.FunctionCall) goja.Value {
-			releaseReaderByID(currentReaderID)
-			return goja.Undefined()
-		})
+		// locked 属性
+		bodyObj.Set("locked", false)
 
-		return reader
-	})
+		respObj.Set("body", bodyObj)
+	}
 
-	// cancel() 方法
-	bodyObj.Set("cancel", func(call goja.FunctionCall) goja.Value {
-		promise, resolve, _ := runtime.NewPromise()
-		markBodyUsed()
-		markCancelled()
-		releaseAllLocks()
-		resolve(goja.Undefined())
-		return runtime.ToValue(promise)
-	})
-
-	// locked 属性
-	bodyObj.Set("locked", false)
-
-	respObj.Set("body", bodyObj)
 	setResponseReadOnlyProperty(runtime, respObj, "bodyUsed", false)
 
 	// 🔥 clone() 方法 - 缓冲响应克隆（共享数据，避免深拷贝）

@@ -43,6 +43,7 @@ type ResponseData struct {
 	AbortCh        chan struct{} // 🔥 关联的 abort channel（用于流式读取时中止）
 	Signal         *goja.Object  // 🔥 原始 AbortSignal 对象（用于获取 reason）
 	JSReadableBody *goja.Object  // 🔥 Response 构造时传入的 ReadableStream body
+	ForceNullBody  bool          // 强制 response.body 为 null（WHATWG null body status 等场景）
 }
 
 // ==================== 缓冲读取函数 ====================

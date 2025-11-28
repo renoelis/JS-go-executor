@@ -468,6 +468,36 @@ func ExecuteRequestAsync(
 
 		redirected := redirectedFlag.Load()
 		responseType := determineResponseTypeForNode(requestMode)
+		statusText := resp.Status
+		if len(resp.Status) > 4 && resp.Status[3] == ' ' {
+			statusText = resp.Status[4:]
+		}
+
+		if isNullBodyStatus(resp.StatusCode) {
+			// WHATWG null body status：强制 Response.body 为 null
+			req.resultCh <- FetchResult{
+				response: &ResponseData{
+					StatusCode:    resp.StatusCode,
+					Status:        statusText,
+					Headers:       resp.Header,
+					Body:          []byte{},
+					IsStreaming:   false,
+					FinalURL:      resp.Request.URL.String(),
+					Redirected:    redirected,
+					ResponseType:  responseType,
+					ContentLength: 0,
+					AbortCh:       req.abortCh,
+					Signal:        req.signalObj,
+					ForceNullBody: true,
+				},
+				err:         nil,
+				abortReason: nil,
+			}
+
+			shouldCloseBody = true
+			shouldCancelContext = true
+			return
+		}
 
 		if shouldTryBuffering {
 			// 尝试缓冲模式：读取最多 MaxResponseSize+1 字节
@@ -490,12 +520,6 @@ func ExecuteRequestAsync(
 					nil,
 				}
 				return
-			}
-
-			// 提取 statusText
-			statusText := resp.Status
-			if len(resp.Status) > 4 && resp.Status[3] == ' ' {
-				statusText = resp.Status[4:]
 			}
 
 			// 发送缓冲响应
@@ -524,12 +548,6 @@ func ExecuteRequestAsync(
 		} else {
 			// 流式模式：已知大小 > MaxResponseSize，使用 bodyWrapper
 			bodyWrapper := createBodyWrapper(resp.Body, resp.ContentLength, config.ResponseReadTimeout, reqCancel)
-
-			// 提取 statusText
-			statusText := resp.Status
-			if len(resp.Status) > 4 && resp.Status[3] == ' ' {
-				statusText = resp.Status[4:]
-			}
 
 			req.resultCh <- FetchResult{
 				response: &ResponseData{
