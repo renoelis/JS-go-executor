@@ -353,9 +353,14 @@ func (fe *FetchEnhancer) attachResponseStaticMethods(runtime *goja.Runtime) erro
 			panic(runtime.NewTypeError("Response.redirect 需要 url 参数"))
 		}
 
-		location := call.Arguments[0].String()
-		if location == "" {
+		locationVal := call.Arguments[0]
+		location := locationVal.String()
+		if strings.TrimSpace(location) == "" {
 			panic(runtime.NewTypeError("Response.redirect 需要有效的 url"))
+		}
+
+		if parsed, err := neturl.ParseRequestURI(location); err != nil || !parsed.IsAbs() {
+			panic(runtime.NewTypeError(fmt.Sprintf("Failed to parse URL from %s", location)))
 		}
 
 		status := 302
@@ -548,12 +553,14 @@ func (fe *FetchEnhancer) buildResponseDataFromConstructor(runtime *goja.Runtime,
 			return nil, fmt.Errorf("Response init 必须是对象")
 		}
 
-		if statusVal := initObj.Get("status"); statusVal != nil && !goja.IsUndefined(statusVal) && !goja.IsNull(statusVal) {
-			parsed := int(statusVal.ToInteger())
-			if parsed < 200 || parsed > 599 || parsed == 101 {
-				return nil, fmt.Errorf("Response status 必须在 200-599 且不能为 101")
+		if statusVal := initObj.Get("status"); statusVal != nil {
+			if !goja.IsUndefined(statusVal) {
+				parsed := int(statusVal.ToInteger())
+				if parsed < 200 || parsed > 599 || parsed == 101 {
+					return nil, fmt.Errorf("Response status 必须在 200-599 且不能为 101")
+				}
+				status = parsed
 			}
-			status = parsed
 		}
 
 		if statusTextVal := initObj.Get("statusText"); statusTextVal != nil && !goja.IsUndefined(statusTextVal) && !goja.IsNull(statusTextVal) {
