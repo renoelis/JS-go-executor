@@ -484,6 +484,46 @@ func (fdr *FormDataReadable) emitError(err error) {
 	}
 }
 
+// Emit 主动触发事件（兼容 EventEmitter.emit）
+// 返回是否存在对应的监听器
+func (fdr *FormDataReadable) Emit(eventName string, args ...goja.Value) bool {
+	fdr.mutex.Lock()
+	listeners := fdr.listeners[eventName]
+	if len(listeners) == 0 {
+		fdr.mutex.Unlock()
+		return false
+	}
+
+	callbacks := make([]goja.Callable, 0, len(listeners))
+	toRemove := make([]int, 0)
+	for i, wrapper := range listeners {
+		callbacks = append(callbacks, wrapper.callback)
+		if wrapper.once {
+			toRemove = append(toRemove, i)
+		}
+	}
+
+	// 特殊事件状态标记
+	if eventName == "end" {
+		fdr.endEmitted = true
+	}
+	if eventName == "close" {
+		fdr.closeEmitted = true
+	}
+
+	for i := len(toRemove) - 1; i >= 0; i-- {
+		idx := toRemove[i]
+		fdr.listeners[eventName] = append(fdr.listeners[eventName][:idx], fdr.listeners[eventName][idx+1:]...)
+	}
+	fdr.mutex.Unlock()
+
+	for _, cb := range callbacks {
+		cb(goja.Undefined(), args...)
+	}
+
+	return true
+}
+
 // closeInternal 内部关闭方法
 func (fdr *FormDataReadable) closeInternal() error {
 	fdr.mutex.Lock()
@@ -762,6 +802,20 @@ func (fdr *FormDataReadable) ToJSObject() *goja.Object {
 		callback := call.Arguments[1]
 		fdr.Once(eventName, callback)
 		return obj
+	})
+
+	// emit(event, ...args)
+	obj.Set("emit", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			return fdr.runtime.ToValue(false)
+		}
+		eventName := call.Arguments[0].String()
+		args := []goja.Value{}
+		if len(call.Arguments) > 1 {
+			args = call.Arguments[1:]
+		}
+		triggered := fdr.Emit(eventName, args...)
+		return fdr.runtime.ToValue(triggered)
 	})
 
 	// pipe(destination, options?)

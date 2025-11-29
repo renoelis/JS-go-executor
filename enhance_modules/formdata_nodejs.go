@@ -377,6 +377,23 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 			return formDataObj // 返回 this 支持链式调用
 		})
 
+		// emit(event, ...args) - 触发事件（兼容 EventEmitter）
+		formDataObj.Set("emit", func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 {
+				return runtime.ToValue(false)
+			}
+
+			eventName := call.Arguments[0].String()
+			args := []goja.Value{}
+			if len(call.Arguments) > 1 {
+				args = call.Arguments[1:]
+			}
+
+			readable := getFormDataReadable()
+			triggered := readable.Emit(eventName, args...)
+			return runtime.ToValue(triggered)
+		})
+
 		// once(event, callback) - 只触发一次的事件监听
 		// 🔥 使用 FormDataReadable.Once 方法，触发后自动移除
 		formDataObj.Set("once", func(call goja.FunctionCall) goja.Value {

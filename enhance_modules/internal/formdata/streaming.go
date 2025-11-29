@@ -261,9 +261,12 @@ func (sfd *StreamingFormData) CreateReader() (io.Reader, error) {
 		return nil, err
 	}
 
-	// 🔥 清理 entries，释放内存
-	// Reader 已创建，数据已被复制或在 goroutine 中处理，可以安全释放
-	sfd.entries = nil
+	// 🔥 清理 entries，释放内存（仅流式模式）
+	// 对于缓冲模式需要保留 entries，以便 getBuffer/getLengthSync 多次调用保持一致
+	if isStreaming {
+		// Reader 已创建且使用后台 goroutine 读取，流式模式无法重复消费，清理以释放资源
+		sfd.entries = nil
+	}
 
 	return reader, nil
 }
