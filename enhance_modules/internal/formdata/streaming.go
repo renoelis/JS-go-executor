@@ -18,20 +18,26 @@ type FormDataEntry struct {
 	Value       interface{} // 字段值（string、[]byte、io.Reader）
 	Filename    string      // 文件名（可选，表示文件字段）
 	ContentType string      // Content-Type（可选）
+	KnownLength int64       // 已知长度（可选，用于 getLength/getLengthSync）
+	HasKnownLen bool        // 是否显式提供 knownLength
 }
 
 // StreamingFormData 流式 FormData 处理器
 // 🔥 核心优化：使用 io.Pipe 实现真正的流式处理，避免内存累积
 type StreamingFormData struct {
-	entries          []FormDataEntry
-	boundary         string
-	streamingEnabled bool                  // 是否启用流式处理
-	config           *FormDataStreamConfig // 配置
-	bufferPool       *sync.Pool            // 内存池
-	totalSize        int64                 // 预估总大小
-	isStreamingMode  bool                  // 🔥 缓存检测到的模式（避免重复检测）
-	modeDetected     bool                  // 🔥 模式是否已检测
+	entries             []FormDataEntry
+	boundary            string
+	streamingEnabled    bool                  // 是否启用流式处理
+	config              *FormDataStreamConfig // 配置
+	bufferPool          *sync.Pool            // 内存池
+	totalSize           int64                 // 预估总大小
+	isStreamingMode     bool                  // 🔥 缓存检测到的模式（避免重复检测）
+	modeDetected        bool                  // 🔥 模式是否已检测
+	hasUnknownStreamLen bool                  // 是否存在未知长度的流（影响 getLengthSync/hasKnownLength）
 }
+
+// UnknownLengthStreamPlaceholder 用于标记未知长度的 Node.js Readable 流
+type UnknownLengthStreamPlaceholder struct{}
 
 // FormDataStreamConfig 流式处理配置
 type FormDataStreamConfig struct {
@@ -161,6 +167,7 @@ func (sfd *StreamingFormData) AppendEntry(entry FormDataEntry) {
 		sfd.entries = make([]FormDataEntry, 0)
 	}
 	sfd.entries = append(sfd.entries, entry)
+	sfd.markUnknownStreamLength(entry)
 }
 
 // AddToTotalSize 增加总大小估算（供 Node.js FormData 模块使用）
@@ -529,7 +536,11 @@ func (sfd *StreamingFormData) writeEntryStreaming(writer *multipart.Writer, entr
 	case io.Reader:
 		// 🔥 新增：支持 io.Reader（包括 io.ReadCloser）
 		// 用于流式文件上传（axios stream -> FormData）
-		return sfd.writeFileDataStreaming(writer, entry.Name, entry.Filename, entry.ContentType, v, -1)
+		size := int64(-1)
+		if entry.HasKnownLen {
+			size = entry.KnownLength
+		}
+		return sfd.writeFileDataStreaming(writer, entry.Name, entry.Filename, entry.ContentType, v, size)
 
 	case map[string]interface{}:
 		// 🔥 对象转换为 "[object Object]"（符合浏览器行为，防止循环引用导致栈溢出）
@@ -674,9 +685,71 @@ func (sfd *StreamingFormData) copyStreaming(dst io.Writer, src io.Reader) (int64
 // AddEntry 添加条目并更新总大小
 func (sfd *StreamingFormData) AddEntry(entry FormDataEntry) {
 	sfd.entries = append(sfd.entries, entry)
+	sfd.markUnknownStreamLength(entry)
 
 	// 🔥 不在这里计算，统一在 GetTotalSize() 中精确计算
 	// 原因：multipart/form-data 格式包含 boundary、headers 等开销
+}
+
+// HasUnknownStreamLength 判断是否存在未知长度的流式字段
+func (sfd *StreamingFormData) HasUnknownStreamLength() bool {
+	if sfd == nil {
+		return false
+	}
+
+	if sfd.hasUnknownStreamLen {
+		return true
+	}
+
+	for _, entry := range sfd.entries {
+		if sfd.isUnknownLengthStream(&entry) {
+			sfd.hasUnknownStreamLen = true
+			return true
+		}
+	}
+
+	return false
+}
+
+// HasKnownLength 判断所有字段长度是否已知（用于 getLengthSync/hasKnownLength）
+func (sfd *StreamingFormData) HasKnownLength() bool {
+	if sfd == nil {
+		return true
+	}
+	return !sfd.HasUnknownStreamLength()
+}
+
+// markUnknownStreamLength 标记是否存在未知长度的流
+func (sfd *StreamingFormData) markUnknownStreamLength(entry FormDataEntry) {
+	if sfd == nil {
+		return
+	}
+	if sfd.isUnknownLengthStream(&entry) {
+		sfd.hasUnknownStreamLen = true
+	}
+}
+
+// isUnknownLengthStream 判断单个 entry 是否为未知长度的流
+func (sfd *StreamingFormData) isUnknownLengthStream(entry *FormDataEntry) bool {
+	if entry == nil {
+		return false
+	}
+
+	if entry.HasKnownLen {
+		return false
+	}
+
+	switch v := entry.Value.(type) {
+	case UnknownLengthStreamPlaceholder, *UnknownLengthStreamPlaceholder:
+		return true
+	case io.Reader:
+		if _, isBytesReader := v.(*bytes.Reader); isBytesReader {
+			return false
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 // GetTotalSize 获取精确的 multipart/form-data 总大小
@@ -694,10 +767,10 @@ func (sfd *StreamingFormData) GetTotalSize() int64 {
 		if sfd.totalSize > 0 {
 			return sfd.totalSize
 		}
-		// 空表单的最小长度：只有结束 boundary
-		minimal := int64(len("--")) + int64(len(boundary)) + int64(len("--")) + 2 // \r\n
-		sfd.totalSize = minimal
-		return minimal
+		// 与 Node form-data 保持一致：空表单 getLengthSync/getLength 返回 0
+		// boundary 仍然存在，但长度按 0 处理
+		sfd.totalSize = 0
+		return 0
 	}
 
 	// 🔥 精确计算：包含 boundary、headers、数据、换行符
@@ -731,15 +804,35 @@ func (sfd *StreamingFormData) GetTotalSize() int64 {
 		// 5. 数据本身
 		switch v := entry.Value.(type) {
 		case string:
-			totalSize += int64(len(v))
+			if entry.HasKnownLen {
+				totalSize += entry.KnownLength
+			} else {
+				totalSize += int64(len(v))
+			}
 		case BufferRef:
-			totalSize += v.Length()
+			if entry.HasKnownLen {
+				totalSize += entry.KnownLength
+			} else {
+				totalSize += v.Length()
+			}
 		case []byte:
-			totalSize += int64(len(v))
+			if entry.HasKnownLen {
+				totalSize += entry.KnownLength
+			} else {
+				totalSize += int64(len(v))
+			}
 		case io.Reader:
 			// 流式数据长度未知，保留标记用于后续缓存处理
-			if _, isBytesReader := v.(*bytes.Reader); !isBytesReader {
-				hasStreamingReader = true
+			if entry.HasKnownLen {
+				totalSize += entry.KnownLength
+			} else {
+				if _, isBytesReader := v.(*bytes.Reader); !isBytesReader {
+					hasStreamingReader = true
+				}
+			}
+		default:
+			if entry.HasKnownLen {
+				totalSize += entry.KnownLength
 			}
 		}
 

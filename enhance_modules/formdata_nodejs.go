@@ -106,6 +106,8 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 
 			var filename string
 			var contentType string
+			var hasKnownLength bool
+			var knownLength int64
 
 			// 解析第三个参数（filename 或 options 对象）
 			if len(call.Arguments) > 2 {
@@ -128,6 +130,11 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 								contentType = contentTypeVal.String()
 								isOptions = true
 							}
+							if knownLengthVal := obj.Get("knownLength"); knownLengthVal != nil && !goja.IsUndefined(knownLengthVal) && !goja.IsNull(knownLengthVal) {
+								hasKnownLength = true
+								knownLength = knownLengthVal.ToInteger()
+								isOptions = true
+							}
 
 							// 如果既不是字符串也未识别到 options 字段，则退化为字符串处理，保持兼容 filename 传参
 							if !isOptions {
@@ -143,7 +150,7 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 			}
 
 			// 处理不同类型的 value（写入底层 StreamingFormData）
-			if err := nfm.handleAppend(runtime, streamingFormData, name, value, filename, contentType); err != nil {
+			if err := nfm.handleAppend(runtime, streamingFormData, name, value, filename, contentType, hasKnownLength, knownLength); err != nil {
 				panic(runtime.NewGoError(err))
 			}
 
@@ -229,33 +236,37 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 
 		// hasKnownLength() - 检查是否有已知长度（不包含流式数据）
 		formDataObj.Set("hasKnownLength", func(call goja.FunctionCall) goja.Value {
-			// 遍历所有 entries，检查是否有流式数据（io.Reader）
-			hasStream := false
-			if streamingFormData.GetEntries() != nil {
-				for _, entry := range streamingFormData.GetEntries() {
-					// 检查 Value 是否为 io.Reader（流式数据）
-					if _, isReader := entry.Value.(io.Reader); isReader {
-						// 🔥 进一步排除 bytes.Reader（这是从 []byte 创建的，有已知长度）
-						if _, isBytesReader := entry.Value.(*bytes.Reader); !isBytesReader {
-							// 找到真正的流式 Reader（如 StreamReader、PipeReader、文件流等）
-							hasStream = true
-							break
-						}
-					}
-				}
-			}
-			// 返回 true 表示有已知长度（即没有流式数据）
-			return runtime.ToValue(!hasStream)
+			return runtime.ToValue(streamingFormData.HasKnownLength())
 		})
 
 		// getLengthSync() - 同步获取内容长度
 		formDataObj.Set("getLengthSync", func(call goja.FunctionCall) goja.Value {
+			if streamingFormData.HasUnknownStreamLength() {
+				panic(runtime.NewGoError(fmt.Errorf("Cannot calculate proper length in synchronous way.")))
+			}
+
 			totalSize := streamingFormData.GetTotalSize()
 			return runtime.ToValue(totalSize)
 		})
 
 		// getLength(callback) - 异步获取长度（通过 Promise）
 		formDataObj.Set("getLength", func(call goja.FunctionCall) goja.Value {
+			// 未知长度的流需要按照 Node 行为返回错误
+			if streamingFormData.HasUnknownStreamLength() {
+				if len(call.Arguments) == 0 {
+					promise, _, reject := runtime.NewPromise()
+					reject(runtime.NewGoError(fmt.Errorf("Unknown stream")))
+					return runtime.ToValue(promise)
+				}
+
+				callback, ok := goja.AssertFunction(call.Arguments[0])
+				if !ok {
+					panic(runtime.NewTypeError("getLength 需要一个回调函数参数"))
+				}
+				callback(goja.Undefined(), runtime.NewGoError(fmt.Errorf("Unknown stream")))
+				return goja.Undefined()
+			}
+
 			if len(call.Arguments) == 0 {
 				// 返回 Promise（如果没有 callback）
 				promise, resolve, _ := runtime.NewPromise()
@@ -570,8 +581,37 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 	return runtime.ToValue(constructor)
 }
 
+// isNodeReadableObject 简易判定 goja 对象是否类似 Node.js Readable 流（无已知长度）
+func isNodeReadableObject(obj *goja.Object) bool {
+	if obj == nil {
+		return false
+	}
+
+	if read := obj.Get("read"); read != nil && !goja.IsUndefined(read) && !goja.IsNull(read) {
+		if _, ok := goja.AssertFunction(read); ok {
+			return true
+		}
+	}
+
+	if pipe := obj.Get("pipe"); pipe != nil && !goja.IsUndefined(pipe) && !goja.IsNull(pipe) {
+		if _, ok := goja.AssertFunction(pipe); ok {
+			return true
+		}
+	}
+
+	if rs := obj.Get("_readableState"); rs != nil && !goja.IsUndefined(rs) && !goja.IsNull(rs) {
+		return true
+	}
+
+	if readable := obj.Get("readable"); readable != nil && readable.ToBoolean() {
+		return true
+	}
+
+	return false
+}
+
 // handleAppend 处理 append 方法的不同值类型
-func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingFormData *formdata.StreamingFormData, name string, value goja.Value, filename, contentType string) error {
+func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingFormData *formdata.StreamingFormData, name string, value goja.Value, filename, contentType string, hasKnownLength bool, knownLength int64) error {
 	// 安全检查
 	if nfm == nil {
 		return fmt.Errorf("nfm 为 nil")
@@ -585,11 +625,11 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 
 	// 先检查 null/undefined（在 ToObject 之前，避免 panic）
 	if goja.IsNull(value) {
-		nfm.appendField(streamingFormData, name, "null", contentType)
+		nfm.appendField(streamingFormData, name, "null", contentType, hasKnownLength, knownLength)
 		return nil
 	}
 	if goja.IsUndefined(value) {
-		nfm.appendField(streamingFormData, name, "undefined", contentType)
+		nfm.appendField(streamingFormData, name, "undefined", contentType, hasKnownLength, knownLength)
 		return nil
 	}
 
@@ -611,10 +651,16 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 		getReaderFunc := obj.Get("getReader")
 		if !goja.IsUndefined(getReaderFunc) && getReaderFunc != nil {
 			// 这是一个 ReadableStream 对象
-			if err := nfm.handleReadableStream(streamingFormData, name, obj, filename, contentType); err == nil {
+			if err := nfm.handleReadableStream(streamingFormData, name, obj, filename, contentType, hasKnownLength, knownLength); err == nil {
 				return nil
 			}
 			// 如果处理失败，继续尝试其他方式
+		}
+
+		// 1.0.1 粗略判断 Node.js Readable（无 knownLength 时应视作未知长度流）
+		if isNodeReadableObject(obj) {
+			nfm.appendUnknownStream(streamingFormData, name, filename, contentType, hasKnownLength, knownLength)
+			return nil
 		}
 
 		// 1.1 检查 File（最优先，因为 File 继承自 Blob，必须先检查）
@@ -638,7 +684,7 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 				if contentType == "" {
 					contentType = "application/octet-stream"
 				}
-				nfm.appendFile(streamingFormData, name, filename, contentType, data)
+				nfm.appendFile(streamingFormData, name, filename, contentType, data, hasKnownLength, knownLength)
 				return nil
 			}
 		}
@@ -661,7 +707,7 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 				if contentType == "" {
 					contentType = "application/octet-stream"
 				}
-				nfm.appendFile(streamingFormData, name, filename, contentType, data)
+				nfm.appendFile(streamingFormData, name, filename, contentType, data, hasKnownLength, knownLength)
 				return nil
 			}
 		}
@@ -688,7 +734,7 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 							if contentType == "" {
 								contentType = "application/octet-stream"
 							}
-							nfm.appendBufferRef(streamingFormData, name, filename, contentType, bufferRef)
+							nfm.appendBufferRef(streamingFormData, name, filename, contentType, bufferRef, hasKnownLength, knownLength)
 							ok = true
 							return
 						}
@@ -701,7 +747,7 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 						if contentType == "" {
 							contentType = "application/octet-stream"
 						}
-						nfm.appendFile(streamingFormData, name, filename, contentType, data)
+						nfm.appendFile(streamingFormData, name, filename, contentType, data, hasKnownLength, knownLength)
 						return nil
 					}
 				}
@@ -725,7 +771,7 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 		if contentType == "" {
 			contentType = "application/octet-stream"
 		}
-		nfm.appendStreamFile(streamingFormData, name, filename, contentType, v)
+		nfm.appendStreamFile(streamingFormData, name, filename, contentType, v, hasKnownLength, knownLength)
 		return nil
 	case io.Reader:
 		if filename == "" {
@@ -734,7 +780,7 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 		if contentType == "" {
 			contentType = "application/octet-stream"
 		}
-		nfm.appendStreamFile(streamingFormData, name, filename, contentType, io.NopCloser(v))
+		nfm.appendStreamFile(streamingFormData, name, filename, contentType, io.NopCloser(v), hasKnownLength, knownLength)
 		return nil
 	case string:
 		// 🔥 修复：如果提供了 filename，将字符串作为文件处理
@@ -744,19 +790,19 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 			if contentType == "" {
 				contentType = "text/plain"
 			}
-			nfm.appendFile(streamingFormData, name, filename, contentType, data)
+			nfm.appendFile(streamingFormData, name, filename, contentType, data, hasKnownLength, knownLength)
 			return nil
 		}
 		// 否则作为普通文本字段
-		nfm.appendField(streamingFormData, name, v, contentType)
+		nfm.appendField(streamingFormData, name, v, contentType, hasKnownLength, knownLength)
 		return nil
 	case bool:
 		// 保留布尔值，后续 getBuffer 时抛出与 Node 相同的类型错误
-		nfm.appendRawEntry(streamingFormData, name, v, filename, contentType)
+		nfm.appendRawEntry(streamingFormData, name, v, filename, contentType, hasKnownLength, knownLength)
 		return nil
 	case int, int32, int64, float32, float64:
 		// 数字类型
-		nfm.appendField(streamingFormData, name, fmt.Sprintf("%v", v), contentType)
+		nfm.appendField(streamingFormData, name, fmt.Sprintf("%v", v), contentType, hasKnownLength, knownLength)
 		return nil
 	case []uint8:
 		// []byte 类型 - 直接作为文件
@@ -766,7 +812,7 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 		if contentType == "" {
 			contentType = "application/octet-stream"
 		}
-		nfm.appendFile(streamingFormData, name, filename, contentType, v)
+		nfm.appendFile(streamingFormData, name, filename, contentType, v, hasKnownLength, knownLength)
 		return nil
 	}
 
@@ -783,16 +829,16 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 		if contentType == "" {
 			contentType = "application/octet-stream"
 		}
-		nfm.appendFile(streamingFormData, name, filename, contentType, []byte(strValue))
+		nfm.appendFile(streamingFormData, name, filename, contentType, []byte(strValue), hasKnownLength, knownLength)
 		return nil
 	}
 
-	nfm.appendField(streamingFormData, name, strValue, contentType)
+	nfm.appendField(streamingFormData, name, strValue, contentType, hasKnownLength, knownLength)
 	return nil
 }
 
 // appendField 添加文本字段到 StreamingFormData
-func (nfm *NodeFormDataModule) appendField(streamingFormData *formdata.StreamingFormData, name, value, contentType string) {
+func (nfm *NodeFormDataModule) appendField(streamingFormData *formdata.StreamingFormData, name, value, contentType string, hasKnownLength bool, knownLength int64) {
 	if streamingFormData == nil {
 		return
 	}
@@ -801,13 +847,19 @@ func (nfm *NodeFormDataModule) appendField(streamingFormData *formdata.Streaming
 		Name:        name,
 		Value:       value,
 		ContentType: contentType,
+		HasKnownLen: hasKnownLength,
+		KnownLength: knownLength,
 	}
 
 	// 添加条目
 	streamingFormData.AppendEntry(entry)
 
 	// 更新总大小估算
-	streamingFormData.AddToTotalSize(int64(len(name) + len(value) + len(contentType) + 100)) // 100 字节为 header 开销
+	estimatedValueLen := int64(len(value))
+	if hasKnownLength {
+		estimatedValueLen = knownLength
+	}
+	streamingFormData.AddToTotalSize(int64(len(name)+len(contentType)+100) + estimatedValueLen) // 100 字节为 header 开销
 }
 
 // normalizeFilename 模拟 Node.js form-data 中的 path.basename 行为，只保留 "/" 之后的部分
@@ -834,7 +886,7 @@ func normalizeFilename(filename string) string {
 }
 
 // appendRawEntry 保留原始值（用于布尔等需要在 getBuffer 抛错的类型）
-func (nfm *NodeFormDataModule) appendRawEntry(streamingFormData *formdata.StreamingFormData, name string, value interface{}, filename, contentType string) {
+func (nfm *NodeFormDataModule) appendRawEntry(streamingFormData *formdata.StreamingFormData, name string, value interface{}, filename, contentType string, hasKnownLength bool, knownLength int64) {
 	if streamingFormData == nil {
 		return
 	}
@@ -846,15 +898,21 @@ func (nfm *NodeFormDataModule) appendRawEntry(streamingFormData *formdata.Stream
 		Value:       value,
 		Filename:    filename,
 		ContentType: contentType,
+		HasKnownLen: hasKnownLength,
+		KnownLength: knownLength,
 	}
 
 	streamingFormData.AppendEntry(entry)
 	// 估算长度：与 appendField 相同的简单估算，便于后续 getLength 计算
-	streamingFormData.AddToTotalSize(int64(len(name) + len(filename) + len(contentType) + 100))
+	estimatedValueLen := int64(0)
+	if hasKnownLength {
+		estimatedValueLen = knownLength
+	}
+	streamingFormData.AddToTotalSize(int64(len(name)+len(filename)+len(contentType)+100) + estimatedValueLen)
 }
 
 // appendFile 添加文件字段到 StreamingFormData
-func (nfm *NodeFormDataModule) appendFile(streamingFormData *formdata.StreamingFormData, name, filename, contentType string, data []byte) {
+func (nfm *NodeFormDataModule) appendFile(streamingFormData *formdata.StreamingFormData, name, filename, contentType string, data []byte, hasKnownLength bool, knownLength int64) {
 	if streamingFormData == nil {
 		return
 	}
@@ -866,17 +924,23 @@ func (nfm *NodeFormDataModule) appendFile(streamingFormData *formdata.StreamingF
 		Value:       data,
 		Filename:    filename,
 		ContentType: contentType,
+		HasKnownLen: hasKnownLength,
+		KnownLength: knownLength,
 	}
 
 	// 添加条目
 	streamingFormData.AppendEntry(entry)
 
 	// 更新总大小估算
-	streamingFormData.AddToTotalSize(int64(len(name) + len(filename) + len(contentType) + len(data) + 200)) // 200 字节为 header 开销
+	estimatedValueLen := int64(len(data))
+	if hasKnownLength {
+		estimatedValueLen = knownLength
+	}
+	streamingFormData.AddToTotalSize(int64(len(name)+len(filename)+len(contentType)+200) + estimatedValueLen) // 200 字节为 header 开销
 }
 
 // appendBufferRef 添加 BufferRef，保持与原始 Buffer 的引用关系
-func (nfm *NodeFormDataModule) appendBufferRef(streamingFormData *formdata.StreamingFormData, name, filename, contentType string, bufferRef formdata.BufferRef) {
+func (nfm *NodeFormDataModule) appendBufferRef(streamingFormData *formdata.StreamingFormData, name, filename, contentType string, bufferRef formdata.BufferRef, hasKnownLength bool, knownLength int64) {
 	if streamingFormData == nil {
 		return
 	}
@@ -888,17 +952,23 @@ func (nfm *NodeFormDataModule) appendBufferRef(streamingFormData *formdata.Strea
 		Value:       bufferRef,
 		Filename:    filename,
 		ContentType: contentType,
+		HasKnownLen: hasKnownLength,
+		KnownLength: knownLength,
 	}
 
 	streamingFormData.AppendEntry(entry)
 
 	// 使用逻辑长度预估，保持与 Buffer 实际长度一致
-	streamingFormData.AddToTotalSize(int64(len(name)+len(filename)+len(contentType)) + bufferRef.Length() + 200)
+	estimatedValueLen := bufferRef.Length()
+	if hasKnownLength {
+		estimatedValueLen = knownLength
+	}
+	streamingFormData.AddToTotalSize(int64(len(name)+len(filename)+len(contentType)) + estimatedValueLen + 200)
 }
 
 // handleReadableStream 处理 ReadableStream 对象（axios stream）
 // 🔥 新增方法：支持直接传入流式响应
-func (nfm *NodeFormDataModule) handleReadableStream(streamingFormData *formdata.StreamingFormData, name string, streamObj *goja.Object, filename, contentType string) error {
+func (nfm *NodeFormDataModule) handleReadableStream(streamingFormData *formdata.StreamingFormData, name string, streamObj *goja.Object, filename, contentType string, hasKnownLength bool, knownLength int64) error {
 	if nfm == nil || streamingFormData == nil || streamObj == nil {
 		return fmt.Errorf("invalid parameters")
 	}
@@ -939,13 +1009,13 @@ func (nfm *NodeFormDataModule) handleReadableStream(streamingFormData *formdata.
 
 	// 🔥 关键：将 io.ReadCloser 添加到 FormData
 	// StreamingFormData 已经支持 io.Reader 类型
-	nfm.appendStreamFile(streamingFormData, name, filename, contentType, reader)
+	nfm.appendStreamFile(streamingFormData, name, filename, contentType, reader, hasKnownLength, knownLength)
 
 	return nil
 }
 
 // appendStreamFile 添加流式文件到 StreamingFormData
-func (nfm *NodeFormDataModule) appendStreamFile(streamingFormData *formdata.StreamingFormData, name, filename, contentType string, reader io.ReadCloser) {
+func (nfm *NodeFormDataModule) appendStreamFile(streamingFormData *formdata.StreamingFormData, name, filename, contentType string, reader io.ReadCloser, hasKnownLength bool, knownLength int64) {
 	if streamingFormData == nil {
 		return
 	}
@@ -957,6 +1027,8 @@ func (nfm *NodeFormDataModule) appendStreamFile(streamingFormData *formdata.Stre
 		Value:       reader, // io.ReadCloser 实现了 io.Reader 接口
 		Filename:    filename,
 		ContentType: contentType,
+		HasKnownLen: hasKnownLength,
+		KnownLength: knownLength,
 	}
 
 	// 添加条目
@@ -964,7 +1036,41 @@ func (nfm *NodeFormDataModule) appendStreamFile(streamingFormData *formdata.Stre
 
 	// 🔥 注意:流式数据的大小未知，不更新 totalSize
 	// 这样会自动触发流式处理模式
-	streamingFormData.AddToTotalSize(1024 * 1024) // 预估 1MB，确保触发流式模式
+	estimated := int64(len(name) + len(filename) + len(contentType) + 200) // header 预估
+	if hasKnownLength {
+		estimated += knownLength
+	} else {
+		estimated += int64(1024 * 1024) // 默认预估 1MB
+	}
+	streamingFormData.AddToTotalSize(estimated) // 预估长度用于模式检测
+}
+
+// appendUnknownStream 添加未知长度的 Node.js Readable 占位
+func (nfm *NodeFormDataModule) appendUnknownStream(streamingFormData *formdata.StreamingFormData, name, filename, contentType string, hasKnownLength bool, knownLength int64) {
+	if streamingFormData == nil {
+		return
+	}
+
+	filename = normalizeFilename(filename)
+
+	entry := formdata.FormDataEntry{
+		Name:        name,
+		Value:       formdata.UnknownLengthStreamPlaceholder{},
+		Filename:    filename,
+		ContentType: contentType,
+		HasKnownLen: hasKnownLength,
+		KnownLength: knownLength,
+	}
+
+	streamingFormData.AppendEntry(entry)
+
+	estimated := int64(len(name) + len(filename) + len(contentType) + 200)
+	if hasKnownLength {
+		estimated += knownLength
+	} else {
+		estimated += int64(1024 * 1024) // 默认 1MB 预估值，触发未知流分支
+	}
+	streamingFormData.AddToTotalSize(estimated)
 }
 
 // createBufferRef 尝试获取 Buffer 的零拷贝视图，保持与原始 Buffer 的引用
