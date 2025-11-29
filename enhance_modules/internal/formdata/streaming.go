@@ -343,6 +343,9 @@ func (sfd *StreamingFormData) writeEntryBuffered(writer *multipart.Writer, entry
 			return sfd.writeFileDataBuffered(writer, entry.Name, entry.Filename, entry.ContentType, []byte(val))
 		}
 		return writer.WriteField(entry.Name, val)
+	case bool:
+		// 与 Node.js form-data getBuffer 保持一致：布尔值会在 Buffer.from 时抛错
+		return fmt.Errorf("The \"string\" argument must be of type string or an instance of Buffer. Received type boolean")
 	default:
 		// 其他类型转为字符串
 		val := fmt.Sprintf("%v", v)
@@ -543,6 +546,9 @@ func (sfd *StreamingFormData) writeEntryStreaming(writer *multipart.Writer, entr
 			return sfd.writeFileDataStreaming(writer, entry.Name, entry.Filename, entry.ContentType, strings.NewReader(val), int64(len(val)))
 		}
 		return writer.WriteField(entry.Name, val)
+	case bool:
+		// 与 Node.js form-data getBuffer 保持一致：布尔值会在 Buffer.from 时抛错
+		return fmt.Errorf("The \"string\" argument must be of type string or an instance of Buffer. Received type boolean")
 
 	default:
 		// 其他类型转为字符串

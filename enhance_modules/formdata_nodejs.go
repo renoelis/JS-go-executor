@@ -162,9 +162,12 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 				streamsArray.Set(idxHeader, header)
 				// 写入值：对基础类型使用字符串，其余保持原样，仅要求 JS 侧 typeof !== 'function'
 				var valueForStream goja.Value
-				if goja.IsUndefined(value) || goja.IsNull(value) {
-					valueForStream = runtime.ToValue("")
-				} else {
+				switch {
+				case goja.IsUndefined(value):
+					valueForStream = runtime.ToValue("undefined")
+				case goja.IsNull(value):
+					valueForStream = runtime.ToValue("null")
+				default:
 					// 对象的 String() 结果在测试只需可见即可
 					valueForStream = runtime.ToValue(value.String())
 				}
@@ -581,8 +584,12 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 	}
 
 	// 先检查 null/undefined（在 ToObject 之前，避免 panic）
-	if goja.IsNull(value) || goja.IsUndefined(value) {
-		nfm.appendField(streamingFormData, name, "", contentType)
+	if goja.IsNull(value) {
+		nfm.appendField(streamingFormData, name, "null", contentType)
+		return nil
+	}
+	if goja.IsUndefined(value) {
+		nfm.appendField(streamingFormData, name, "undefined", contentType)
 		return nil
 	}
 
@@ -743,8 +750,12 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 		// 否则作为普通文本字段
 		nfm.appendField(streamingFormData, name, v, contentType)
 		return nil
-	case int, int32, int64, float32, float64, bool:
-		// 数字和布尔类型
+	case bool:
+		// 保留布尔值，后续 getBuffer 时抛出与 Node 相同的类型错误
+		nfm.appendRawEntry(streamingFormData, name, v, filename, contentType)
+		return nil
+	case int, int32, int64, float32, float64:
+		// 数字类型
 		nfm.appendField(streamingFormData, name, fmt.Sprintf("%v", v), contentType)
 		return nil
 	case []uint8:
@@ -797,6 +808,24 @@ func (nfm *NodeFormDataModule) appendField(streamingFormData *formdata.Streaming
 
 	// 更新总大小估算
 	streamingFormData.AddToTotalSize(int64(len(name) + len(value) + len(contentType) + 100)) // 100 字节为 header 开销
+}
+
+// appendRawEntry 保留原始值（用于布尔等需要在 getBuffer 抛错的类型）
+func (nfm *NodeFormDataModule) appendRawEntry(streamingFormData *formdata.StreamingFormData, name string, value interface{}, filename, contentType string) {
+	if streamingFormData == nil {
+		return
+	}
+
+	entry := formdata.FormDataEntry{
+		Name:        name,
+		Value:       value,
+		Filename:    filename,
+		ContentType: contentType,
+	}
+
+	streamingFormData.AppendEntry(entry)
+	// 估算长度：与 appendField 相同的简单估算，便于后续 getLength 计算
+	streamingFormData.AddToTotalSize(int64(len(name) + len(filename) + len(contentType) + 100))
 }
 
 // appendFile 添加文件字段到 StreamingFormData
