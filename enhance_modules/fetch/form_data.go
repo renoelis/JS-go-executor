@@ -260,6 +260,9 @@ func (fd *FormData) GetEntries() []FormDataEntry {
 // 标准参考: https://developer.mozilla.org/zh-CN/docs/Web/API/FormData
 func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) *goja.Object {
 	return func(call goja.ConstructorCall) *goja.Object {
+		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) {
+			panic(runtime.NewTypeError("FormData constructor: Argument 1 could not be converted to: undefined."))
+		}
 		formData := NewFormData(runtime)
 
 		obj := ensureConstructorThis(runtime, "FormData", call.This)
