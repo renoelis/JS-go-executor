@@ -586,7 +586,7 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 		obj.Set("get", func(call goja.FunctionCall) goja.Value {
 			formDataInstance, _ := requireFormDataThis(runtime, "FormData.get", call.This)
 			if len(call.Arguments) == 0 {
-				return goja.Null()
+				panic(runtime.NewTypeError("FormData.get: 1 argument required, but 0 found."))
 			}
 
 			name := toUSVStringOrThrow(call.Arguments[0], "FormData.get", "name")
@@ -604,7 +604,7 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 		obj.Set("getAll", func(call goja.FunctionCall) goja.Value {
 			formDataInstance, _ := requireFormDataThis(runtime, "FormData.getAll", call.This)
 			if len(call.Arguments) == 0 {
-				return runtime.ToValue([]interface{}{})
+				panic(runtime.NewTypeError("FormData.getAll: 1 argument required, but 0 found."))
 			}
 
 			name := toUSVStringOrThrow(call.Arguments[0], "FormData.getAll", "name")
@@ -618,7 +618,7 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 		obj.Set("has", func(call goja.FunctionCall) goja.Value {
 			formDataInstance, _ := requireFormDataThis(runtime, "FormData.has", call.This)
 			if len(call.Arguments) == 0 {
-				return runtime.ToValue(false)
+				panic(runtime.NewTypeError("FormData.has: 1 argument required, but 0 found."))
 			}
 
 			name := toUSVStringOrThrow(call.Arguments[0], "FormData.has", "name")
@@ -741,8 +741,16 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				thisArg = call.Arguments[1]
 			}
 
+			if goja.IsUndefined(thisArg) && runtime != nil {
+				if globalObj := runtime.GlobalObject(); globalObj != nil {
+					thisArg = globalObj
+				}
+			}
+
 			formDataInstance.ForEach(func(value interface{}, key string) {
-				callback(thisArg, runtime.ToValue(value), runtime.ToValue(key), thisObj)
+				if _, err := callback(thisArg, runtime.ToValue(value), runtime.ToValue(key), thisObj); err != nil {
+					panic(err)
+				}
 			})
 
 			return goja.Undefined()
@@ -948,6 +956,51 @@ func ensureFormDataPrototypeToStringTag(runtime *goja.Runtime) {
 	if err := prototype.DefineDataPropertySymbol(goja.SymToStringTag, runtime.ToValue("FormData"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
 		prototype.SetSymbol(goja.SymToStringTag, runtime.ToValue("FormData"))
 	}
+}
+
+// WrapFormDataConstructor 为 FormData 构造器增加 new 调用校验
+func WrapFormDataConstructor(runtime *goja.Runtime, nativeCtor goja.Value) goja.Value {
+	if runtime == nil || nativeCtor == nil || goja.IsUndefined(nativeCtor) || goja.IsNull(nativeCtor) {
+		return nativeCtor
+	}
+
+	factorySrc := `
+(function(nativeCtor){
+  return function FormData(){
+    if (!new.target) {
+      throw new TypeError("Class constructor FormData cannot be invoked without 'new'");
+    }
+    return nativeCtor.apply(this, arguments);
+  };
+})
+`
+	factoryVal, err := runtime.RunString(factorySrc)
+	if err != nil {
+		panic(err)
+	}
+
+	factory, ok := goja.AssertFunction(factoryVal)
+	if !ok {
+		return nativeCtor
+	}
+
+	wrapped, err := factory(goja.Undefined(), nativeCtor)
+	if err != nil {
+		panic(err)
+	}
+
+	if wrappedObj := wrapped.ToObject(runtime); wrappedObj != nil {
+		if nativeObj := nativeCtor.ToObject(runtime); nativeObj != nil {
+			if proto := nativeObj.Get("prototype"); proto != nil {
+				wrappedObj.Set("prototype", proto)
+				if protoObj, ok := proto.(*goja.Object); ok {
+					protoObj.Set("constructor", wrappedObj)
+				}
+			}
+		}
+	}
+
+	return wrapped
 }
 
 // ==================== 注释说明 ====================

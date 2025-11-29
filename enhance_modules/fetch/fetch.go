@@ -358,6 +358,8 @@ func (fe *FetchEnhancer) RegisterFetchAPI(runtime *goja.Runtime) error {
 
 	// 7. 注册 FormData 构造器
 	runtime.Set("FormData", CreateFormDataConstructor(runtime))
+	formDataCtorVal := runtime.Get("FormData")
+	runtime.Set("FormData", WrapFormDataConstructor(runtime, formDataCtorVal))
 	ensureFormDataPrototypeToStringTag(runtime)
 
 	// 8. 注册 Blob/File 构造器
