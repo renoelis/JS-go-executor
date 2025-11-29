@@ -337,7 +337,7 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 
 		// 🔧 将 Blob/File 重命名为指定文件名（用于 append/set 的 filename 参数）
 		cloneBlobAsNamedFile := func(source *goja.Object, filename string) *goja.Object {
-			if source == nil || filename == "" {
+			if source == nil {
 				return nil
 			}
 
@@ -394,16 +394,21 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 			var (
 				value        interface{}
 				valueObj     *goja.Object
+				isBlob       bool
+				isFile       bool
 				isBlobOrFile bool
 			)
 
 			if obj, ok := valueArg.(*goja.Object); ok {
 				valueObj = obj
 				// 检查是否是 Blob/File 对象
-				isBlob := valueObj.Get("__isBlob")
-				isFile := valueObj.Get("__isFile")
-				isBlobOrFile = (isBlob != nil && !goja.IsUndefined(isBlob) && !goja.IsNull(isBlob) && isBlob.ToBoolean()) ||
-					(isFile != nil && !goja.IsUndefined(isFile) && !goja.IsNull(isFile) && isFile.ToBoolean())
+				if blobVal := valueObj.Get("__isBlob"); blobVal != nil && !goja.IsUndefined(blobVal) && !goja.IsNull(blobVal) && blobVal.ToBoolean() {
+					isBlob = true
+				}
+				if fileVal := valueObj.Get("__isFile"); fileVal != nil && !goja.IsUndefined(fileVal) && !goja.IsNull(fileVal) && fileVal.ToBoolean() {
+					isFile = true
+				}
+				isBlobOrFile = isBlob || isFile
 				if isBlobOrFile {
 					// Blob/File 保留原对象
 					value = valueArg
@@ -420,20 +425,34 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				value = valueArg.String()
 			}
 
+			filenameArgProvided := len(call.Arguments) > 2
 			var filename string
-			if len(call.Arguments) > 2 {
+			if filenameArgProvided {
 				filename = call.Arguments[2].String()
 			}
 
-			// ✅ Node/WHATWG 行为：提供 filename 时，Blob/File 会被包装成新的 File，name = filename
-			if filename != "" && isBlobOrFile && valueObj != nil {
-				if renamed := cloneBlobAsNamedFile(valueObj, filename); renamed != nil {
-					value = renamed
-					valueObj = renamed
+			// ✅ Node/WHATWG 行为：Blob 默认包装为 name = "blob"，显式 filename（含空字符串）覆盖
+			if isBlobOrFile && valueObj != nil {
+				shouldWrap := false
+				targetName := ""
+
+				if filenameArgProvided {
+					shouldWrap = true
+					targetName = filename
+				} else if isBlob && !isFile {
+					shouldWrap = true
+					targetName = "blob"
+				}
+
+				if shouldWrap {
+					if renamed := cloneBlobAsNamedFile(valueObj, targetName); renamed != nil {
+						value = renamed
+						valueObj = renamed
+					}
 				}
 			}
 
-			if filename != "" {
+			if filenameArgProvided {
 				formData.Append(name, value, filename)
 			} else {
 				formData.Append(name, value)
@@ -458,16 +477,21 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 			var (
 				value        interface{}
 				valueObj     *goja.Object
+				isBlob       bool
+				isFile       bool
 				isBlobOrFile bool
 			)
 
 			if obj, ok := valueArg.(*goja.Object); ok {
 				valueObj = obj
 				// 检查是否是 Blob/File 对象
-				isBlob := valueObj.Get("__isBlob")
-				isFile := valueObj.Get("__isFile")
-				isBlobOrFile = (isBlob != nil && !goja.IsUndefined(isBlob) && !goja.IsNull(isBlob) && isBlob.ToBoolean()) ||
-					(isFile != nil && !goja.IsUndefined(isFile) && !goja.IsNull(isFile) && isFile.ToBoolean())
+				if blobVal := valueObj.Get("__isBlob"); blobVal != nil && !goja.IsUndefined(blobVal) && !goja.IsNull(blobVal) && blobVal.ToBoolean() {
+					isBlob = true
+				}
+				if fileVal := valueObj.Get("__isFile"); fileVal != nil && !goja.IsUndefined(fileVal) && !goja.IsNull(fileVal) && fileVal.ToBoolean() {
+					isFile = true
+				}
+				isBlobOrFile = isBlob || isFile
 				if isBlobOrFile {
 					// Blob/File 保留原对象
 					value = valueArg
@@ -484,20 +508,34 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				value = valueArg.String()
 			}
 
+			filenameArgProvided := len(call.Arguments) > 2
 			var filename string
-			if len(call.Arguments) > 2 {
+			if filenameArgProvided {
 				filename = call.Arguments[2].String()
 			}
 
-			// ✅ Node/WHATWG 行为：set(name, blob, filename) 时同样需要包装新的 File
-			if filename != "" && isBlobOrFile && valueObj != nil {
-				if renamed := cloneBlobAsNamedFile(valueObj, filename); renamed != nil {
-					value = renamed
-					valueObj = renamed
+			// ✅ Node/WHATWG 行为：set(name, blob, filename) 时同样需要包装新的 File；无 filename 时 Blob 默认 name="blob"
+			if isBlobOrFile && valueObj != nil {
+				shouldWrap := false
+				targetName := ""
+
+				if filenameArgProvided {
+					shouldWrap = true
+					targetName = filename
+				} else if isBlob && !isFile {
+					shouldWrap = true
+					targetName = "blob"
+				}
+
+				if shouldWrap {
+					if renamed := cloneBlobAsNamedFile(valueObj, targetName); renamed != nil {
+						value = renamed
+						valueObj = renamed
+					}
 				}
 			}
 
-			if filename != "" {
+			if filenameArgProvided {
 				formData.Set(name, value, filename)
 			} else {
 				formData.Set(name, value)
