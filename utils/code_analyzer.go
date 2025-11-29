@@ -162,6 +162,21 @@ func (ca *CodeAnalyzer) IsLikelyAsync(code string) bool {
 		}
 	}
 
+	// 🔥 检测需要 EventLoop 的模块
+	// stream 模块内部使用 setTimeout，必须在 EventLoop 中执行
+	asyncModules := []string{
+		"require('stream')",
+		`require("stream")`,
+		"require('readable-stream')",
+		`require("readable-stream")`,
+	}
+
+	for _, pattern := range asyncModules {
+		if strings.Contains(code, pattern) {
+			return true
+		}
+	}
+
 	return false
 }
 
