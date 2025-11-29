@@ -813,7 +813,8 @@ func (sfd *StreamingFormData) GetTotalSize() int64 {
 			if entry.HasKnownLen {
 				totalSize += entry.KnownLength
 			} else {
-				totalSize += v.Length()
+				// 使用实际写出的字节数（Bytes() 会考虑视图偏移），避免 Buffer.subarray 等视图长度偏差
+				totalSize += int64(len(v.Bytes()))
 			}
 		case []byte:
 			if entry.HasKnownLen {
