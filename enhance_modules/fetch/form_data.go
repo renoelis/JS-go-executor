@@ -666,25 +666,13 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 		// entries() - 返回 [name, value] 迭代器
 		obj.Set("entries", func(call goja.FunctionCall) goja.Value {
 			formDataInstance, _ := requireFormDataThis(runtime, "FormData.entries", call.This)
-			entries := formDataInstance.Entries()
 
-			iterator := runtime.NewObject()
-			index := 0
-
-			iterator.Set("next", func(call goja.FunctionCall) goja.Value {
-				result := runtime.NewObject()
-				if index < len(entries) {
-					result.Set("value", runtime.ToValue(entries[index]))
-					result.Set("done", runtime.ToValue(false))
-					index++
-				} else {
-					result.Set("value", goja.Undefined())
-					result.Set("done", runtime.ToValue(true))
-				}
-				return result
+			iterator := createFormDataIterator(runtime, formDataInstance, func(entry FormDataEntry) goja.Value {
+				return runtime.NewArray(
+					runtime.ToValue(entry.Name),
+					runtime.ToValue(entry.Value),
+				)
 			})
-
-			attachIteratorSymbol(runtime, iterator)
 
 			return iterator
 		})
@@ -693,25 +681,10 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 		// keys() - 返回 name 迭代器
 		obj.Set("keys", func(call goja.FunctionCall) goja.Value {
 			formDataInstance, _ := requireFormDataThis(runtime, "FormData.keys", call.This)
-			keys := formDataInstance.Keys()
 
-			iterator := runtime.NewObject()
-			index := 0
-
-			iterator.Set("next", func(call goja.FunctionCall) goja.Value {
-				result := runtime.NewObject()
-				if index < len(keys) {
-					result.Set("value", runtime.ToValue(keys[index]))
-					result.Set("done", runtime.ToValue(false))
-					index++
-				} else {
-					result.Set("value", goja.Undefined())
-					result.Set("done", runtime.ToValue(true))
-				}
-				return result
+			iterator := createFormDataIterator(runtime, formDataInstance, func(entry FormDataEntry) goja.Value {
+				return runtime.ToValue(entry.Name)
 			})
-
-			attachIteratorSymbol(runtime, iterator)
 
 			return iterator
 		})
@@ -720,25 +693,10 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 		// values() - 返回 value 迭代器
 		obj.Set("values", func(call goja.FunctionCall) goja.Value {
 			formDataInstance, _ := requireFormDataThis(runtime, "FormData.values", call.This)
-			values := formDataInstance.Values()
 
-			iterator := runtime.NewObject()
-			index := 0
-
-			iterator.Set("next", func(call goja.FunctionCall) goja.Value {
-				result := runtime.NewObject()
-				if index < len(values) {
-					result.Set("value", runtime.ToValue(values[index]))
-					result.Set("done", runtime.ToValue(false))
-					index++
-				} else {
-					result.Set("value", goja.Undefined())
-					result.Set("done", runtime.ToValue(true))
-				}
-				return result
+			iterator := createFormDataIterator(runtime, formDataInstance, func(entry FormDataEntry) goja.Value {
+				return runtime.ToValue(entry.Value)
 			})
-
-			attachIteratorSymbol(runtime, iterator)
 
 			return iterator
 		})
@@ -892,6 +850,38 @@ func isSymbolValue(val goja.Value) bool {
 	}
 	_, ok := val.(*goja.Symbol)
 	return ok
+}
+
+func createFormDataIterator(runtime *goja.Runtime, formDataInstance *FormData, valueBuilder func(FormDataEntry) goja.Value) *goja.Object {
+	iterator := runtime.NewObject()
+	index := 0
+
+	iterator.Set("next", func(call goja.FunctionCall) goja.Value {
+		result := runtime.NewObject()
+
+		formDataInstance.mutex.Lock()
+		var entryCopy FormDataEntry
+		hasValue := index < len(formDataInstance.entries)
+		if hasValue {
+			entryCopy = formDataInstance.entries[index]
+			index++
+		}
+		formDataInstance.mutex.Unlock()
+
+		if hasValue {
+			result.Set("value", valueBuilder(entryCopy))
+			result.Set("done", runtime.ToValue(false))
+		} else {
+			result.Set("value", goja.Undefined())
+			result.Set("done", runtime.ToValue(true))
+		}
+
+		return result
+	})
+
+	attachIteratorSymbol(runtime, iterator)
+
+	return iterator
 }
 
 func attachIteratorSymbol(runtime *goja.Runtime, iterator *goja.Object) {
