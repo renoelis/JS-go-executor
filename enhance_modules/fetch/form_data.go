@@ -467,7 +467,13 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				value = valueArg.String()
 			}
 
-			filenameArgProvided := len(call.Arguments) > 2 && isBlobOrFile
+			argCount := len(call.Arguments)
+			hasThirdArg := argCount > 2
+			if hasThirdArg && !isBlobOrFile && argCount == 3 {
+				panic(runtime.NewTypeError("FormData.append: filename 参数仅适用于 Blob 或 File 值"))
+			}
+			thirdArgDefined := hasThirdArg && !goja.IsUndefined(call.Arguments[2])
+			filenameArgProvided := thirdArgDefined && isBlobOrFile
 			var filename string
 			if filenameArgProvided {
 				filename = toUSVStringOrThrow(call.Arguments[2], "FormData.append", "filename")
