@@ -467,14 +467,10 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				value = valueArg.String()
 			}
 
-			filenameArgProvided := len(call.Arguments) > 2
+			filenameArgProvided := len(call.Arguments) > 2 && isBlobOrFile
 			var filename string
 			if filenameArgProvided {
 				filename = toUSVStringOrThrow(call.Arguments[2], "FormData.append", "filename")
-			}
-
-			if filenameArgProvided && !isBlobOrFile {
-				panic(runtime.NewTypeError("FormData.append: filename 仅允许与 Blob/File 一起使用"))
 			}
 
 			// ✅ Node/WHATWG 行为：Blob 默认包装为 name = "blob"，显式 filename（含空字符串）覆盖
@@ -558,14 +554,10 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				value = valueArg.String()
 			}
 
-			filenameArgProvided := len(call.Arguments) > 2
+			filenameArgProvided := len(call.Arguments) > 2 && isBlobOrFile
 			var filename string
 			if filenameArgProvided {
 				filename = toUSVStringOrThrow(call.Arguments[2], "FormData.set", "filename")
-			}
-
-			if filenameArgProvided && !isBlobOrFile {
-				panic(runtime.NewTypeError("FormData.set: filename 仅允许与 Blob/File 一起使用"))
 			}
 
 			// ✅ Node/WHATWG 行为：set(name, blob, filename) 时同样需要包装新的 File；无 filename 时 Blob 默认 name="blob"
