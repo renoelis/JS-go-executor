@@ -289,12 +289,24 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 		obj.Set("_boundary", "----FormDataBoundary"+generateBoundary())
 
 		// 🔥 辅助函数：更新 Node.js 兼容属性
-		updateNodeCompatProps := func() {
-			entries := formData.GetEntries()
+		updateNodeCompatProps := func(targetObj *goja.Object, targetFormData *FormData) {
+			if targetObj == nil || targetFormData == nil {
+				return
+			}
+
+			entries := targetFormData.GetEntries()
 			var overheadLen, valueLen int
 			streams := make([]interface{}, 0)
 
-			boundary := obj.Get("_boundary").String()
+			boundaryVal := targetObj.Get("_boundary")
+			var boundary string
+			if boundaryVal == nil || goja.IsUndefined(boundaryVal) || goja.IsNull(boundaryVal) {
+				boundary = "----FormDataBoundary" + generateBoundary()
+				targetObj.Set("_boundary", boundary)
+			} else {
+				boundary = boundaryVal.String()
+			}
+
 			for _, entry := range entries {
 				// 计算 overhead（边界 + headers）
 				header := fmt.Sprintf("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n", boundary, entry.Name)
@@ -329,10 +341,10 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				overheadLen += len(fmt.Sprintf("--%s--\r\n", boundary))
 			}
 
-			obj.Set("_overheadLength", overheadLen)
-			obj.Set("_valueLength", valueLen)
-			obj.Set("_streams", streams)
-			obj.Set("dataSize", overheadLen+valueLen)
+			targetObj.Set("_overheadLength", overheadLen)
+			targetObj.Set("_valueLength", valueLen)
+			targetObj.Set("_streams", streams)
+			targetObj.Set("dataSize", overheadLen+valueLen)
 		}
 
 		// 🔧 将 Blob/File 重命名为指定文件名（用于 append/set 的 filename 参数）
@@ -390,6 +402,7 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 
 		// append(name, value[, filename])
 		obj.Set("append", func(call goja.FunctionCall) goja.Value {
+			formDataInstance, thisObj := requireFormDataThis(runtime, "FormData.append", call.This)
 			if len(call.Arguments) < 2 {
 				panic(runtime.NewTypeError("append 需要至少 2 个参数"))
 			}
@@ -466,19 +479,21 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 			}
 
 			if filenameArgProvided {
-				formData.Append(name, value, filename)
+				formDataInstance.Append(name, value, filename)
 			} else {
-				formData.Append(name, value)
+				formDataInstance.Append(name, value)
 			}
 
 			// 🔥 更新 Node.js 兼容属性
-			updateNodeCompatProps()
+			updateNodeCompatProps(thisObj, formDataInstance)
 
 			return goja.Undefined()
 		})
+		defineFunctionMetadata(runtime, obj, "append", 2)
 
 		// set(name, value[, filename])
 		obj.Set("set", func(call goja.FunctionCall) goja.Value {
+			formDataInstance, thisObj := requireFormDataThis(runtime, "FormData.set", call.This)
 			if len(call.Arguments) < 2 {
 				panic(runtime.NewTypeError("set 需要至少 2 个参数"))
 			}
@@ -555,25 +570,27 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 			}
 
 			if filenameArgProvided {
-				formData.Set(name, value, filename)
+				formDataInstance.Set(name, value, filename)
 			} else {
-				formData.Set(name, value)
+				formDataInstance.Set(name, value)
 			}
 
 			// 🔥 更新 Node.js 兼容属性
-			updateNodeCompatProps()
+			updateNodeCompatProps(thisObj, formDataInstance)
 
 			return goja.Undefined()
 		})
+		defineFunctionMetadata(runtime, obj, "set", 2)
 
 		// get(name)
 		obj.Set("get", func(call goja.FunctionCall) goja.Value {
+			formDataInstance, _ := requireFormDataThis(runtime, "FormData.get", call.This)
 			if len(call.Arguments) == 0 {
 				return goja.Null()
 			}
 
 			name := toUSVStringOrThrow(call.Arguments[0], "FormData.get", "name")
-			value := formData.Get(name)
+			value := formDataInstance.Get(name)
 
 			if value == nil {
 				return goja.Null()
@@ -581,47 +598,55 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 
 			return runtime.ToValue(value)
 		})
+		defineFunctionMetadata(runtime, obj, "get", 1)
 
 		// getAll(name)
 		obj.Set("getAll", func(call goja.FunctionCall) goja.Value {
+			formDataInstance, _ := requireFormDataThis(runtime, "FormData.getAll", call.This)
 			if len(call.Arguments) == 0 {
 				return runtime.ToValue([]interface{}{})
 			}
 
 			name := toUSVStringOrThrow(call.Arguments[0], "FormData.getAll", "name")
-			values := formData.GetAll(name)
+			values := formDataInstance.GetAll(name)
 
 			return runtime.ToValue(values)
 		})
+		defineFunctionMetadata(runtime, obj, "getAll", 1)
 
 		// has(name)
 		obj.Set("has", func(call goja.FunctionCall) goja.Value {
+			formDataInstance, _ := requireFormDataThis(runtime, "FormData.has", call.This)
 			if len(call.Arguments) == 0 {
 				return runtime.ToValue(false)
 			}
 
 			name := toUSVStringOrThrow(call.Arguments[0], "FormData.has", "name")
-			return runtime.ToValue(formData.Has(name))
+			return runtime.ToValue(formDataInstance.Has(name))
 		})
+		defineFunctionMetadata(runtime, obj, "has", 1)
 
 		// delete(name)
 		obj.Set("delete", func(call goja.FunctionCall) goja.Value {
+			formDataInstance, thisObj := requireFormDataThis(runtime, "FormData.delete", call.This)
 			if len(call.Arguments) == 0 {
 				panic(runtime.NewTypeError("FormData.delete 需要 1 个参数"))
 			}
 
 			name := toUSVStringOrThrow(call.Arguments[0], "FormData.delete", "name")
-			formData.Delete(name)
+			formDataInstance.Delete(name)
 
 			// 🔥 更新 Node.js 兼容属性
-			updateNodeCompatProps()
+			updateNodeCompatProps(thisObj, formDataInstance)
 
 			return goja.Undefined()
 		})
+		defineFunctionMetadata(runtime, obj, "delete", 1)
 
 		// entries() - 返回 [name, value] 迭代器
 		obj.Set("entries", func(call goja.FunctionCall) goja.Value {
-			entries := formData.Entries()
+			formDataInstance, _ := requireFormDataThis(runtime, "FormData.entries", call.This)
+			entries := formDataInstance.Entries()
 
 			iterator := runtime.NewObject()
 			index := 0
@@ -643,10 +668,12 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 
 			return iterator
 		})
+		defineFunctionMetadata(runtime, obj, "entries", 0)
 
 		// keys() - 返回 name 迭代器
 		obj.Set("keys", func(call goja.FunctionCall) goja.Value {
-			keys := formData.Keys()
+			formDataInstance, _ := requireFormDataThis(runtime, "FormData.keys", call.This)
+			keys := formDataInstance.Keys()
 
 			iterator := runtime.NewObject()
 			index := 0
@@ -668,10 +695,12 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 
 			return iterator
 		})
+		defineFunctionMetadata(runtime, obj, "keys", 0)
 
 		// values() - 返回 value 迭代器
 		obj.Set("values", func(call goja.FunctionCall) goja.Value {
-			values := formData.Values()
+			formDataInstance, _ := requireFormDataThis(runtime, "FormData.values", call.This)
+			values := formDataInstance.Values()
 
 			iterator := runtime.NewObject()
 			index := 0
@@ -693,9 +722,11 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 
 			return iterator
 		})
+		defineFunctionMetadata(runtime, obj, "values", 0)
 
 		// forEach(callback[, thisArg])
 		obj.Set("forEach", func(call goja.FunctionCall) goja.Value {
+			formDataInstance, thisObj := requireFormDataThis(runtime, "FormData.forEach", call.This)
 			if len(call.Arguments) == 0 {
 				panic(runtime.NewTypeError("FormData.forEach 需要一个回调函数"))
 			}
@@ -710,12 +741,13 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				thisArg = call.Arguments[1]
 			}
 
-			formData.ForEach(func(value interface{}, key string) {
-				callback(thisArg, runtime.ToValue(value), runtime.ToValue(key), obj)
+			formDataInstance.ForEach(func(value interface{}, key string) {
+				callback(thisArg, runtime.ToValue(value), runtime.ToValue(key), thisObj)
 			})
 
 			return goja.Undefined()
 		})
+		defineFunctionMetadata(runtime, obj, "forEach", 2)
 
 		setFormDataDefaultIterator(runtime, obj)
 
@@ -780,6 +812,50 @@ func FormatFormDataForDebug(fd *FormData) string {
 	}
 
 	return "FormData {\n" + strings.Join(parts, "\n") + "\n}"
+}
+
+func requireFormDataThis(runtime *goja.Runtime, methodName string, thisVal goja.Value) (*FormData, *goja.Object) {
+	if runtime == nil {
+		panic(fmt.Sprintf("%s 调用环境无效", methodName))
+	}
+	if thisVal == nil || goja.IsUndefined(thisVal) || goja.IsNull(thisVal) {
+		panic(runtime.NewTypeError(fmt.Sprintf("%s 必须在 FormData 实例上调用", methodName)))
+	}
+
+	thisObj := thisVal.ToObject(runtime)
+	if thisObj == nil {
+		panic(runtime.NewTypeError(fmt.Sprintf("%s 必须在 FormData 实例上调用", methodName)))
+	}
+
+	instanceVal := thisObj.Get("__formDataInstance")
+	if instanceVal == nil || goja.IsUndefined(instanceVal) || goja.IsNull(instanceVal) {
+		panic(runtime.NewTypeError(fmt.Sprintf("%s 必须在 FormData 实例上调用", methodName)))
+	}
+
+	if formData, ok := instanceVal.Export().(*FormData); ok && formData != nil {
+		return formData, thisObj
+	}
+
+	panic(runtime.NewTypeError(fmt.Sprintf("%s 必须在 FormData 实例上调用", methodName)))
+}
+
+func defineFunctionMetadata(runtime *goja.Runtime, target *goja.Object, methodName string, length int) {
+	if runtime == nil || target == nil {
+		return
+	}
+
+	methodVal := target.Get(methodName)
+	if methodVal == nil || goja.IsUndefined(methodVal) || goja.IsNull(methodVal) {
+		return
+	}
+
+	methodObj := methodVal.ToObject(runtime)
+	if methodObj == nil {
+		return
+	}
+
+	methodObj.DefineDataProperty("name", runtime.ToValue(methodName), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+	methodObj.DefineDataProperty("length", runtime.ToValue(length), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
 }
 
 func isSymbolValue(val goja.Value) bool {
