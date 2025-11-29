@@ -370,6 +370,9 @@ func (e *JSExecutor) registerModules(cfg *config.Config) {
 	// 🔥 国密算法模块（sm-crypto-v2: Go 原生实现，支持 SM2/SM3/SM4/KDF）
 	e.moduleRegistry.Register(enhance_modules.NewSMCryptoNativeEnhancer())
 
+	// 🔥 Stream 模块（基于 readable-stream@4.x，兼容 Node.js v25）
+	e.moduleRegistry.Register(enhance_modules.NewStreamEnhancer(assets.StreamBundle))
+
 	// 🔥 一次性注册所有模块到 require 系统
 	if err := e.moduleRegistry.RegisterAll(e.registry); err != nil {
 		utils.Fatal("模块注册失败", zap.Error(err))
@@ -595,6 +598,18 @@ func (e *JSExecutor) warmupModules() error {
 			precompile: func(m interface{}) error {
 				if enhancer, ok := m.(*enhance_modules.FastXMLParserEnhancer); ok {
 					return enhancer.PrecompileFastXMLParser()
+				}
+				return fmt.Errorf("invalid module type")
+			},
+		},
+		{
+			name: "stream",
+			getModule: func() (interface{}, bool) {
+				return e.moduleRegistry.GetModule("stream")
+			},
+			precompile: func(m interface{}) error {
+				if enhancer, ok := m.(*enhance_modules.StreamEnhancer); ok {
+					return enhancer.PrecompileStream()
 				}
 				return fmt.Errorf("invalid module type")
 			},

@@ -107,28 +107,31 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 			var contentType string
 
 			// 解析第三个参数（filename 或 options 对象）
-			if len(call.Arguments) > 2 && !goja.IsUndefined(call.Arguments[2]) {
+			if len(call.Arguments) > 2 {
 				thirdArg := call.Arguments[2]
 
-				// 尝试转换为对象，检查是否是 options 对象
-				if obj := thirdArg.ToObject(runtime); obj != nil {
-					filenameVal := obj.Get("filename")
+				// null/undefined 行为与 Node 对齐：视作未提供 options
+				if !goja.IsUndefined(thirdArg) && !goja.IsNull(thirdArg) {
+					// 尝试转换为对象，检查是否是 options 对象
+					if obj := thirdArg.ToObject(runtime); obj != nil {
+						filenameVal := obj.Get("filename")
 
-					// 如果有 filename 属性，则是 options 对象
-					if filenameVal != nil && !goja.IsUndefined(filenameVal) && !goja.IsNull(filenameVal) {
-						filename = filenameVal.String()
+						// 如果有 filename 属性，则是 options 对象
+						if filenameVal != nil && !goja.IsUndefined(filenameVal) && !goja.IsNull(filenameVal) {
+							filename = filenameVal.String()
 
-						// 检查 contentType
-						if contentTypeVal := obj.Get("contentType"); contentTypeVal != nil && !goja.IsUndefined(contentTypeVal) && !goja.IsNull(contentTypeVal) {
-							contentType = contentTypeVal.String()
+							// 检查 contentType
+							if contentTypeVal := obj.Get("contentType"); contentTypeVal != nil && !goja.IsUndefined(contentTypeVal) && !goja.IsNull(contentTypeVal) {
+								contentType = contentTypeVal.String()
+							}
+						} else {
+							// 没有 filename 属性，当作字符串处理
+							filename = thirdArg.String()
 						}
 					} else {
-						// 没有 filename 属性，当作字符串处理
+						// 转换失败，直接当作字符串
 						filename = thirdArg.String()
 					}
-				} else {
-					// 转换失败，直接当作字符串
-					filename = thirdArg.String()
 				}
 			}
 
@@ -537,6 +540,14 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 	// 关键修复：先转换为对象，不要先 Export（Export 会破坏 Blob/File 对象）
 	obj := value.ToObject(runtime)
 
+	// 对齐 Node form-data：禁止直接传入 TypedArray/ArrayBuffer（需先转 Buffer）
+	isBufferVal := isBufferValue(runtime, value)
+	if obj != nil && !isBufferVal {
+		if typeName, isTyped := detectTypedArrayOrArrayBuffer(runtime, obj); isTyped {
+			return fmt.Errorf("FormData.append 不支持直接传入 %s，请先转换为 Buffer", typeName)
+		}
+	}
+
 	// 1. 优先处理对象类型（ReadableStream、File、Blob、Buffer）
 	if obj != nil {
 		// 1.0 检查 ReadableStream（最优先）
@@ -636,6 +647,11 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 
 	// 2. 最后才 Export 处理基本类型（避免破坏对象结构）
 	exported := value.Export()
+
+	// 2.1 兜底：goja.ArrayBuffer 直接拒绝（与 Node form-data 行为一致）
+	if _, ok := exported.(goja.ArrayBuffer); ok {
+		return fmt.Errorf("FormData.append 不支持直接传入 ArrayBuffer，请先转换为 Buffer")
+	}
 
 	switch v := exported.(type) {
 	case string:
@@ -875,4 +891,70 @@ func isNodeFormData(obj *goja.Object) bool {
 	}
 	val := obj.Get("__isNodeFormData")
 	return !goja.IsUndefined(val) && !goja.IsNull(val) && val.ToBoolean()
+}
+
+// isBufferValue 判断值是否为 Buffer（使用全局 Buffer.isBuffer）
+func isBufferValue(runtime *goja.Runtime, val goja.Value) bool {
+	if runtime == nil || val == nil {
+		return false
+	}
+
+	bufferCtor := runtime.GlobalObject().Get("Buffer")
+	if bufferCtor == nil || goja.IsUndefined(bufferCtor) || goja.IsNull(bufferCtor) {
+		return false
+	}
+
+	bufferObj := bufferCtor.ToObject(runtime)
+	if bufferObj == nil {
+		return false
+	}
+
+	isBufferFn := bufferObj.Get("isBuffer")
+	if isBufferFn == nil || goja.IsUndefined(isBufferFn) || goja.IsNull(isBufferFn) {
+		return false
+	}
+
+	if fn, ok := goja.AssertFunction(isBufferFn); ok {
+		if res, err := fn(bufferObj, val); err == nil {
+			return res.ToBoolean()
+		}
+	}
+
+	return false
+}
+
+// detectTypedArrayOrArrayBuffer 检测是否为 TypedArray/ArrayBuffer（排除 Buffer）
+func detectTypedArrayOrArrayBuffer(runtime *goja.Runtime, obj *goja.Object) (string, bool) {
+	if runtime == nil || obj == nil {
+		return "", false
+	}
+
+	ctor := obj.Get("constructor")
+	if ctor == nil || goja.IsUndefined(ctor) || goja.IsNull(ctor) {
+		return "", false
+	}
+
+	ctorObj := ctor.ToObject(runtime)
+	if ctorObj == nil {
+		return "", false
+	}
+
+	nameVal := ctorObj.Get("name")
+	if nameVal == nil || goja.IsUndefined(nameVal) || goja.IsNull(nameVal) {
+		return "", false
+	}
+
+	name := nameVal.String()
+	switch name {
+	case "ArrayBuffer", "SharedArrayBuffer",
+		"Uint8Array", "Uint8ClampedArray",
+		"Int8Array",
+		"Uint16Array", "Int16Array",
+		"Uint32Array", "Int32Array",
+		"Float32Array", "Float64Array",
+		"BigInt64Array", "BigUint64Array":
+		return name, true
+	default:
+		return name, false
+	}
 }
