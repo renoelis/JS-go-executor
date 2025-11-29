@@ -308,7 +308,10 @@ func (sfd *StreamingFormData) writeEntryBuffered(writer *multipart.Writer, entry
 
 	switch v := entry.Value.(type) {
 	case string:
-		// 文本字段
+		// 文本字段；如果带有 content-type，需要自定义 header
+		if entry.ContentType != "" || entry.Filename != "" {
+			return sfd.writeFileDataBuffered(writer, entry.Name, entry.Filename, entry.ContentType, []byte(v))
+		}
 		return writer.WriteField(entry.Name, v)
 	case []byte:
 		// 二进制字段（Blob/File）
@@ -322,13 +325,25 @@ func (sfd *StreamingFormData) writeEntryBuffered(writer *multipart.Writer, entry
 		return sfd.writeFileDataBuffered(writer, entry.Name, entry.Filename, entry.ContentType, data)
 	case map[string]interface{}:
 		// 🔥 对象转换为 "[object Object]"（符合浏览器行为，防止循环引用导致栈溢出）
-		return writer.WriteField(entry.Name, "[object Object]")
+		val := "[object Object]"
+		if entry.ContentType != "" || entry.Filename != "" {
+			return sfd.writeFileDataBuffered(writer, entry.Name, entry.Filename, entry.ContentType, []byte(val))
+		}
+		return writer.WriteField(entry.Name, val)
 	case nil:
 		// 🔥 nil 转换为 "null"
-		return writer.WriteField(entry.Name, "null")
+		val := "null"
+		if entry.ContentType != "" || entry.Filename != "" {
+			return sfd.writeFileDataBuffered(writer, entry.Name, entry.Filename, entry.ContentType, []byte(val))
+		}
+		return writer.WriteField(entry.Name, val)
 	default:
 		// 其他类型转为字符串
-		return writer.WriteField(entry.Name, fmt.Sprintf("%v", v))
+		val := fmt.Sprintf("%v", v)
+		if entry.ContentType != "" || entry.Filename != "" {
+			return sfd.writeFileDataBuffered(writer, entry.Name, entry.Filename, entry.ContentType, []byte(val))
+		}
+		return writer.WriteField(entry.Name, val)
 	}
 }
 
@@ -345,7 +360,27 @@ func (sfd *StreamingFormData) writeFileDataBuffered(writer *multipart.Writer, na
 			filename, len(data), sfd.config.MaxFileSize)
 	}
 
-	// 创建文件字段（支持自定义 ContentType）
+	// 创建字段（支持自定义 ContentType，filename 可为空）
+	if filename == "" {
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		headers := map[string][]string{
+			"Content-Disposition": {fmt.Sprintf(`form-data; name="%s"`, escapeQuotes(name))},
+			"Content-Type":        {contentType},
+		}
+		part, err := writer.CreatePart(headers)
+		if err != nil {
+			return fmt.Errorf("创建表单字段失败: %w", err)
+		}
+
+		// 直接写入所有数据
+		if _, err := part.Write(data); err != nil {
+			return fmt.Errorf("写入字段数据失败: %w", err)
+		}
+		return nil
+	}
+
 	part, err := sfd.createFormFilePart(writer, name, filename, contentType)
 	if err != nil {
 		return fmt.Errorf("创建文件字段失败: %w", err)
@@ -469,6 +504,9 @@ func (sfd *StreamingFormData) writeEntryStreaming(writer *multipart.Writer, entr
 	switch v := entry.Value.(type) {
 	case string:
 		// 文本字段
+		if entry.ContentType != "" || entry.Filename != "" {
+			return sfd.writeFileDataStreaming(writer, entry.Name, entry.Filename, entry.ContentType, strings.NewReader(v), int64(len(v)))
+		}
 		return writer.WriteField(entry.Name, v)
 
 	case []byte:
@@ -482,15 +520,27 @@ func (sfd *StreamingFormData) writeEntryStreaming(writer *multipart.Writer, entr
 
 	case map[string]interface{}:
 		// 🔥 对象转换为 "[object Object]"（符合浏览器行为，防止循环引用导致栈溢出）
-		return writer.WriteField(entry.Name, "[object Object]")
+		val := "[object Object]"
+		if entry.ContentType != "" || entry.Filename != "" {
+			return sfd.writeFileDataStreaming(writer, entry.Name, entry.Filename, entry.ContentType, strings.NewReader(val), int64(len(val)))
+		}
+		return writer.WriteField(entry.Name, val)
 
 	case nil:
 		// 🔥 nil 转换为 "null"
-		return writer.WriteField(entry.Name, "null")
+		val := "null"
+		if entry.ContentType != "" || entry.Filename != "" {
+			return sfd.writeFileDataStreaming(writer, entry.Name, entry.Filename, entry.ContentType, strings.NewReader(val), int64(len(val)))
+		}
+		return writer.WriteField(entry.Name, val)
 
 	default:
 		// 其他类型转为字符串
-		return writer.WriteField(entry.Name, fmt.Sprintf("%v", v))
+		val := fmt.Sprintf("%v", v)
+		if entry.ContentType != "" || entry.Filename != "" {
+			return sfd.writeFileDataStreaming(writer, entry.Name, entry.Filename, entry.ContentType, strings.NewReader(val), int64(len(val)))
+		}
+		return writer.WriteField(entry.Name, val)
 	}
 }
 
@@ -510,6 +560,27 @@ func (sfd *StreamingFormData) writeFileDataStreaming(writer *multipart.Writer, n
 	}
 
 	// 创建文件字段（支持自定义 ContentType）
+	if filename == "" {
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		headers := map[string][]string{
+			"Content-Disposition": {fmt.Sprintf(`form-data; name="%s"`, escapeQuotes(name))},
+			"Content-Type":        {contentType},
+		}
+		part, err := writer.CreatePart(headers)
+		if err != nil {
+			return fmt.Errorf("创建表单字段失败: %w", err)
+		}
+
+		// 流式复制
+		_, err = sfd.copyStreaming(part, reader)
+		if err != nil {
+			return fmt.Errorf("写入文件数据失败: %w", err)
+		}
+		return nil
+	}
+
 	part, err := sfd.createFormFilePart(writer, name, filename, contentType)
 	if err != nil {
 		return fmt.Errorf("创建文件字段失败: %w", err)
@@ -622,14 +693,14 @@ func (sfd *StreamingFormData) GetTotalSize() int64 {
 		totalSize += int64(len("--")) + int64(len(boundary)) + 2 // \r\n
 
 		// 2. Content-Disposition header
-		contentDisposition := fmt.Sprintf("Content-Disposition: form-data; name=\"%s\"", entry.Name)
+		contentDisposition := fmt.Sprintf("Content-Disposition: form-data; name=\"%s\"", escapeQuotes(entry.Name))
 		if entry.Filename != "" {
-			contentDisposition += fmt.Sprintf("; filename=\"%s\"", entry.Filename)
+			contentDisposition += fmt.Sprintf("; filename=\"%s\"", escapeQuotes(entry.Filename))
 		}
 		totalSize += int64(len(contentDisposition)) + 2 // \r\n
 
-		// 3. Content-Type header (如果有文件名，总是添加)
-		if entry.Filename != "" {
+		// 3. Content-Type header (如果有文件名或显式 contentType)
+		if entry.Filename != "" || entry.ContentType != "" {
 			contentType := entry.ContentType
 			if contentType == "" {
 				// 默认值与 createFormFilePart 保持一致

@@ -152,8 +152,8 @@ services:
       - MAX_STREAMING_SIZE_MB=100        # 流式读取限制(getReader) - 默认100MB
       
       # 🔥 上传限制（新方案）
-      - MAX_BUFFERED_FORMDATA_MB=5       # 缓冲上传限制(Web FormData + Blob、Node.js form-data + Buffer) - 默认1MB
-      - MAX_STREAMING_FORMDATA_MB=5    # 流式上传限制(Node.js form-data + Stream) - 默认100MB
+      - MAX_BUFFERED_FORMDATA_MB=10       # 缓冲上传限制(Web FormData + Blob、Node.js form-data + Buffer) - 默认1MB
+      - MAX_STREAMING_FORMDATA_MB=50    # 流式上传限制(Node.js form-data + Stream) - 默认100MB
       
       # 其他配置
       - ENABLE_CHUNKED_UPLOAD=1          # 启用分块传输编码

@@ -582,7 +582,7 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 
 	// 先检查 null/undefined（在 ToObject 之前，避免 panic）
 	if goja.IsNull(value) || goja.IsUndefined(value) {
-		nfm.appendField(streamingFormData, name, "")
+		nfm.appendField(streamingFormData, name, "", contentType)
 		return nil
 	}
 
@@ -679,10 +679,8 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 						data, ok = nfm.extractBufferData(runtime, obj)
 					}()
 
-					if ok && len(data) > 0 {
-						if filename == "" {
-							filename = "blob"
-						}
+					if ok {
+						// Buffer 默认不应自动补充 filename，但需要保留 content-type
 						if contentType == "" {
 							contentType = "application/octet-stream"
 						}
@@ -733,11 +731,11 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 			return nil
 		}
 		// 否则作为普通文本字段
-		nfm.appendField(streamingFormData, name, v)
+		nfm.appendField(streamingFormData, name, v, contentType)
 		return nil
 	case int, int32, int64, float32, float64, bool:
 		// 数字和布尔类型
-		nfm.appendField(streamingFormData, name, fmt.Sprintf("%v", v))
+		nfm.appendField(streamingFormData, name, fmt.Sprintf("%v", v), contentType)
 		return nil
 	case []uint8:
 		// []byte 类型 - 直接作为文件
@@ -768,26 +766,27 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 		return nil
 	}
 
-	nfm.appendField(streamingFormData, name, strValue)
+	nfm.appendField(streamingFormData, name, strValue, contentType)
 	return nil
 }
 
 // appendField 添加文本字段到 StreamingFormData
-func (nfm *NodeFormDataModule) appendField(streamingFormData *formdata.StreamingFormData, name, value string) {
+func (nfm *NodeFormDataModule) appendField(streamingFormData *formdata.StreamingFormData, name, value, contentType string) {
 	if streamingFormData == nil {
 		return
 	}
 
 	entry := formdata.FormDataEntry{
-		Name:  name,
-		Value: value,
+		Name:        name,
+		Value:       value,
+		ContentType: contentType,
 	}
 
 	// 添加条目
 	streamingFormData.AppendEntry(entry)
 
 	// 更新总大小估算
-	streamingFormData.AddToTotalSize(int64(len(name) + len(value) + 100)) // 100 字节为 header 开销
+	streamingFormData.AddToTotalSize(int64(len(name) + len(value) + len(contentType) + 100)) // 100 字节为 header 开销
 }
 
 // appendFile 添加文件字段到 StreamingFormData
