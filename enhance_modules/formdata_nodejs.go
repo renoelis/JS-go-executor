@@ -640,6 +640,32 @@ func isNodeReadableObject(obj *goja.Object) bool {
 	return false
 }
 
+// shouldMeasureNodeStreamLength 粗略模拟 form-data 对 _valuesToMeasure 的判定
+// 仅当存在 path/httpVersion/_readableState 等典型 Node 流特征时，才认为长度未知
+func shouldMeasureNodeStreamLength(obj *goja.Object) bool {
+	if obj == nil {
+		return false
+	}
+
+	hasProp := func(key string) bool {
+		val := obj.Get(key)
+		return val != nil && !goja.IsUndefined(val) && !goja.IsNull(val)
+	}
+
+	if hasProp("path") || hasProp("_readableState") || hasProp("httpVersion") {
+		return true
+	}
+
+	// http.IncomingMessage 风格：readable + httpVersion
+	if readable := obj.Get("readable"); readable != nil && readable.ToBoolean() {
+		if hasProp("httpVersion") {
+			return true
+		}
+	}
+
+	return false
+}
+
 // handleAppend 处理 append 方法的不同值类型
 func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingFormData *formdata.StreamingFormData, name string, value goja.Value, filename, contentType string, hasKnownLength bool, knownLength int64) error {
 	// 安全检查
@@ -689,7 +715,9 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 
 		// 1.0.1 粗略判断 Node.js Readable（无 knownLength 时应视作未知长度流）
 		if isNodeReadableObject(obj) {
-			nfm.appendUnknownStream(streamingFormData, name, filename, contentType, hasKnownLength, knownLength)
+			// Node form-data 只在 Stream/path/httpVersion 等场景下判定长度未知
+			needsLength := !hasKnownLength && shouldMeasureNodeStreamLength(obj)
+			nfm.appendUnknownStream(streamingFormData, name, filename, contentType, hasKnownLength, knownLength, needsLength)
 			return nil
 		}
 
@@ -1075,8 +1103,8 @@ func (nfm *NodeFormDataModule) appendStreamFile(streamingFormData *formdata.Stre
 	streamingFormData.AddToTotalSize(estimated) // 预估长度用于模式检测
 }
 
-// appendUnknownStream 添加未知长度的 Node.js Readable 占位
-func (nfm *NodeFormDataModule) appendUnknownStream(streamingFormData *formdata.StreamingFormData, name, filename, contentType string, hasKnownLength bool, knownLength int64) {
+// appendUnknownStream 添加 Node.js Readable 占位，needsLength 决定是否视作未知长度流
+func (nfm *NodeFormDataModule) appendUnknownStream(streamingFormData *formdata.StreamingFormData, name, filename, contentType string, hasKnownLength bool, knownLength int64, needsLength bool) {
 	if streamingFormData == nil {
 		return
 	}
@@ -1085,7 +1113,7 @@ func (nfm *NodeFormDataModule) appendUnknownStream(streamingFormData *formdata.S
 
 	entry := formdata.FormDataEntry{
 		Name:        name,
-		Value:       formdata.UnknownLengthStreamPlaceholder{},
+		Value:       formdata.UnknownLengthStreamPlaceholder{NeedsLength: needsLength},
 		Filename:    filename,
 		ContentType: contentType,
 		HasKnownLen: hasKnownLength,
@@ -1095,10 +1123,13 @@ func (nfm *NodeFormDataModule) appendUnknownStream(streamingFormData *formdata.S
 	streamingFormData.AppendEntry(entry)
 
 	estimated := int64(len(name) + len(filename) + len(contentType) + 200)
-	if hasKnownLength {
+	switch {
+	case hasKnownLength:
 		estimated += knownLength
-	} else {
+	case needsLength:
 		estimated += int64(1024 * 1024) // 默认 1MB 预估值，触发未知流分支
+	default:
+		// 与 Node 行为一致：非典型 Stream 对象按 0 字节处理
 	}
 	streamingFormData.AddToTotalSize(estimated)
 }

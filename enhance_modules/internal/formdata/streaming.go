@@ -37,7 +37,10 @@ type StreamingFormData struct {
 }
 
 // UnknownLengthStreamPlaceholder 用于标记未知长度的 Node.js Readable 流
-type UnknownLengthStreamPlaceholder struct{}
+// NeedsLength 表示是否需要按未知长度流处理（用于 hasKnownLength/getLengthSync）
+type UnknownLengthStreamPlaceholder struct {
+	NeedsLength bool
+}
 
 // FormDataStreamConfig 流式处理配置
 type FormDataStreamConfig struct {
@@ -740,8 +743,13 @@ func (sfd *StreamingFormData) isUnknownLengthStream(entry *FormDataEntry) bool {
 	}
 
 	switch v := entry.Value.(type) {
-	case UnknownLengthStreamPlaceholder, *UnknownLengthStreamPlaceholder:
-		return true
+	case UnknownLengthStreamPlaceholder:
+		return v.NeedsLength
+	case *UnknownLengthStreamPlaceholder:
+		if v == nil {
+			return false
+		}
+		return v.NeedsLength
 	case io.Reader:
 		if _, isBytesReader := v.(*bytes.Reader); isBytesReader {
 			return false
