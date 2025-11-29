@@ -116,6 +116,9 @@ func (sr *StreamReader) Read(size int) ([]byte, bool, error) {
 
 	// 如果上次已经到达 EOF，这次直接返回 done=true
 	if sr.reachedEOF {
+		if err := sr.checkAbortedLocked(); err != nil {
+			return nil, true, err
+		}
 		sr.closed = true
 		return nil, true, nil
 	}
@@ -168,6 +171,9 @@ func (sr *StreamReader) Read(size int) ([]byte, bool, error) {
 			return buffer[:n], false, nil
 		} else {
 			// 没有数据，直接返回 done=true
+			if errAbort := sr.checkAbortedLocked(); errAbort != nil {
+				return nil, true, errAbort
+			}
 			sr.closed = true
 			return nil, true, nil
 		}
@@ -236,6 +242,44 @@ func (sr *StreamReader) GetMaxSize() int64 {
 	sr.mutex.Lock()
 	defer sr.mutex.Unlock()
 	return sr.maxSize
+}
+
+// AbortError 返回中止错误（如果已被 AbortSignal 取消）
+func (sr *StreamReader) AbortError() error {
+	sr.mutex.Lock()
+	defer sr.mutex.Unlock()
+	if sr.aborted {
+		return sr.abortErr
+	}
+	return nil
+}
+
+// CheckAbortAndGetError 检查 abort 状态并返回错误（如果已被取消）
+// 🔥 与 AbortError() 的区别：此方法会直接检查 abortCh channel 是否已关闭
+// 即使 abort watcher 还没来得及设置 sr.aborted，也能检测到 abort 信号
+func (sr *StreamReader) CheckAbortAndGetError() error {
+	sr.mutex.Lock()
+	defer sr.mutex.Unlock()
+
+	// 快速路径：已经标记为 aborted
+	if sr.aborted {
+		return sr.abortErr
+	}
+
+	// 没有 abort channel
+	if sr.abortCh == nil {
+		return nil
+	}
+
+	// 直接检查 channel 是否已关闭
+	select {
+	case <-sr.abortCh:
+		// channel 已关闭，触发 abort
+		sr.abortLocked()
+		return sr.abortErr
+	default:
+		return nil
+	}
 }
 
 // 启动 abort watcher，确保阻塞读取也能被中断
@@ -330,20 +374,28 @@ func (sr *StreamReader) AttachAbortSignal(ch <-chan struct{}, signal *goja.Objec
 }
 
 // checkAbortedLocked 检查并处理中止状态（需在持锁状态下调用）
+// 🔥 修复策略：先检查快速路径（已设置 aborted），再使用非阻塞 select 检测 channel
+// 关闭的 channel 会立即在 select 中触发，不会走 default 分支
 func (sr *StreamReader) checkAbortedLocked() error {
+	// 快速路径：已经标记为 aborted
 	if sr.aborted {
 		return sr.abortErr
 	}
 
+	// 没有 abort channel
 	if sr.abortCh == nil {
 		return nil
 	}
 
+	// 使用非阻塞 select 检查 channel 是否已关闭
+	// 注意：关闭的 channel 会立即返回零值，不会走 default
 	select {
 	case <-sr.abortCh:
+		// channel 已关闭或收到信号
 		sr.abortLocked()
 		return sr.abortErr
 	default:
+		// channel 未关闭且无信号
 		return nil
 	}
 }

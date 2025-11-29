@@ -2477,9 +2477,21 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 		var closeOnce sync.Once
 		var aborted bool
 
+		// 🔥 前向声明 triggerAbort 函数变量，以便 closeController 和 scheduleClose 可以引用
+		var triggerAbort func(reason goja.Value)
+
 		closeController := func(controller *goja.Object) {
 			if aborted {
 				return
+			}
+			// 🔥 修复竞态条件：在关闭前检查 data.Signal 是否已经 aborted
+			// 因为 abort 事件监听器可能还没来得及触发 triggerAbort
+			if data.Signal != nil {
+				if abortedVal := data.Signal.Get("aborted"); abortedVal != nil && abortedVal.ToBoolean() {
+					reason := data.Signal.Get("reason")
+					triggerAbort(reason)
+					return
+				}
 			}
 			closeOnce.Do(func() {
 				if abortCleanup != nil {
@@ -2505,6 +2517,14 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 			if pendingClose || aborted {
 				return
 			}
+			// 🔥 修复竞态条件：在调度关闭前检查 data.Signal 是否已经 aborted
+			if data.Signal != nil {
+				if abortedVal := data.Signal.Get("aborted"); abortedVal != nil && abortedVal.ToBoolean() {
+					reason := data.Signal.Get("reason")
+					triggerAbort(reason)
+					return
+				}
+			}
 			pendingClose = true
 			if setImmediateVal := runtime.Get("setImmediate"); setImmediateVal != nil && !goja.IsUndefined(setImmediateVal) && !goja.IsNull(setImmediateVal) {
 				if setImmediateFn, ok := goja.AssertFunction(setImmediateVal); ok {
@@ -2521,7 +2541,7 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 			closeController(controller)
 		}
 
-		triggerAbort := func(reason goja.Value) {
+		triggerAbort = func(reason goja.Value) {
 			if reason == nil || goja.IsUndefined(reason) || goja.IsNull(reason) {
 				reason = CreateDOMException(runtime, "This operation was aborted", "AbortError")
 			}
@@ -2553,6 +2573,15 @@ func (fe *FetchEnhancer) attachBufferedBodyMethods(runtime *goja.Runtime, respOb
 			controller := call.Argument(0).ToObject(runtime)
 			if controller == nil || aborted {
 				return goja.Undefined()
+			}
+
+			// 🔥 修复竞态条件：每次 pull 时检查 data.Signal 是否已经 aborted
+			if data.Signal != nil {
+				if abortedVal := data.Signal.Get("aborted"); abortedVal != nil && abortedVal.ToBoolean() {
+					reason := data.Signal.Get("reason")
+					triggerAbort(reason)
+					return goja.Undefined()
+				}
 			}
 
 			cancelledMutex.RLock()
@@ -3127,6 +3156,14 @@ func (fe *FetchEnhancer) newResponseReadableStream(
 		resultCh := make(chan readResult, 1)
 		go func() {
 			data, done, err := streamReader.Read(0)
+			// 🔥 修复竞态条件：如果读取成功但流已完成，再次检查 abort 状态
+			// 使用 CheckAbortAndGetError() 直接检查 channel 状态
+			// 因为 abort 信号可能在 Read() 执行期间或之后到达
+			if err == nil && done {
+				if abortErr := streamReader.CheckAbortAndGetError(); abortErr != nil {
+					err = abortErr
+				}
+			}
 			resultCh <- readResult{
 				data: data,
 				done: done,
@@ -3157,6 +3194,24 @@ func (fe *FetchEnhancer) newResponseReadableStream(
 			}
 
 			if res.done {
+				// 🔥 修复竞态条件：在关闭流之前，检查是否已被 abort
+				// 如果 streamReader 已经被 abort，应该触发 error 而不是 close
+				if abortErr := streamReader.CheckAbortAndGetError(); abortErr != nil {
+					var value goja.Value = runtime.NewGoError(abortErr)
+					if convertStreamError != nil {
+						value = convertStreamError(abortErr)
+					}
+					if errorFn, ok := goja.AssertFunction(errorVal); ok {
+						if _, callErr := errorFn(controller, value); callErr != nil {
+							panic(callErr)
+						}
+					}
+					if onCancel != nil {
+						onCancel()
+					}
+					return
+				}
+
 				shouldClose := true
 				if isCancelled != nil && isCancelled() {
 					shouldClose = false
