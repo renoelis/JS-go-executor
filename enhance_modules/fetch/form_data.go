@@ -381,13 +381,20 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 			return nil
 		}
 
+		toUSVStringOrThrow := func(arg goja.Value, methodName, paramName string) string {
+			if isSymbolValue(arg) {
+				panic(runtime.NewTypeError(fmt.Sprintf("%s 的 %s 不能是 Symbol", methodName, paramName)))
+			}
+			return arg.String()
+		}
+
 		// append(name, value[, filename])
 		obj.Set("append", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) < 2 {
 				panic(runtime.NewTypeError("append 需要至少 2 个参数"))
 			}
 
-			name := call.Arguments[0].String()
+			name := toUSVStringOrThrow(call.Arguments[0], "FormData.append", "name")
 			valueArg := call.Arguments[1]
 
 			// 🔥 类型转换：非 Blob/File 值转换为字符串（符合 Web FormData API）
@@ -416,6 +423,8 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 					// 其他对象按照 JS 语义转换为字符串（Array => "1,2,3" 等）
 					value = valueArg.String()
 				}
+			} else if isSymbolValue(valueArg) {
+				panic(runtime.NewTypeError("FormData.append 的 value 不能是 Symbol"))
 			} else if goja.IsNull(valueArg) {
 				value = "null"
 			} else if goja.IsUndefined(valueArg) {
@@ -428,7 +437,11 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 			filenameArgProvided := len(call.Arguments) > 2
 			var filename string
 			if filenameArgProvided {
-				filename = call.Arguments[2].String()
+				filename = toUSVStringOrThrow(call.Arguments[2], "FormData.append", "filename")
+			}
+
+			if filenameArgProvided && !isBlobOrFile {
+				panic(runtime.NewTypeError("FormData.append: filename 仅允许与 Blob/File 一起使用"))
 			}
 
 			// ✅ Node/WHATWG 行为：Blob 默认包装为 name = "blob"，显式 filename（含空字符串）覆盖
@@ -470,7 +483,7 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				panic(runtime.NewTypeError("set 需要至少 2 个参数"))
 			}
 
-			name := call.Arguments[0].String()
+			name := toUSVStringOrThrow(call.Arguments[0], "FormData.set", "name")
 			valueArg := call.Arguments[1]
 
 			// 🔥 类型转换：非 Blob/File 值转换为字符串（符合 Web FormData API）
@@ -499,6 +512,8 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 					// 其他对象按照 JS 语义转换为字符串（Array => "1,2,3" 等）
 					value = valueArg.String()
 				}
+			} else if isSymbolValue(valueArg) {
+				panic(runtime.NewTypeError("FormData.set 的 value 不能是 Symbol"))
 			} else if goja.IsNull(valueArg) {
 				value = "null"
 			} else if goja.IsUndefined(valueArg) {
@@ -511,7 +526,11 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 			filenameArgProvided := len(call.Arguments) > 2
 			var filename string
 			if filenameArgProvided {
-				filename = call.Arguments[2].String()
+				filename = toUSVStringOrThrow(call.Arguments[2], "FormData.set", "filename")
+			}
+
+			if filenameArgProvided && !isBlobOrFile {
+				panic(runtime.NewTypeError("FormData.set: filename 仅允许与 Blob/File 一起使用"))
 			}
 
 			// ✅ Node/WHATWG 行为：set(name, blob, filename) 时同样需要包装新的 File；无 filename 时 Blob 默认 name="blob"
@@ -553,7 +572,7 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				return goja.Null()
 			}
 
-			name := call.Arguments[0].String()
+			name := toUSVStringOrThrow(call.Arguments[0], "FormData.get", "name")
 			value := formData.Get(name)
 
 			if value == nil {
@@ -569,7 +588,7 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				return runtime.ToValue([]interface{}{})
 			}
 
-			name := call.Arguments[0].String()
+			name := toUSVStringOrThrow(call.Arguments[0], "FormData.getAll", "name")
 			values := formData.GetAll(name)
 
 			return runtime.ToValue(values)
@@ -581,7 +600,7 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				return runtime.ToValue(false)
 			}
 
-			name := call.Arguments[0].String()
+			name := toUSVStringOrThrow(call.Arguments[0], "FormData.has", "name")
 			return runtime.ToValue(formData.Has(name))
 		})
 
@@ -591,7 +610,7 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				return goja.Undefined()
 			}
 
-			name := call.Arguments[0].String()
+			name := toUSVStringOrThrow(call.Arguments[0], "FormData.delete", "name")
 			formData.Delete(name)
 
 			// 🔥 更新 Node.js 兼容属性
@@ -675,7 +694,7 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 			return iterator
 		})
 
-		// forEach(callback)
+		// forEach(callback[, thisArg])
 		obj.Set("forEach", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
 				panic(runtime.NewTypeError("FormData.forEach 需要一个回调函数"))
@@ -686,8 +705,13 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				panic(runtime.NewTypeError("FormData.forEach 回调函数必须是一个函数"))
 			}
 
+			thisArg := goja.Undefined()
+			if len(call.Arguments) > 1 {
+				thisArg = call.Arguments[1]
+			}
+
 			formData.ForEach(func(value interface{}, key string) {
-				callback(goja.Undefined(), runtime.ToValue(value), runtime.ToValue(key), obj)
+				callback(thisArg, runtime.ToValue(value), runtime.ToValue(key), obj)
 			})
 
 			return goja.Undefined()
@@ -756,6 +780,14 @@ func FormatFormDataForDebug(fd *FormData) string {
 	}
 
 	return "FormData {\n" + strings.Join(parts, "\n") + "\n}"
+}
+
+func isSymbolValue(val goja.Value) bool {
+	if val == nil {
+		return false
+	}
+	_, ok := val.(*goja.Symbol)
+	return ok
 }
 
 func attachIteratorSymbol(runtime *goja.Runtime, iterator *goja.Object) {
