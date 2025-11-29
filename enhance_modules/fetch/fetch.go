@@ -361,6 +361,7 @@ func (fe *FetchEnhancer) RegisterFetchAPI(runtime *goja.Runtime) error {
 	formDataCtorVal := runtime.Get("FormData")
 	runtime.Set("FormData", WrapFormDataConstructor(runtime, formDataCtorVal))
 	ensureFormDataPrototypeToStringTag(runtime)
+	ensureFormDataPrototypeIteratorMethods(runtime)
 
 	// 8. 注册 Blob/File 构造器
 	if err := blob.RegisterBlobFileConstructors(runtime, fe.config.MaxBlobFileSize); err != nil {

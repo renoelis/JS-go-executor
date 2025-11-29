@@ -678,18 +678,6 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 		})
 		defineFunctionMetadata(runtime, obj, "entries", 0)
 
-		// keys() - 返回 name 迭代器
-		obj.Set("keys", func(call goja.FunctionCall) goja.Value {
-			formDataInstance, _ := requireFormDataThis(runtime, "FormData.keys", call.This)
-
-			iterator := createFormDataIterator(runtime, formDataInstance, func(entry FormDataEntry) goja.Value {
-				return runtime.ToValue(entry.Name)
-			})
-
-			return iterator
-		})
-		defineFunctionMetadata(runtime, obj, "keys", 0)
-
 		// values() - 返回 value 迭代器
 		obj.Set("values", func(call goja.FunctionCall) goja.Value {
 			formDataInstance, _ := requireFormDataThis(runtime, "FormData.values", call.This)
@@ -854,6 +842,10 @@ func isSymbolValue(val goja.Value) bool {
 
 func createFormDataIterator(runtime *goja.Runtime, formDataInstance *FormData, valueBuilder func(FormDataEntry) goja.Value) *goja.Object {
 	iterator := runtime.NewObject()
+
+	if err := iterator.DefineDataPropertySymbol(goja.SymToStringTag, runtime.ToValue("FormData Iterator"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
+		iterator.SetSymbol(goja.SymToStringTag, runtime.ToValue("FormData Iterator"))
+	}
 	index := 0
 
 	iterator.Set("next", func(call goja.FunctionCall) goja.Value {
@@ -966,6 +958,53 @@ func ensureFormDataPrototypeToStringTag(runtime *goja.Runtime) {
 	if err := prototype.DefineDataPropertySymbol(goja.SymToStringTag, runtime.ToValue("FormData"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
 		prototype.SetSymbol(goja.SymToStringTag, runtime.ToValue("FormData"))
 	}
+}
+
+func ensureFormDataPrototypeIteratorMethods(runtime *goja.Runtime) {
+	if runtime == nil {
+		return
+	}
+
+	setPrototypeMethodIfMissing(runtime, "keys", 0, func(call goja.FunctionCall) goja.Value {
+		formDataInstance, _ := requireFormDataThis(runtime, "FormData.keys", call.This)
+		iterator := createFormDataIterator(runtime, formDataInstance, func(entry FormDataEntry) goja.Value {
+			return runtime.ToValue(entry.Name)
+		})
+		return iterator
+	})
+}
+
+func setPrototypeMethodIfMissing(runtime *goja.Runtime, methodName string, length int, method func(goja.FunctionCall) goja.Value) {
+	if runtime == nil || method == nil {
+		return
+	}
+
+	constructorVal := runtime.Get("FormData")
+	if constructorVal == nil || goja.IsUndefined(constructorVal) || goja.IsNull(constructorVal) {
+		return
+	}
+
+	constructorObj := constructorVal.ToObject(runtime)
+	if constructorObj == nil {
+		return
+	}
+
+	prototypeVal := constructorObj.Get("prototype")
+	if prototypeVal == nil || goja.IsUndefined(prototypeVal) || goja.IsNull(prototypeVal) {
+		return
+	}
+
+	prototype := prototypeVal.ToObject(runtime)
+	if prototype == nil {
+		return
+	}
+
+	if current := prototype.Get(methodName); current != nil && !goja.IsUndefined(current) && !goja.IsNull(current) {
+		return
+	}
+
+	prototype.Set(methodName, method)
+	defineFunctionMetadata(runtime, prototype, methodName, length)
 }
 
 // WrapFormDataConstructor 为 FormData 构造器增加 new 调用校验
