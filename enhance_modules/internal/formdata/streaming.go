@@ -186,6 +186,9 @@ func (sfd *StreamingFormData) detectStreamingMode() bool {
 	isStreaming := false
 	for _, entry := range sfd.entries {
 		switch v := entry.Value.(type) {
+		case BufferRef:
+			// Buffer 引用视为缓冲数据
+			_ = v
 		case io.Reader:
 			// 🔥 关键：排除 bytes.Reader（这是从 Buffer/[]byte 创建的，算缓冲模式）
 			if _, isBytesReader := v.(*bytes.Reader); !isBytesReader {
@@ -313,6 +316,9 @@ func (sfd *StreamingFormData) writeEntryBuffered(writer *multipart.Writer, entry
 			return sfd.writeFileDataBuffered(writer, entry.Name, entry.Filename, entry.ContentType, []byte(v))
 		}
 		return writer.WriteField(entry.Name, v)
+	case BufferRef:
+		// 保留 Buffer 引用，使用零拷贝视图
+		return sfd.writeFileDataBuffered(writer, entry.Name, entry.Filename, entry.ContentType, v.Bytes())
 	case []byte:
 		// 二进制字段（Blob/File）
 		return sfd.writeFileDataBuffered(writer, entry.Name, entry.Filename, entry.ContentType, v)
@@ -508,6 +514,10 @@ func (sfd *StreamingFormData) writeEntryStreaming(writer *multipart.Writer, entr
 			return sfd.writeFileDataStreaming(writer, entry.Name, entry.Filename, entry.ContentType, strings.NewReader(v), int64(len(v)))
 		}
 		return writer.WriteField(entry.Name, v)
+
+	case BufferRef:
+		data := v.Bytes()
+		return sfd.writeFileDataStreaming(writer, entry.Name, entry.Filename, entry.ContentType, bytes.NewReader(data), int64(len(data)))
 
 	case []byte:
 		// 二进制文件（流式写入）
@@ -716,6 +726,8 @@ func (sfd *StreamingFormData) GetTotalSize() int64 {
 		switch v := entry.Value.(type) {
 		case string:
 			totalSize += int64(len(v))
+		case BufferRef:
+			totalSize += v.Length()
 		case []byte:
 			totalSize += int64(len(v))
 		case io.Reader:

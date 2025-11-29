@@ -676,6 +676,16 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 								ok = false
 							}
 						}()
+						// 优先获取零拷贝视图，保持与原始 Buffer 的引用关系
+						if bufferRef, refOK := nfm.createBufferRef(runtime, obj); refOK {
+							if contentType == "" {
+								contentType = "application/octet-stream"
+							}
+							nfm.appendBufferRef(streamingFormData, name, filename, contentType, bufferRef)
+							ok = true
+							return
+						}
+
 						data, ok = nfm.extractBufferData(runtime, obj)
 					}()
 
@@ -809,6 +819,25 @@ func (nfm *NodeFormDataModule) appendFile(streamingFormData *formdata.StreamingF
 	streamingFormData.AddToTotalSize(int64(len(name) + len(filename) + len(contentType) + len(data) + 200)) // 200 字节为 header 开销
 }
 
+// appendBufferRef 添加 BufferRef，保持与原始 Buffer 的引用关系
+func (nfm *NodeFormDataModule) appendBufferRef(streamingFormData *formdata.StreamingFormData, name, filename, contentType string, bufferRef formdata.BufferRef) {
+	if streamingFormData == nil {
+		return
+	}
+
+	entry := formdata.FormDataEntry{
+		Name:        name,
+		Value:       bufferRef,
+		Filename:    filename,
+		ContentType: contentType,
+	}
+
+	streamingFormData.AppendEntry(entry)
+
+	// 使用逻辑长度预估，保持与 Buffer 实际长度一致
+	streamingFormData.AddToTotalSize(int64(len(name)+len(filename)+len(contentType)) + bufferRef.Length() + 200)
+}
+
 // handleReadableStream 处理 ReadableStream 对象（axios stream）
 // 🔥 新增方法：支持直接传入流式响应
 func (nfm *NodeFormDataModule) handleReadableStream(streamingFormData *formdata.StreamingFormData, name string, streamObj *goja.Object, filename, contentType string) error {
@@ -876,6 +905,101 @@ func (nfm *NodeFormDataModule) appendStreamFile(streamingFormData *formdata.Stre
 	// 🔥 注意:流式数据的大小未知，不更新 totalSize
 	// 这样会自动触发流式处理模式
 	streamingFormData.AddToTotalSize(1024 * 1024) // 预估 1MB，确保触发流式模式
+}
+
+// createBufferRef 尝试获取 Buffer 的零拷贝视图，保持与原始 Buffer 的引用
+func (nfm *NodeFormDataModule) createBufferRef(runtime *goja.Runtime, bufferObj *goja.Object) (formdata.BufferRef, bool) {
+	if runtime == nil || bufferObj == nil {
+		return formdata.BufferRef{}, false
+	}
+
+	lengthVal := bufferObj.Get("length")
+	length := int64(0)
+	if lengthVal != nil && !goja.IsUndefined(lengthVal) && !goja.IsNull(lengthVal) {
+		length = lengthVal.ToInteger()
+	}
+
+	if view, ok := nfm.extractBufferView(runtime, bufferObj, length); ok {
+		// 持有原始对象引用，防止 GC 回收底层数据
+		if length <= 0 {
+			length = int64(len(view))
+		}
+		return formdata.BufferRef{
+			Data: view,
+			Len:  length,
+			Ref:  bufferObj,
+		}, true
+	}
+
+	return formdata.BufferRef{}, false
+}
+
+// extractBufferView 获取 Buffer 的底层切片视图，优先使用 ArrayBuffer 避免拷贝
+func (nfm *NodeFormDataModule) extractBufferView(runtime *goja.Runtime, bufferObj *goja.Object, length int64) ([]byte, bool) {
+	if runtime == nil || bufferObj == nil {
+		return nil, false
+	}
+
+	// 计算 byteOffset（Buffer/TypedArray 可能带 offset）
+	getByteOffset := func() int64 {
+		offsetVal := bufferObj.Get("byteOffset")
+		if offsetVal != nil && !goja.IsUndefined(offsetVal) && !goja.IsNull(offsetVal) {
+			return offsetVal.ToInteger()
+		}
+		return 0
+	}
+
+	// 按 length 和 offset 生成视图
+	buildView := func(data []byte) ([]byte, bool) {
+		if data == nil {
+			return nil, false
+		}
+		byteOffset := getByteOffset()
+		viewLen := length
+		if viewLen <= 0 {
+			viewLen = int64(len(data)) - byteOffset
+		}
+		if byteOffset < 0 || byteOffset > int64(len(data)) {
+			return nil, false
+		}
+		end := byteOffset + viewLen
+		if end > int64(len(data)) {
+			end = int64(len(data))
+		}
+		if byteOffset > end {
+			return nil, false
+		}
+		return data[byteOffset:end], true
+	}
+
+	// 1. Export 直接获取 ArrayBuffer/[]byte
+	if exported := bufferObj.Export(); exported != nil {
+		if ab, ok := exported.(goja.ArrayBuffer); ok {
+			if view, ok := buildView(ab.Bytes()); ok {
+				return view, true
+			}
+		}
+		if b, ok := exported.([]byte); ok {
+			if view, ok := buildView(b); ok {
+				return view, true
+			}
+		}
+	}
+
+	// 2. 通过 buffer 属性获取 ArrayBuffer
+	if bufVal := bufferObj.Get("buffer"); bufVal != nil && !goja.IsUndefined(bufVal) && !goja.IsNull(bufVal) {
+		if bufObj := bufVal.ToObject(runtime); bufObj != nil {
+			if exported := bufObj.Export(); exported != nil {
+				if ab, ok := exported.(goja.ArrayBuffer); ok {
+					if view, ok := buildView(ab.Bytes()); ok {
+						return view, true
+					}
+				}
+			}
+		}
+	}
+
+	return nil, false
 }
 
 // extractBufferData 从 Buffer 对象提取字节数据
