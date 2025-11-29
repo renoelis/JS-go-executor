@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/dop251/goja"
 	"github.com/dop251/goja_nodejs/eventloop"
@@ -717,6 +718,23 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 		if isNodeReadableObject(obj) {
 			// Node form-data 只在 Stream/path/httpVersion 等场景下判定长度未知
 			needsLength := !hasKnownLength && shouldMeasureNodeStreamLength(obj)
+
+			// 优先尝试将 Node Readable 转换为 io.Reader，确保真实数据写入
+			if reader, err := nfm.convertNodeReadableStream(runtime, obj); err == nil && reader != nil {
+				if filename == "" {
+					if pathVal := obj.Get("path"); pathVal != nil && !goja.IsUndefined(pathVal) && !goja.IsNull(pathVal) {
+						filename = pathVal.String()
+					} else {
+						filename = "blob"
+					}
+				}
+				if contentType == "" {
+					contentType = "application/octet-stream"
+				}
+				nfm.appendStreamFile(streamingFormData, name, filename, contentType, reader, hasKnownLength, knownLength)
+				return nil
+			}
+
 			nfm.appendUnknownStream(streamingFormData, name, filename, contentType, hasKnownLength, knownLength, needsLength)
 			return nil
 		}
@@ -1132,6 +1150,158 @@ func (nfm *NodeFormDataModule) appendUnknownStream(streamingFormData *formdata.S
 		// 与 Node 行为一致：非典型 Stream 对象按 0 字节处理
 	}
 	streamingFormData.AddToTotalSize(estimated)
+}
+
+// convertNodeReadableStream 将 Node.js Readable 对象转换为 io.ReadCloser，保持数据流式写入
+func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, streamObj *goja.Object) (io.ReadCloser, error) {
+	if runtime == nil || streamObj == nil {
+		return nil, fmt.Errorf("invalid readable stream")
+	}
+
+	onVal := streamObj.Get("on")
+	onFn, ok := goja.AssertFunction(onVal)
+	if !ok {
+		return nil, fmt.Errorf("stream.on is not a function")
+	}
+
+	pr, pw := io.Pipe()
+	chunkCh := make(chan []byte, 8)
+	var closeOnce sync.Once
+	var closeErr error
+	var sendWg sync.WaitGroup
+
+	closeStream := func(err error) {
+		closeOnce.Do(func() {
+			if err != nil && closeErr == nil {
+				closeErr = err
+			}
+			go func() {
+				sendWg.Wait()
+				close(chunkCh)
+			}()
+		})
+	}
+
+	// 顺序写入，确保 end 事件后数据也能完全落盘
+	go func() {
+		for chunk := range chunkCh {
+			if len(chunk) == 0 {
+				continue
+			}
+			if _, err := pw.Write(chunk); err != nil {
+				closeStream(err)
+				return
+			}
+		}
+		if closeErr != nil {
+			pw.CloseWithError(closeErr)
+		} else {
+			pw.Close()
+		}
+	}()
+
+	dataHandler := func(call goja.FunctionCall) goja.Value {
+		chunk := call.Argument(0)
+		if goja.IsUndefined(chunk) || goja.IsNull(chunk) {
+			return goja.Undefined()
+		}
+		data, err := exportNodeStreamChunk(runtime, chunk)
+		if err != nil {
+			closeStream(err)
+			return goja.Undefined()
+		}
+		if len(data) == 0 {
+			return goja.Undefined()
+		}
+		bufCopy := append([]byte(nil), data...)
+		sendWg.Add(1)
+		go func() {
+			defer sendWg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					_ = r
+				}
+			}()
+			chunkCh <- bufCopy
+		}()
+		return goja.Undefined()
+	}
+
+	endHandler := func(goja.FunctionCall) goja.Value {
+		closeStream(nil)
+		return goja.Undefined()
+	}
+
+	errorHandler := func(call goja.FunctionCall) goja.Value {
+		var msg string
+		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) && !goja.IsNull(call.Arguments[0]) {
+			msg = call.Arguments[0].String()
+		} else {
+			msg = "Unknown stream error"
+		}
+		closeStream(fmt.Errorf("%s", msg))
+		return goja.Undefined()
+	}
+
+	if _, err := onFn(streamObj, runtime.ToValue("data"), runtime.ToValue(dataHandler)); err != nil {
+		closeStream(err)
+		return nil, err
+	}
+	onFn(streamObj, runtime.ToValue("end"), runtime.ToValue(endHandler))
+	onFn(streamObj, runtime.ToValue("close"), runtime.ToValue(endHandler))
+	onFn(streamObj, runtime.ToValue("error"), runtime.ToValue(errorHandler))
+
+	// 确保流进入 flowing 模式
+	if resumeVal := streamObj.Get("resume"); resumeVal != nil && !goja.IsUndefined(resumeVal) && !goja.IsNull(resumeVal) {
+		if resumeFn, ok := goja.AssertFunction(resumeVal); ok {
+			if _, err := resumeFn(streamObj); err != nil {
+				// 忽略 resume 错误，保持兼容性
+			}
+		}
+	}
+
+	return pr, nil
+}
+
+// exportNodeStreamChunk 将 Node.js Readable 的 chunk 转为字节切片
+func exportNodeStreamChunk(runtime *goja.Runtime, value goja.Value) ([]byte, error) {
+	if runtime == nil {
+		return nil, fmt.Errorf("runtime is nil")
+	}
+
+	// 尝试直接导出为 []byte（支持 Buffer/TypedArray）
+	var data []byte
+	if err := runtime.ExportTo(value, &data); err == nil {
+		return append([]byte(nil), data...), nil
+	}
+
+	// 字符串处理
+	if str, ok := value.(goja.String); ok {
+		return []byte(str.String()), nil
+	}
+	if exported := value.Export(); exported != nil {
+		switch v := exported.(type) {
+		case string:
+			return []byte(v), nil
+		case []byte:
+			return append([]byte(nil), v...), nil
+		case goja.ArrayBuffer:
+			bytes := v.Bytes()
+			return append([]byte(nil), bytes...), nil
+		}
+	}
+
+	// 兜底：尝试从对象中获取 ArrayBuffer
+	if obj, ok := value.(*goja.Object); ok {
+		if exported := obj.Export(); exported != nil {
+			if ab, ok := exported.(goja.ArrayBuffer); ok {
+				bytes := ab.Bytes()
+				return append([]byte(nil), bytes...), nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("unsupported stream chunk type")
 }
 
 // createBufferRef 尝试获取 Buffer 的零拷贝视图，保持与原始 Buffer 的引用
