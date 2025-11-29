@@ -208,10 +208,9 @@ func (sfd *StreamingFormData) CreateReader() (io.Reader, error) {
 		return nil, fmt.Errorf("StreamingFormData 或 config 为 nil")
 	}
 
-	// 🔥 如果 totalSize 未设置（浏览器 FormData 路径），则计算它
-	if sfd.totalSize == 0 {
-		sfd.totalSize = sfd.GetTotalSize()
-	}
+	// 🔥 始终计算精确长度，避免 getBuffer() 清空 entries 后长度不一致
+	// Node form-data 允许多次读取/计算长度，这里同步缓存最新的精确值
+	sfd.totalSize = sfd.GetTotalSize()
 
 	// 🔥 检测上传模式
 	isStreaming := sfd.detectStreamingMode()
@@ -593,8 +592,21 @@ func (sfd *StreamingFormData) GetTotalSize() int64 {
 		return 0
 	}
 
+	// entries 可能在 createReader()/getBuffer() 后被清空。
+	// 如果已有缓存值，直接返回，确保与生成的 Buffer 长度一致。
+	if len(sfd.entries) == 0 {
+		if sfd.totalSize > 0 {
+			return sfd.totalSize
+		}
+		// 空表单的最小长度：只有结束 boundary
+		minimal := int64(len("--")) + int64(len(sfd.boundary)) + int64(len("--")) + 2 // \r\n
+		sfd.totalSize = minimal
+		return minimal
+	}
+
 	// 🔥 精确计算：包含 boundary、headers、数据、换行符
 	totalSize := int64(0)
+	hasStreamingReader := false
 
 	for _, entry := range sfd.entries {
 		// 1. Boundary 行: "--" + boundary + "\r\n"
@@ -626,6 +638,11 @@ func (sfd *StreamingFormData) GetTotalSize() int64 {
 			totalSize += int64(len(v))
 		case []byte:
 			totalSize += int64(len(v))
+		case io.Reader:
+			// 流式数据长度未知，保留标记用于后续缓存处理
+			if _, isBytesReader := v.(*bytes.Reader); !isBytesReader {
+				hasStreamingReader = true
+			}
 		}
 
 		// 6. 数据后的换行
@@ -634,6 +651,14 @@ func (sfd *StreamingFormData) GetTotalSize() int64 {
 
 	// 7. 结束 boundary: "--" + boundary + "--" + "\r\n"
 	totalSize += int64(len("--")) + int64(len(sfd.boundary)) + int64(len("--")) + 2 // \r\n
+
+	// 如果包含真正的流式 Reader，优先保留之前的估算值以触发流式模式
+	if hasStreamingReader && sfd.totalSize > totalSize {
+		totalSize = sfd.totalSize
+	}
+
+	// 缓存精确值，便于 entries 被释放后继续返回正确长度
+	sfd.totalSize = totalSize
 
 	return totalSize
 }

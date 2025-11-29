@@ -9,6 +9,7 @@ import (
 	"io"
 	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/dop251/goja"
 	"github.com/dop251/goja_nodejs/eventloop"
@@ -112,24 +113,30 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 
 				// null/undefined 行为与 Node 对齐：视作未提供 options
 				if !goja.IsUndefined(thirdArg) && !goja.IsNull(thirdArg) {
-					// 尝试转换为对象，检查是否是 options 对象
-					if obj := thirdArg.ToObject(runtime); obj != nil {
-						filenameVal := obj.Get("filename")
+					// options 可以是字符串（作为 filename）或对象（contentType/filename/knownLength）
+					if exported := thirdArg.Export(); exported != nil {
+						if _, ok := exported.(string); ok {
+							filename = thirdArg.String()
+						} else if obj := thirdArg.ToObject(runtime); obj != nil {
+							isOptions := false
 
-						// 如果有 filename 属性，则是 options 对象
-						if filenameVal != nil && !goja.IsUndefined(filenameVal) && !goja.IsNull(filenameVal) {
-							filename = filenameVal.String()
-
-							// 检查 contentType
+							if filenameVal := obj.Get("filename"); filenameVal != nil && !goja.IsUndefined(filenameVal) && !goja.IsNull(filenameVal) {
+								filename = filenameVal.String()
+								isOptions = true
+							}
 							if contentTypeVal := obj.Get("contentType"); contentTypeVal != nil && !goja.IsUndefined(contentTypeVal) && !goja.IsNull(contentTypeVal) {
 								contentType = contentTypeVal.String()
+								isOptions = true
+							}
+
+							// 如果既不是字符串也未识别到 options 字段，则退化为字符串处理，保持兼容 filename 传参
+							if !isOptions {
+								filename = thirdArg.String()
 							}
 						} else {
-							// 没有 filename 属性，当作字符串处理
 							filename = thirdArg.String()
 						}
 					} else {
-						// 转换失败，直接当作字符串
 						filename = thirdArg.String()
 					}
 				}
@@ -172,6 +179,21 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 			headers := runtime.NewObject()
 			contentType := fmt.Sprintf("multipart/form-data; boundary=%s", streamingFormData.GetBoundary())
 			headers.Set("content-type", contentType)
+
+			// 合并外部传入的 headers（与 Node form-data 行为保持一致）
+			if len(call.Arguments) > 0 {
+				userHeaders := call.Arguments[0]
+				if !goja.IsUndefined(userHeaders) && !goja.IsNull(userHeaders) {
+					if obj := userHeaders.ToObject(runtime); obj != nil {
+						for _, key := range obj.Keys() {
+							val := obj.Get(key)
+							// Node 侧会将 header 名转换为小写后再合并
+							lowerKey := strings.ToLower(key)
+							headers.Set(lowerKey, val)
+						}
+					}
+				}
+			}
 			return headers
 		})
 
