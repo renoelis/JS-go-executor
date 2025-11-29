@@ -138,7 +138,12 @@ func EnsureReadableStream(runtime *goja.Runtime) error {
 		}
 	}
 
-	return EnsureWritableStreamControllerSignal(runtime)
+	if err := EnsureWritableStreamControllerSignal(runtime); err != nil {
+		return err
+	}
+
+	// 注册 CompressionStream 和 DecompressionStream
+	return EnsureCompressionStream(runtime)
 }
 
 // GetReadableStreamPrototype 返回全局 ReadableStream.prototype（若不存在返回 nil）

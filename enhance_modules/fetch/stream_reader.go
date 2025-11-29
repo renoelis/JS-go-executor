@@ -58,6 +58,7 @@ type StreamReader struct {
 	contentLength int64           // HTTP 响应的 Content-Length（用于智能预分配，-1表示未知）
 	abortCh       <-chan struct{} // Abort 信号 channel
 	signal        *goja.Object    // AbortSignal 对象（用于 reason）
+	abortReason   goja.Value      // 🔥 预提取的 abort reason（避免在 goroutine 中访问 goja Object）
 	abortErr      error           // Abort 错误（包含 reason）
 	aborted       bool            // 是否已中止
 	abortWatcher  bool            // 是否已启动 abort watcher
@@ -69,6 +70,18 @@ type StreamReader struct {
 // NewStreamReader 创建流式读取器
 // 🔥 P2 新增: timeout 参数用于 abort watcher 超时保护(0=不设置超时)
 func NewStreamReader(reader io.ReadCloser, runtime *goja.Runtime, maxSize int64, contentLength int64, abortCh <-chan struct{}, signal *goja.Object, timeout time.Duration) *StreamReader {
+	// 🔥 预提取 abort reason（在主 goroutine 中安全地访问 goja Object）
+	var abortReason goja.Value
+	if signal != nil {
+		if r := signal.Get("reason"); r != nil && !goja.IsUndefined(r) && !goja.IsNull(r) {
+			abortReason = r
+		}
+	}
+	// 🔥 如果没有 reason，预先创建默认的 AbortError（避免在 goroutine 中创建）
+	if abortReason == nil || goja.IsUndefined(abortReason) || goja.IsNull(abortReason) {
+		abortReason = CreateDOMException(runtime, "This operation was aborted", "AbortError")
+	}
+
 	sr := &StreamReader{
 		reader:        reader,
 		runtime:       runtime,
@@ -78,6 +91,7 @@ func NewStreamReader(reader io.ReadCloser, runtime *goja.Runtime, maxSize int64,
 		contentLength: contentLength, // 🔥 保存 Content-Length（-1表示未知）
 		abortCh:       abortCh,
 		signal:        signal,
+		abortReason:   abortReason, // 🔥 存储预提取的 reason
 		closeCh:       make(chan struct{}),
 		timeout:       timeout, // 🔥 P2: 超时保护
 	}
@@ -338,16 +352,8 @@ func (sr *StreamReader) abortLocked() {
 	sr.aborted = true
 	sr.closed = true
 
-	var reason goja.Value
-	if sr.signal != nil {
-		if r := sr.signal.Get("reason"); r != nil && !goja.IsUndefined(r) && !goja.IsNull(r) {
-			reason = r
-		}
-	}
-	if reason == nil || goja.IsUndefined(reason) || goja.IsNull(reason) {
-		reason = CreateDOMException(sr.runtime, "This operation was aborted", "AbortError")
-	}
-	sr.abortErr = &AbortReasonError{reason: reason}
+	// 🔥 直接使用预提取的 reason（已在 NewStreamReader 中安全创建）
+	sr.abortErr = &AbortReasonError{reason: sr.abortReason}
 
 	if sr.reader != nil {
 		_ = sr.reader.Close()
@@ -366,6 +372,18 @@ func (sr *StreamReader) closeWatcher() {
 func (sr *StreamReader) AttachAbortSignal(ch <-chan struct{}, signal *goja.Object) {
 	sr.mutex.Lock()
 	defer sr.mutex.Unlock()
+
+	// 🔥 预提取 abort reason（在主 goroutine 中安全地访问 goja Object）
+	if signal != nil {
+		if r := signal.Get("reason"); r != nil && !goja.IsUndefined(r) && !goja.IsNull(r) {
+			sr.abortReason = r
+		}
+	}
+	// 🔥 如果没有 reason，预先创建默认的 AbortError
+	if sr.abortReason == nil || goja.IsUndefined(sr.abortReason) || goja.IsNull(sr.abortReason) {
+		sr.abortReason = CreateDOMException(sr.runtime, "This operation was aborted", "AbortError")
+	}
+
 	sr.abortCh = ch
 	sr.signal = signal
 	if !sr.abortWatcher && sr.abortCh != nil {

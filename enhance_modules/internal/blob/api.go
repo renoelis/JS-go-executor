@@ -350,9 +350,113 @@ func (fe *FetchEnhancer) createBlobObject(runtime *goja.Runtime, blob *JSBlob) *
 	return obj
 }
 
-// createBlobReadableStream 创建一个最小可用的 ReadableStream 对象
-// 返回值紧跟 WHATWG Streams 的基础语义：getReader()、reader.read()、reader.cancel()
+// createBlobReadableStream 使用真正的 ReadableStream 构造器创建流
+// 🔥 关键：必须使用 new ReadableStream() 创建，这样 pipeThrough 等方法才能正常工作
+// web-streams-polyfill 通过内部 slot 检测对象是否是真正的 ReadableStream
 func createBlobReadableStream(runtime *goja.Runtime, blob *JSBlob, uint8ArrayConstructor goja.Constructor) *goja.Object {
+	if runtime == nil || blob == nil {
+		return nil
+	}
+
+	// 检查 ReadableStream 构造函数是否存在
+	readableStreamConstructor := runtime.Get("ReadableStream")
+	if readableStreamConstructor == nil || goja.IsUndefined(readableStreamConstructor) {
+		// 降级：使用老的手动创建方式
+		return createBlobReadableStreamFallback(runtime, blob, uint8ArrayConstructor)
+	}
+
+	// 准备 Blob 数据状态（闭包共享）
+	totalLength := len(blob.data)
+	offset := 0
+
+	// 创建 Uint8Array 的辅助函数
+	createChunkValue := func(chunk []byte) goja.Value {
+		buffer := runtime.NewArrayBuffer(chunk)
+		if uint8ArrayConstructor != nil {
+			if uint8Array, err := uint8ArrayConstructor(nil, runtime.ToValue(buffer)); err == nil {
+				return uint8Array
+			}
+		}
+		return runtime.ToValue(buffer)
+	}
+
+	// 创建 underlying source 对象
+	underlyingSource := runtime.NewObject()
+
+	// pull 方法：每次 reader.read() 时被调用
+	underlyingSource.Set("pull", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) < 1 {
+			return goja.Undefined()
+		}
+		controller := call.Arguments[0].ToObject(runtime)
+		if controller == nil {
+			return goja.Undefined()
+		}
+
+		// 检查是否还有数据
+		if offset >= totalLength {
+			// 关闭流
+			closeMethod := controller.Get("close")
+			if closeMethod != nil && !goja.IsUndefined(closeMethod) {
+				if closeFn, ok := goja.AssertFunction(closeMethod); ok {
+					_, _ = closeFn(controller)
+				}
+			}
+			return goja.Undefined()
+		}
+
+		// 读取一块数据
+		remaining := totalLength - offset
+		chunkSize := blobStreamDefaultChunkSize
+		if remaining < chunkSize {
+			chunkSize = remaining
+		}
+
+		chunk := make([]byte, chunkSize)
+		copy(chunk, blob.data[offset:offset+chunkSize])
+		offset += chunkSize
+
+		// 入队数据
+		enqueueMethod := controller.Get("enqueue")
+		if enqueueMethod != nil && !goja.IsUndefined(enqueueMethod) {
+			if enqueueFn, ok := goja.AssertFunction(enqueueMethod); ok {
+				_, _ = enqueueFn(controller, createChunkValue(chunk))
+			}
+		}
+
+		// 如果数据读完，关闭流
+		if offset >= totalLength {
+			closeMethod := controller.Get("close")
+			if closeMethod != nil && !goja.IsUndefined(closeMethod) {
+				if closeFn, ok := goja.AssertFunction(closeMethod); ok {
+					_, _ = closeFn(controller)
+				}
+			}
+		}
+
+		return goja.Undefined()
+	})
+
+	// cancel 方法
+	underlyingSource.Set("cancel", func(call goja.FunctionCall) goja.Value {
+		offset = totalLength // 标记为已消费完
+		return goja.Undefined()
+	})
+
+	// 🔥 关键修复：使用 runtime.New() 以构造函数方式调用 ReadableStream
+	// 这样才能正确初始化内部 slot（如 _readableStreamController）
+	streamVal, err := runtime.New(readableStreamConstructor, runtime.ToValue(underlyingSource))
+	if err != nil {
+		return createBlobReadableStreamFallback(runtime, blob, uint8ArrayConstructor)
+	}
+
+	streamObj := streamVal.ToObject(runtime)
+	return streamObj
+}
+
+// createBlobReadableStreamFallback 降级方案：手动创建 ReadableStream 对象
+// 用于 ReadableStream 构造函数不可用时
+func createBlobReadableStreamFallback(runtime *goja.Runtime, blob *JSBlob, uint8ArrayConstructor goja.Constructor) *goja.Object {
 	if runtime == nil || blob == nil {
 		return nil
 	}
