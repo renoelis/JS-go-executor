@@ -344,33 +344,54 @@ func (fdr *FormDataReadable) scheduleNextRead() {
 	}
 }
 
-// createBuffer 创建 Buffer 或 Uint8Array
+// createBuffer 创建 Buffer
+// 🔥 修复：通过设置 Uint8Array 的原型为 Buffer.prototype 来创建真正的 Buffer
+// 现在 stream.bundle.js 使用全局 Buffer，所以这个方法创建的 Buffer 会被正确识别
 func (fdr *FormDataReadable) createBuffer(data []byte) goja.Value {
-	var dataValue goja.Value
-
-	// 🔥 尝试转换为 Buffer（Node.js 标准）
+	// 获取 Buffer 构造函数
 	bufferConstructor := fdr.runtime.Get("Buffer")
-	if !goja.IsUndefined(bufferConstructor) && !goja.IsNull(bufferConstructor) {
-		bufferObj := bufferConstructor.ToObject(fdr.runtime)
-		if bufferObj != nil {
-			fromFunc, ok := goja.AssertFunction(bufferObj.Get("from"))
-			if ok {
-				arrayBuffer := fdr.runtime.NewArrayBuffer(data)
-				buffer, err := fromFunc(bufferObj, fdr.runtime.ToValue(arrayBuffer))
-				if err == nil {
-					dataValue = buffer
-				}
-			}
+	if goja.IsUndefined(bufferConstructor) || goja.IsNull(bufferConstructor) {
+		// 降级：返回 ArrayBuffer
+		return fdr.runtime.ToValue(fdr.runtime.NewArrayBuffer(data))
+	}
+
+	bufferObj := bufferConstructor.ToObject(fdr.runtime)
+	if bufferObj == nil {
+		return fdr.runtime.ToValue(fdr.runtime.NewArrayBuffer(data))
+	}
+
+	// 获取 Uint8Array 构造函数
+	uint8ArrayCtor := fdr.runtime.Get("Uint8Array")
+	if goja.IsUndefined(uint8ArrayCtor) || goja.IsNull(uint8ArrayCtor) {
+		return fdr.runtime.ToValue(fdr.runtime.NewArrayBuffer(data))
+	}
+
+	ctorFunc, ok := goja.AssertConstructor(uint8ArrayCtor)
+	if !ok {
+		return fdr.runtime.ToValue(fdr.runtime.NewArrayBuffer(data))
+	}
+
+	// 创建 ArrayBuffer
+	ab := fdr.runtime.NewArrayBuffer(data)
+
+	// 创建 Uint8Array(arrayBuffer)
+	uint8Array, err := ctorFunc(nil, fdr.runtime.ToValue(ab))
+	if err != nil {
+		return fdr.runtime.ToValue(ab)
+	}
+
+	// 🔥 关键：修改原型为 Buffer.prototype，使 Buffer.isBuffer() 返回 true
+	bufferPrototype := bufferObj.Get("prototype")
+	if bufferPrototype != nil && !goja.IsUndefined(bufferPrototype) {
+		uint8ArrayObj := uint8Array.ToObject(fdr.runtime)
+		if uint8ArrayObj != nil {
+			uint8ArrayObj.SetPrototype(bufferPrototype.ToObject(fdr.runtime))
+			return uint8Array
 		}
 	}
 
-	// 🔥 降级方案：如果无法创建 Buffer，创建 Uint8Array
-	if dataValue == nil || goja.IsUndefined(dataValue) {
-		arrayBuffer := fdr.runtime.NewArrayBuffer(data)
-		dataValue = fdr.runtime.ToValue(arrayBuffer)
-	}
-
-	return dataValue
+	// 降级：返回 Uint8Array
+	return uint8Array
 }
 
 // emitData 触发 data 事件
