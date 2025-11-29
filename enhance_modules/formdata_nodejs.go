@@ -810,11 +810,36 @@ func (nfm *NodeFormDataModule) appendField(streamingFormData *formdata.Streaming
 	streamingFormData.AddToTotalSize(int64(len(name) + len(value) + len(contentType) + 100)) // 100 字节为 header 开销
 }
 
+// normalizeFilename 模拟 Node.js form-data 中的 path.basename 行为，只保留 "/" 之后的部分
+func normalizeFilename(filename string) string {
+	if filename == "" {
+		return ""
+	}
+
+	// 去掉末尾的 "/"，与 path.posix.basename 对齐
+	end := len(filename) - 1
+	for end >= 0 && filename[end] == '/' {
+		end--
+	}
+	if end < 0 {
+		return ""
+	}
+
+	// 截取最后一个 "/" 之后的子串
+	start := end
+	for start >= 0 && filename[start] != '/' {
+		start--
+	}
+	return filename[start+1 : end+1]
+}
+
 // appendRawEntry 保留原始值（用于布尔等需要在 getBuffer 抛错的类型）
 func (nfm *NodeFormDataModule) appendRawEntry(streamingFormData *formdata.StreamingFormData, name string, value interface{}, filename, contentType string) {
 	if streamingFormData == nil {
 		return
 	}
+
+	filename = normalizeFilename(filename)
 
 	entry := formdata.FormDataEntry{
 		Name:        name,
@@ -833,6 +858,8 @@ func (nfm *NodeFormDataModule) appendFile(streamingFormData *formdata.StreamingF
 	if streamingFormData == nil {
 		return
 	}
+
+	filename = normalizeFilename(filename)
 
 	entry := formdata.FormDataEntry{
 		Name:        name,
@@ -853,6 +880,8 @@ func (nfm *NodeFormDataModule) appendBufferRef(streamingFormData *formdata.Strea
 	if streamingFormData == nil {
 		return
 	}
+
+	filename = normalizeFilename(filename)
 
 	entry := formdata.FormDataEntry{
 		Name:        name,
@@ -920,6 +949,8 @@ func (nfm *NodeFormDataModule) appendStreamFile(streamingFormData *formdata.Stre
 	if streamingFormData == nil {
 		return
 	}
+
+	filename = normalizeFilename(filename)
 
 	entry := formdata.FormDataEntry{
 		Name:        name,
