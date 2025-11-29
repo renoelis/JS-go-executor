@@ -554,7 +554,13 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 				value = valueArg.String()
 			}
 
-			filenameArgProvided := len(call.Arguments) > 2 && isBlobOrFile
+			argCount := len(call.Arguments)
+			hasThirdArg := argCount > 2
+			thirdArgDefined := hasThirdArg && !goja.IsUndefined(call.Arguments[2])
+			if hasThirdArg && !isBlobOrFile && argCount == 3 {
+				panic(runtime.NewTypeError("FormData.set: filename 参数仅适用于 Blob 或 File 值"))
+			}
+			filenameArgProvided := thirdArgDefined && isBlobOrFile
 			var filename string
 			if filenameArgProvided {
 				filename = toUSVStringOrThrow(call.Arguments[2], "FormData.set", "filename")
@@ -892,34 +898,17 @@ func attachIteratorSymbol(runtime *goja.Runtime, iterator *goja.Object) {
 }
 
 func setFormDataDefaultIterator(runtime *goja.Runtime, obj *goja.Object) {
-	symbolVal := runtime.Get("Symbol")
-	if symbolVal == nil || goja.IsUndefined(symbolVal) || goja.IsNull(symbolVal) {
+	if runtime == nil || obj == nil {
 		return
 	}
 
-	symbolObj := symbolVal.ToObject(runtime)
-	if symbolObj == nil {
+	entriesVal := obj.Get("entries")
+	if entriesVal == nil || goja.IsUndefined(entriesVal) || goja.IsNull(entriesVal) {
 		return
 	}
-
-	iteratorSym := symbolObj.Get("iterator")
-	if iteratorSym == nil {
-		return
+	if err := obj.DefineDataPropertySymbol(goja.SymIterator, entriesVal, goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
+		obj.SetSymbol(goja.SymIterator, entriesVal)
 	}
-
-	sym, ok := iteratorSym.(*goja.Symbol)
-	if !ok {
-		return
-	}
-
-	obj.SetSymbol(sym, runtime.ToValue(func(call goja.FunctionCall) goja.Value {
-		if entriesFunc, ok := goja.AssertFunction(obj.Get("entries")); ok {
-			if iterator, err := entriesFunc(obj); err == nil {
-				return iterator
-			}
-		}
-		return goja.Undefined()
-	}))
 }
 
 func ensureFormDataPrototypeToStringTag(runtime *goja.Runtime) {
