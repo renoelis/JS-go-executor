@@ -133,6 +133,10 @@ func NewStreamingFormDataWithContext(ctx context.Context, config *FormDataStream
 
 // GetBoundary 返回 boundary 字符串（供 Node.js FormData 模块使用）
 func (sfd *StreamingFormData) GetBoundary() string {
+	if sfd.boundary == "" {
+		// 与 Node.js form-data 一致：空字符串视为未设置，重新生成
+		sfd.boundary = randomBoundary()
+	}
 	return sfd.boundary
 }
 
@@ -277,7 +281,7 @@ func (sfd *StreamingFormData) createBufferedReader() (io.Reader, error) {
 	writer := multipart.NewWriter(&buffer)
 
 	// 设置边界
-	writer.SetBoundary(sfd.boundary)
+	writer.SetBoundary(sfd.GetBoundary())
 
 	// 写入所有条目
 	for _, entry := range sfd.entries {
@@ -379,7 +383,7 @@ func (sfd *StreamingFormData) createPipedReader() (io.Reader, error) {
 	// 但后台 goroutine 需要访问这些数据
 	entriesCopy := make([]FormDataEntry, len(sfd.entries))
 	copy(entriesCopy, sfd.entries)
-	boundary := sfd.boundary
+	boundary := sfd.GetBoundary()
 
 	// 🔥 v2.4.2: 获取 context（用于监听 HTTP 请求取消）
 	ctx := sfd.config.Context
@@ -595,6 +599,8 @@ func (sfd *StreamingFormData) GetTotalSize() int64 {
 		return 0
 	}
 
+	boundary := sfd.GetBoundary()
+
 	// entries 可能在 createReader()/getBuffer() 后被清空。
 	// 如果已有缓存值，直接返回，确保与生成的 Buffer 长度一致。
 	if len(sfd.entries) == 0 {
@@ -602,7 +608,7 @@ func (sfd *StreamingFormData) GetTotalSize() int64 {
 			return sfd.totalSize
 		}
 		// 空表单的最小长度：只有结束 boundary
-		minimal := int64(len("--")) + int64(len(sfd.boundary)) + int64(len("--")) + 2 // \r\n
+		minimal := int64(len("--")) + int64(len(boundary)) + int64(len("--")) + 2 // \r\n
 		sfd.totalSize = minimal
 		return minimal
 	}
@@ -613,7 +619,7 @@ func (sfd *StreamingFormData) GetTotalSize() int64 {
 
 	for _, entry := range sfd.entries {
 		// 1. Boundary 行: "--" + boundary + "\r\n"
-		totalSize += int64(len("--")) + int64(len(sfd.boundary)) + 2 // \r\n
+		totalSize += int64(len("--")) + int64(len(boundary)) + 2 // \r\n
 
 		// 2. Content-Disposition header
 		contentDisposition := fmt.Sprintf("Content-Disposition: form-data; name=\"%s\"", entry.Name)
@@ -653,7 +659,7 @@ func (sfd *StreamingFormData) GetTotalSize() int64 {
 	}
 
 	// 7. 结束 boundary: "--" + boundary + "--" + "\r\n"
-	totalSize += int64(len("--")) + int64(len(sfd.boundary)) + int64(len("--")) + 2 // \r\n
+	totalSize += int64(len("--")) + int64(len(boundary)) + int64(len("--")) + 2 // \r\n
 
 	// 如果包含真正的流式 Reader，优先保留之前的估算值以触发流式模式
 	if hasStreamingReader && sfd.totalSize > totalSize {

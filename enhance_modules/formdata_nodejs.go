@@ -177,7 +177,9 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 		// getHeaders() - 获取 headers 对象（包含正确的 boundary）
 		formDataObj.Set("getHeaders", func(call goja.FunctionCall) goja.Value {
 			headers := runtime.NewObject()
-			contentType := fmt.Sprintf("multipart/form-data; boundary=%s", streamingFormData.GetBoundary())
+			boundary := streamingFormData.GetBoundary()
+			formDataObj.Set("_boundary", boundary)
+			contentType := fmt.Sprintf("multipart/form-data; boundary=%s", boundary)
 			headers.Set("content-type", contentType)
 
 			// 合并外部传入的 headers（与 Node form-data 行为保持一致）
@@ -199,15 +201,23 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 
 		// getBoundary() - 获取边界字符串
 		formDataObj.Set("getBoundary", func(call goja.FunctionCall) goja.Value {
-			return runtime.ToValue(streamingFormData.GetBoundary())
+			boundary := streamingFormData.GetBoundary()
+			// 同步 _boundary，保证与 Node.js form-data 行为一致
+			formDataObj.Set("_boundary", boundary)
+			return runtime.ToValue(boundary)
 		})
 
 		// setBoundary(boundary) - 设置自定义边界
 		formDataObj.Set("setBoundary", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
-				panic(runtime.NewTypeError("setBoundary 需要一个边界字符串参数"))
+				panic(runtime.NewTypeError("FormData boundary must be a string"))
 			}
-			boundary := call.Arguments[0].String()
+			val := call.Arguments[0]
+			exportType := val.ExportType()
+			if exportType == nil || exportType.Kind() != reflect.String {
+				panic(runtime.NewTypeError("FormData boundary must be a string"))
+			}
+			boundary := val.String()
 			streamingFormData.SetBoundary(boundary)
 			// 同步更新 _boundary，以兼容测试中对 _boundary 的检查
 			formDataObj.Set("_boundary", boundary)
