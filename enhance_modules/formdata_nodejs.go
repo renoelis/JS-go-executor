@@ -654,6 +654,24 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 	}
 
 	switch v := exported.(type) {
+	case io.ReadCloser:
+		if filename == "" {
+			filename = "blob"
+		}
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		nfm.appendStreamFile(streamingFormData, name, filename, contentType, v)
+		return nil
+	case io.Reader:
+		if filename == "" {
+			filename = "blob"
+		}
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		nfm.appendStreamFile(streamingFormData, name, filename, contentType, io.NopCloser(v))
+		return nil
 	case string:
 		// 🔥 修复：如果提供了 filename，将字符串作为文件处理
 		if filename != "" {
@@ -690,6 +708,15 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 		strValue = ""
 	} else {
 		strValue = fmt.Sprintf("%v", exported)
+	}
+
+	// 如果提供了 filename，即使值类型未知，也需要生成文件 part 以包含 filename
+	if filename != "" {
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		nfm.appendFile(streamingFormData, name, filename, contentType, []byte(strValue))
+		return nil
 	}
 
 	nfm.appendField(streamingFormData, name, strValue)
