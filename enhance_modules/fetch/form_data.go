@@ -396,9 +396,26 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 			return nil
 		}
 
+		var stringCallable goja.Callable
+		if stringFunc := runtime.Get("String"); stringFunc != nil && !goja.IsUndefined(stringFunc) {
+			if callable, ok := goja.AssertFunction(stringFunc); ok {
+				stringCallable = callable
+			}
+		}
+
 		toUSVStringOrThrow := func(arg goja.Value, methodName, paramName string) string {
 			if isSymbolValue(arg) {
 				panic(runtime.NewTypeError(fmt.Sprintf("%s 的 %s 不能是 Symbol", methodName, paramName)))
+			}
+			if stringCallable != nil {
+				strVal, err := stringCallable(goja.Undefined(), arg)
+				if err != nil {
+					panic(err)
+				}
+				if isSymbolValue(strVal) {
+					panic(runtime.NewTypeError(fmt.Sprintf("%s 的 %s 无法转换为字符串", methodName, paramName)))
+				}
+				return strVal.String()
 			}
 			return arg.String()
 		}
