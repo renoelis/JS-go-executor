@@ -607,7 +607,7 @@ func CreateFormDataConstructor(runtime *goja.Runtime) func(goja.ConstructorCall)
 		// delete(name)
 		obj.Set("delete", func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
-				return goja.Undefined()
+				panic(runtime.NewTypeError("FormData.delete 需要 1 个参数"))
 			}
 
 			name := toUSVStringOrThrow(call.Arguments[0], "FormData.delete", "name")
