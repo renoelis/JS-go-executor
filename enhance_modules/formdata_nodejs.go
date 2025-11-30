@@ -776,7 +776,9 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 				if firstByte != nil && !goja.IsUndefined(firstByte) && !goja.IsNull(firstByte) {
 					// Panic 防护：extractBufferData 可能会 panic
 					var data []byte
+					var bufRef formdata.BufferRef
 					var ok bool
+					var useBufferRef bool
 					func() {
 						defer func() {
 							if r := recover(); r != nil {
@@ -785,10 +787,8 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 						}()
 						// 优先获取零拷贝视图，保持与原始 Buffer 的引用关系
 						if bufferRef, refOK := nfm.createBufferRef(runtime, obj); refOK {
-							if contentType == "" {
-								contentType = "application/octet-stream"
-							}
-							nfm.appendBufferRef(streamingFormData, name, filename, contentType, bufferRef, hasKnownLength, knownLength)
+							bufRef = bufferRef
+							useBufferRef = true
 							ok = true
 							return
 						}
@@ -801,7 +801,11 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 						if contentType == "" {
 							contentType = "application/octet-stream"
 						}
-						nfm.appendFile(streamingFormData, name, filename, contentType, data, hasKnownLength, knownLength)
+						if useBufferRef {
+							nfm.appendBufferRef(streamingFormData, name, filename, contentType, bufRef, hasKnownLength, knownLength)
+						} else {
+							nfm.appendFile(streamingFormData, name, filename, contentType, data, hasKnownLength, knownLength)
+						}
 						return nil
 					}
 				}
