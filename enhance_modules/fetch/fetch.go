@@ -60,7 +60,29 @@ const readableStreamConsumerJS = `
     }
     return normalizeChunk(String(value));
   }
-  async function collect(stream) {
+  function withTimeout(promise, timeoutMs, onTimeout) {
+    if (!timeoutMs || timeoutMs <= 0) {
+      return promise;
+    }
+    return new Promise(function (resolve, reject) {
+      var timer = setTimeout(function () {
+        try {
+          if (typeof onTimeout === 'function') {
+            onTimeout();
+          }
+        } catch (err) {}
+        reject(new Error('ReadableStream consume timeout'));
+      }, timeoutMs);
+      promise.then(function (res) {
+        clearTimeout(timer);
+        resolve(res);
+      }, function (err) {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+  }
+  async function collect(stream, maxBytes, timeoutMs) {
     if (!stream || typeof stream.getReader !== 'function') {
       throw new TypeError('Body is not a ReadableStream');
     }
@@ -68,17 +90,37 @@ const readableStreamConsumerJS = `
     const chunks = [];
     let total = 0;
     try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) {
-          break;
+      const doRead = async () => {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) {
+            break;
+          }
+          const chunk = normalizeChunk(value);
+          if (chunk.length > 0) {
+            total += chunk.length;
+            if (maxBytes > 0 && total > maxBytes) {
+              const err = new Error('ReadableStream consume size exceeded: ' + total + ' bytes > limit ' + maxBytes + ' bytes');
+              try {
+                if (typeof reader.cancel === 'function') {
+                  reader.cancel(err);
+                }
+              } catch (e) {}
+              throw err;
+            }
+            chunks.push(chunk);
+          }
         }
-        const chunk = normalizeChunk(value);
-        if (chunk.length > 0) {
-          chunks.push(chunk);
-          total += chunk.length;
-        }
-      }
+        return chunks;
+      };
+      const withGuard = withTimeout(doRead(), timeoutMs, function () {
+        try {
+          if (typeof reader.cancel === 'function') {
+            reader.cancel(new Error('ReadableStream consume timeout'));
+          }
+        } catch (err) {}
+      });
+      await withGuard;
     } finally {
       if (reader && typeof reader.releaseLock === 'function') {
         reader.releaseLock();
@@ -92,9 +134,11 @@ const readableStreamConsumerJS = `
     }
     return result;
   }
-  global.__flowConsumeReadableStream = function (stream, mode) {
+  global.__flowConsumeReadableStream = function (stream, mode, maxBytes, timeoutMs) {
     return (async () => {
-      const bytes = await collect(stream);
+      const limit = typeof maxBytes === 'number' && maxBytes > 0 ? maxBytes : 0;
+      const timeout = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : 0;
+      const bytes = await collect(stream, limit, timeout);
       if (mode === 'arrayBuffer') {
         return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
       }
@@ -1262,7 +1306,18 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 				close(cleanupDone)
 			})
 		}
-		defer closeRegisteredStreamWriters(fmt.Errorf("request aborted"))
+		requestDispatched := false
+		defer func() {
+			if r := recover(); r != nil {
+				closeRegisteredStreamWriters(fmt.Errorf("request aborted"))
+				panic(r)
+			}
+		}()
+		defer func() {
+			if !requestDispatched {
+				closeRegisteredStreamWriters(fmt.Errorf("request aborted"))
+			}
+		}()
 
 		// 1. 解析 URL（支持 string 或 Request 对象）
 		var url string
@@ -1832,6 +1887,7 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 				}
 			}()
 		}
+		requestDispatched = true
 
 		// 8. 检查是否在 EventLoop 环境中
 		setImmediateFn := runtime.Get("setImmediate")
@@ -3164,7 +3220,18 @@ func (fe *FetchEnhancer) consumeReadableStream(runtime *goja.Runtime, stream *go
 	if err != nil {
 		return nil, err
 	}
-	return consumeFn(goja.Undefined(), stream, runtime.ToValue(mode))
+	maxBytes := fe.config.MaxResponseSize
+	if maxBytes <= 0 && fe.config.MaxStreamingSize > 0 {
+		maxBytes = fe.config.MaxStreamingSize
+	}
+	timeoutMs := fe.config.ResponseReadTimeout.Milliseconds()
+	return consumeFn(
+		goja.Undefined(),
+		stream,
+		runtime.ToValue(mode),
+		runtime.ToValue(maxBytes),
+		runtime.ToValue(timeoutMs),
+	)
 }
 
 func (fe *FetchEnhancer) newResponseReadableStream(
