@@ -20,6 +20,7 @@ import (
 	"flow-codeblock-go/enhance_modules/internal/blob"
 	"flow-codeblock-go/enhance_modules/internal/body"
 	"flow-codeblock-go/enhance_modules/internal/formdata"
+	"flow-codeblock-go/enhance_modules/internal/jsbuffer"
 	"flow-codeblock-go/enhance_modules/internal/ssrf"
 	"flow-codeblock-go/enhance_modules/internal/streams"
 	"flow-codeblock-go/enhance_modules/internal/transport"
@@ -1620,7 +1621,7 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 							}
 
 							// 从 Buffer 提取字节数据
-							data, err := fe.extractBufferBytes(bufferObj)
+							data, err := fe.extractBufferBytes(runtime, bufferObj)
 							if err != nil {
 								reject(runtime.NewTypeError("提取 buffer 数据失败: " + err.Error()))
 								return runtime.ToValue(promise)
@@ -3082,7 +3083,7 @@ func (fe *FetchEnhancer) convertNodeFormDataToBytes(runtime *goja.Runtime, formD
 		return nil, "", fmt.Errorf("getBuffer 没有返回 Buffer")
 	}
 
-	data, err := fe.extractBufferBytes(bufferObj)
+	data, err := fe.extractBufferBytes(runtime, bufferObj)
 	if err != nil {
 		return nil, "", fmt.Errorf("提取 buffer 数据失败: %w", err)
 	}
@@ -3655,35 +3656,8 @@ func (fe *FetchEnhancer) startReadableStreamPump(runtime *goja.Runtime, streamOb
 
 // extractBufferBytes 从 Buffer 对象提取字节数据
 // 🔥 用于 Node.js FormData 的 getBuffer() 方法返回值
-func (fe *FetchEnhancer) extractBufferBytes(bufferObj *goja.Object) ([]byte, error) {
-	// 安全检查
-	if bufferObj == nil {
-		return nil, fmt.Errorf("buffer object is nil")
-	}
-
-	// 获取 Buffer 长度
-	lengthVal := bufferObj.Get("length")
-	if lengthVal == nil || goja.IsUndefined(lengthVal) {
-		return nil, fmt.Errorf("buffer object has no length property")
-	}
-
-	length := int(lengthVal.ToInteger())
-	if length <= 0 {
-		return []byte{}, nil
-	}
-
-	// 逐字节读取数据
-	data := make([]byte, length)
-	for i := 0; i < length; i++ {
-		val := bufferObj.Get(fmt.Sprintf("%d", i))
-		if goja.IsUndefined(val) {
-			data[i] = 0
-		} else {
-			data[i] = byte(val.ToInteger())
-		}
-	}
-
-	return data, nil
+func (fe *FetchEnhancer) extractBufferBytes(runtime *goja.Runtime, bufferObj *goja.Object) ([]byte, error) {
+	return jsbuffer.CopyBytes(runtime, bufferObj)
 }
 
 // ExtractFileData 从 File 对象提取数据

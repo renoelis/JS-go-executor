@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"flow-codeblock-go/enhance_modules/fetch"
 	"flow-codeblock-go/enhance_modules/internal/formdata"
+	"flow-codeblock-go/enhance_modules/internal/jsbuffer"
 	"flow-codeblock-go/utils"
 	"fmt"
 	"io"
@@ -1606,7 +1607,7 @@ func (nfm *NodeFormDataModule) createBufferRef(runtime *goja.Runtime, bufferObj 
 		length = lengthVal.ToInteger()
 	}
 
-	if view, ok := nfm.extractBufferView(runtime, bufferObj, length); ok {
+	if view, ok := jsbuffer.ExtractView(runtime, bufferObj, length); ok {
 		// 持有原始对象引用，防止 GC 回收底层数据
 		if length <= 0 {
 			length = int64(len(view))
@@ -1619,74 +1620,6 @@ func (nfm *NodeFormDataModule) createBufferRef(runtime *goja.Runtime, bufferObj 
 	}
 
 	return formdata.BufferRef{}, false
-}
-
-// extractBufferView 获取 Buffer 的底层切片视图，优先使用 ArrayBuffer 避免拷贝
-func (nfm *NodeFormDataModule) extractBufferView(runtime *goja.Runtime, bufferObj *goja.Object, length int64) ([]byte, bool) {
-	if runtime == nil || bufferObj == nil {
-		return nil, false
-	}
-
-	// 计算 byteOffset（Buffer/TypedArray 可能带 offset）
-	getByteOffset := func() int64 {
-		offsetVal := bufferObj.Get("byteOffset")
-		if offsetVal != nil && !goja.IsUndefined(offsetVal) && !goja.IsNull(offsetVal) {
-			return offsetVal.ToInteger()
-		}
-		return 0
-	}
-
-	// 按 length 和 offset 生成视图
-	buildView := func(data []byte) ([]byte, bool) {
-		if data == nil {
-			return nil, false
-		}
-		byteOffset := getByteOffset()
-		viewLen := length
-		if viewLen <= 0 {
-			viewLen = int64(len(data)) - byteOffset
-		}
-		if byteOffset < 0 || byteOffset > int64(len(data)) {
-			return nil, false
-		}
-		end := byteOffset + viewLen
-		if end > int64(len(data)) {
-			end = int64(len(data))
-		}
-		if byteOffset > end {
-			return nil, false
-		}
-		return data[byteOffset:end], true
-	}
-
-	// 1. Export 直接获取 ArrayBuffer/[]byte
-	if exported := bufferObj.Export(); exported != nil {
-		if ab, ok := exported.(goja.ArrayBuffer); ok {
-			if view, ok := buildView(ab.Bytes()); ok {
-				return view, true
-			}
-		}
-		if b, ok := exported.([]byte); ok {
-			if view, ok := buildView(b); ok {
-				return view, true
-			}
-		}
-	}
-
-	// 2. 通过 buffer 属性获取 ArrayBuffer
-	if bufVal := bufferObj.Get("buffer"); bufVal != nil && !goja.IsUndefined(bufVal) && !goja.IsNull(bufVal) {
-		if bufObj := bufVal.ToObject(runtime); bufObj != nil {
-			if exported := bufObj.Export(); exported != nil {
-				if ab, ok := exported.(goja.ArrayBuffer); ok {
-					if view, ok := buildView(ab.Bytes()); ok {
-						return view, true
-					}
-				}
-			}
-		}
-	}
-
-	return nil, false
 }
 
 // extractBufferData 从 Buffer 对象提取字节数据
