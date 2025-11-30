@@ -614,31 +614,8 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 
 // isNodeReadableObject 简易判定 goja 对象是否类似 Node.js Readable 流（无已知长度）
 func isNodeReadableObject(obj *goja.Object) bool {
-	if obj == nil {
-		return false
-	}
-
-	if read := obj.Get("read"); read != nil && !goja.IsUndefined(read) && !goja.IsNull(read) {
-		if _, ok := goja.AssertFunction(read); ok {
-			return true
-		}
-	}
-
-	if pipe := obj.Get("pipe"); pipe != nil && !goja.IsUndefined(pipe) && !goja.IsNull(pipe) {
-		if _, ok := goja.AssertFunction(pipe); ok {
-			return true
-		}
-	}
-
-	if rs := obj.Get("_readableState"); rs != nil && !goja.IsUndefined(rs) && !goja.IsNull(rs) {
-		return true
-	}
-
-	if readable := obj.Get("readable"); readable != nil && readable.ToBoolean() {
-		return true
-	}
-
-	return false
+	// 对齐 Node form-data：只有具备典型 Node Stream 特征时才按流处理
+	return shouldMeasureNodeStreamLength(obj)
 }
 
 // shouldMeasureNodeStreamLength 粗略模拟 form-data 对 _valuesToMeasure 的判定
@@ -653,13 +630,14 @@ func shouldMeasureNodeStreamLength(obj *goja.Object) bool {
 		return val != nil && !goja.IsUndefined(val) && !goja.IsNull(val)
 	}
 
-	if hasProp("path") || hasProp("_readableState") || hasProp("httpVersion") {
+	// fs.ReadStream/自定义 Node Stream：path/fd 或内部状态标识
+	if hasProp("path") || hasProp("fd") || hasProp("_readableState") || hasProp("_writableState") {
 		return true
 	}
 
 	// http.IncomingMessage 风格：readable + httpVersion
 	if readable := obj.Get("readable"); readable != nil && readable.ToBoolean() {
-		if hasProp("httpVersion") {
+		if hasProp("httpVersion") || hasProp("httpModule") {
 			return true
 		}
 	}
