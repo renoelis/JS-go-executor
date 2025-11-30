@@ -260,6 +260,10 @@ var (
 	decompressorsMu   sync.Mutex
 	decompressors     = make(map[int64]*decompressor)
 	decompressorIDSeq int64
+
+	compressionStreamPolyfillProgram     *goja.Program
+	compressionStreamPolyfillProgramOnce sync.Once
+	compressionStreamPolyfillProgramErr  error
 )
 
 // EnsureCompressionStream 确保全局存在 CompressionStream 和 DecompressionStream
@@ -274,7 +278,18 @@ func EnsureCompressionStream(runtime *goja.Runtime) error {
 	}
 
 	// 注入 JS polyfill
-	if _, err := runtime.RunString(compressionStreamPolyfillJS); err != nil {
+	compressionStreamPolyfillProgramOnce.Do(func() {
+		compressionStreamPolyfillProgram, compressionStreamPolyfillProgramErr = goja.Compile(
+			"compression_stream_polyfill.js",
+			compressionStreamPolyfillJS,
+			false,
+		)
+	})
+	if compressionStreamPolyfillProgramErr != nil {
+		return compressionStreamPolyfillProgramErr
+	}
+
+	if _, err := runtime.RunProgram(compressionStreamPolyfillProgram); err != nil {
 		return fmt.Errorf("注入 CompressionStream polyfill 失败: %w", err)
 	}
 

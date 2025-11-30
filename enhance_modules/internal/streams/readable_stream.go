@@ -2,6 +2,7 @@ package streams
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/dop251/goja"
 )
@@ -112,6 +113,18 @@ const writableStreamControllerSignalPatchJS = `
 })();
 `
 
+var (
+	symbolAsyncIteratorProgram           *goja.Program
+	symbolAsyncIteratorProgramOnce       sync.Once
+	symbolAsyncIteratorProgramErr        error
+	readableStreamPolyfillProgram        *goja.Program
+	readableStreamPolyfillProgramOnce    sync.Once
+	readableStreamPolyfillProgramErr     error
+	writableStreamControllerPatchProgram *goja.Program
+	writableStreamControllerOnce         sync.Once
+	writableStreamControllerProgramErr   error
+)
+
 // EnsureReadableStream 确保全局存在 ReadableStream 构造器（最小可用 polyfill）
 // Node.js v25 已内置 Web Streams API；Goja 环境需要手动注入，避免 Blob.stream() 等
 // 调用时出现 ReadableStream 未定义的错误。
@@ -129,7 +142,7 @@ func EnsureReadableStream(runtime *goja.Runtime) error {
 			return fmt.Errorf("ReadableStream polyfill 资源未内置")
 		}
 
-		if _, err := runtime.RunString(readableStreamPolyfillJS); err != nil {
+		if err := runReadableStreamPolyfill(runtime); err != nil {
 			return fmt.Errorf("注入 ReadableStream polyfill 失败: %w", err)
 		}
 
@@ -201,7 +214,17 @@ func hasReadableStream(runtime *goja.Runtime) bool {
 }
 
 func ensureSymbolAsyncIterator(runtime *goja.Runtime) error {
-	_, err := runtime.RunString(symbolAsyncIteratorPolyfill)
+	symbolAsyncIteratorProgramOnce.Do(func() {
+		symbolAsyncIteratorProgram, symbolAsyncIteratorProgramErr = goja.Compile(
+			"symbol_async_iterator_polyfill.js",
+			symbolAsyncIteratorPolyfill,
+			false,
+		)
+	})
+	if symbolAsyncIteratorProgramErr != nil {
+		return symbolAsyncIteratorProgramErr
+	}
+	_, err := runtime.RunProgram(symbolAsyncIteratorProgram)
 	return err
 }
 
@@ -211,8 +234,34 @@ func EnsureWritableStreamControllerSignal(runtime *goja.Runtime) error {
 		return fmt.Errorf("runtime 为 nil")
 	}
 
-	if _, err := runtime.RunString(writableStreamControllerSignalPatchJS); err != nil {
+	writableStreamControllerOnce.Do(func() {
+		writableStreamControllerPatchProgram, writableStreamControllerProgramErr = goja.Compile(
+			"writable_stream_controller_signal_patch.js",
+			writableStreamControllerSignalPatchJS,
+			false,
+		)
+	})
+	if writableStreamControllerProgramErr != nil {
+		return writableStreamControllerProgramErr
+	}
+
+	if _, err := runtime.RunProgram(writableStreamControllerPatchProgram); err != nil {
 		return fmt.Errorf("注入 WritableStream signal polyfill 失败: %w", err)
 	}
 	return nil
+}
+
+func runReadableStreamPolyfill(runtime *goja.Runtime) error {
+	readableStreamPolyfillProgramOnce.Do(func() {
+		readableStreamPolyfillProgram, readableStreamPolyfillProgramErr = goja.Compile(
+			"readable_stream_polyfill.es5.js",
+			readableStreamPolyfillJS,
+			false,
+		)
+	})
+	if readableStreamPolyfillProgramErr != nil {
+		return readableStreamPolyfillProgramErr
+	}
+	_, err := runtime.RunProgram(readableStreamPolyfillProgram)
+	return err
 }

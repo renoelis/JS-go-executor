@@ -167,6 +167,21 @@ const requestStreamHelperJS = `
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 `
 
+var (
+	queueMicrotaskProgram            *goja.Program
+	queueMicrotaskProgramOnce        sync.Once
+	queueMicrotaskProgramErr         error
+	readableStreamConsumerProgram    *goja.Program
+	readableStreamConsumerOnce       sync.Once
+	readableStreamConsumerProgramErr error
+	readableStreamTeeProgram         *goja.Program
+	readableStreamTeeOnce            sync.Once
+	readableStreamTeeProgramErr      error
+	requestStreamHelperProgram       *goja.Program
+	requestStreamHelperOnce          sync.Once
+	requestStreamHelperProgramErr    error
+)
+
 // ==================== FetchEnhancer ====================
 
 // FetchEnhancer Fetch 增强器（集成所有功能）
@@ -1206,7 +1221,17 @@ func ensureQueueMicrotask(runtime *goja.Runtime) error {
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 `
-	_, err := runtime.RunString(script)
+	queueMicrotaskProgramOnce.Do(func() {
+		queueMicrotaskProgram, queueMicrotaskProgramErr = goja.Compile(
+			"queue_microtask_polyfill.js",
+			script,
+			false,
+		)
+	})
+	if queueMicrotaskProgramErr != nil {
+		return queueMicrotaskProgramErr
+	}
+	_, err := runtime.RunProgram(queueMicrotaskProgram)
 	return err
 }
 
@@ -3091,7 +3116,17 @@ func (fe *FetchEnhancer) createBodyWrapper(body io.ReadCloser, contentLength int
 func (fe *FetchEnhancer) getReadableStreamConsumer(runtime *goja.Runtime) (goja.Callable, error) {
 	fnVal := runtime.Get("__flowConsumeReadableStream")
 	if fnVal == nil || goja.IsUndefined(fnVal) || goja.IsNull(fnVal) {
-		if _, err := runtime.RunString(readableStreamConsumerJS); err != nil {
+		readableStreamConsumerOnce.Do(func() {
+			readableStreamConsumerProgram, readableStreamConsumerProgramErr = goja.Compile(
+				"readable_stream_consumer.js",
+				readableStreamConsumerJS,
+				false,
+			)
+		})
+		if readableStreamConsumerProgramErr != nil {
+			return nil, readableStreamConsumerProgramErr
+		}
+		if _, err := runtime.RunProgram(readableStreamConsumerProgram); err != nil {
 			return nil, err
 		}
 		fnVal = runtime.Get("__flowConsumeReadableStream")
@@ -3288,7 +3323,17 @@ func (fe *FetchEnhancer) teeReadableStream(runtime *goja.Runtime, stream *goja.O
 func (fe *FetchEnhancer) ensureReadableStreamTeeHelper(runtime *goja.Runtime) (goja.Callable, error) {
 	helper := runtime.Get("__flowReadableStreamTee")
 	if helper == nil || goja.IsUndefined(helper) || goja.IsNull(helper) {
-		if _, err := runtime.RunString(readableStreamTeeHelperJS); err != nil {
+		readableStreamTeeOnce.Do(func() {
+			readableStreamTeeProgram, readableStreamTeeProgramErr = goja.Compile(
+				"readable_stream_tee_helper.js",
+				readableStreamTeeHelperJS,
+				false,
+			)
+		})
+		if readableStreamTeeProgramErr != nil {
+			return nil, readableStreamTeeProgramErr
+		}
+		if _, err := runtime.RunProgram(readableStreamTeeProgram); err != nil {
 			return nil, err
 		}
 		helper = runtime.Get("__flowReadableStreamTee")
@@ -3521,7 +3566,17 @@ func (fe *FetchEnhancer) ensureRequestStreamHelpers(runtime *goja.Runtime) error
 	runtime.Set("__flowRequestBodyClose", fe.requestBodyCloseFunc(runtime))
 	runtime.Set("__flowRequestBodyError", fe.requestBodyErrorFunc(runtime))
 
-	if _, err := runtime.RunString(requestStreamHelperJS); err != nil {
+	requestStreamHelperOnce.Do(func() {
+		requestStreamHelperProgram, requestStreamHelperProgramErr = goja.Compile(
+			"request_stream_helper.js",
+			requestStreamHelperJS,
+			false,
+		)
+	})
+	if requestStreamHelperProgramErr != nil {
+		return requestStreamHelperProgramErr
+	}
+	if _, err := runtime.RunProgram(requestStreamHelperProgram); err != nil {
 		return fmt.Errorf("注入请求流辅助脚本失败: %w", err)
 	}
 	return nil
