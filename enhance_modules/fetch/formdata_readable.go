@@ -54,6 +54,10 @@ type FormDataReadable struct {
 	endEmitted   bool                     // 是否已触发 end 事件
 	closeEmitted bool                     // 是否已触发 close 事件
 
+	readChan       chan readResult // 异步读取结果通道
+	readReqChan    chan struct{}   // 触发单次读取的请求通道
+	readWorkerOnce sync.Once       // 确保只启动一个读取 worker
+	readInFlight   bool            // 是否有正在进行的读取
 	// pipe 相关
 	pipeDestination *goja.Object  // pipe 目标
 	pipeWriteFunc   goja.Callable // 目标的 write 方法
@@ -72,6 +76,12 @@ type onceWrapper struct {
 	once     bool // 是否是 once 监听器
 }
 
+type readResult struct {
+	data []byte
+	done bool
+	err  error
+}
+
 // NewFormDataReadable 创建 FormData Readable 流
 // 🔥 使用工厂函数延迟创建 reader，支持惰性初始化
 func NewFormDataReadable(readerFactory func() (io.ReadCloser, error), runtime *goja.Runtime) *FormDataReadable {
@@ -79,6 +89,8 @@ func NewFormDataReadable(readerFactory func() (io.ReadCloser, error), runtime *g
 		readerFactory: readerFactory,
 		runtime:       runtime,
 		listeners:     make(map[string][]onceWrapper),
+		readChan:      make(chan readResult, 4),
+		readReqChan:   make(chan struct{}, 1),
 		consumed:      false,
 		isPaused:      false,
 		closed:        false,
@@ -96,6 +108,8 @@ func NewFormDataReadableFromReader(reader io.ReadCloser, runtime *goja.Runtime) 
 		reader:        reader,
 		runtime:       runtime,
 		listeners:     make(map[string][]onceWrapper),
+		readChan:      make(chan readResult, 4),
+		readReqChan:   make(chan struct{}, 1),
 		consumed:      false,
 		isPaused:      false,
 		closed:        false,
@@ -147,62 +161,118 @@ func (fdr *FormDataReadable) startReading() {
 		return
 	}
 
+	fdr.startReadWorker()
+	// 防止重复调度
 	fdr.reading = true
+	inFlight := fdr.readInFlight
 	fdr.mutex.Unlock()
 
-	// 🔥 使用 setImmediate 异步读取下一块数据
-	setImmediate := fdr.runtime.Get("setImmediate")
-	if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
-		setImmediateFn(goja.Undefined(), fdr.runtime.ToValue(func(call goja.FunctionCall) goja.Value {
-			fdr.readNextChunk()
-			return goja.Undefined()
-		}))
-	} else {
+	if !inFlight {
+		fdr.enqueueRead()
+	}
+
+	fdr.scheduleProcessReadResults()
+}
+
+func (fdr *FormDataReadable) startReadWorker() {
+	fdr.readWorkerOnce.Do(func() {
+		go func() {
+			for range fdr.readReqChan {
+				fdr.mutex.Lock()
+				if fdr.destroyed || fdr.closed || fdr.streamReader == nil {
+					fdr.mutex.Unlock()
+					fdr.readChan <- readResult{err: fmt.Errorf("stream closed")}
+					close(fdr.readChan)
+					return
+				}
+				sr := fdr.streamReader
+				fdr.mutex.Unlock()
+
+				data, done, err := sr.Read(0)
+				fdr.readChan <- readResult{data: data, done: done, err: err}
+				if err != nil || done {
+					close(fdr.readChan)
+					return
+				}
+			}
+		}()
+	})
+}
+
+func (fdr *FormDataReadable) enqueueRead() {
+	fdr.mutex.Lock()
+	if fdr.isPaused || fdr.destroyed || fdr.closed || fdr.readInFlight || fdr.streamReader == nil {
+		fdr.mutex.Unlock()
+		return
+	}
+	fdr.readInFlight = true
+	fdr.mutex.Unlock()
+
+	select {
+	case fdr.readReqChan <- struct{}{}:
+	default:
 		fdr.mutex.Lock()
-		fdr.reading = false
+		fdr.readInFlight = false
 		fdr.mutex.Unlock()
 	}
 }
 
-// readNextChunk 读取下一块数据并触发事件
-// 🔥 统一处理 on('data') 和 pipe
-func (fdr *FormDataReadable) readNextChunk() {
-	// 防御性保护
-	defer func() {
-		if r := recover(); r != nil {
-			fdr.emitError(fmt.Errorf("stream read error: %v", r))
-			fdr.closeInternal()
-		}
-	}()
-
-	fdr.mutex.Lock()
-	if fdr.closed || fdr.destroyed || fdr.isPaused {
-		fdr.reading = false
-		fdr.mutex.Unlock()
-		return
+func (fdr *FormDataReadable) scheduleProcessReadResults() {
+	setImmediate := fdr.runtime.Get("setImmediate")
+	if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
+		setImmediateFn(goja.Undefined(), fdr.runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+			fdr.processReadResults()
+			return goja.Undefined()
+		}))
 	}
+}
 
-	if fdr.streamReader == nil {
+// processReadResults 处理异步读取结果
+func (fdr *FormDataReadable) processReadResults() {
+	fdr.mutex.Lock()
+	if fdr.destroyed || fdr.closed {
 		fdr.reading = false
 		fdr.mutex.Unlock()
 		return
 	}
 	fdr.mutex.Unlock()
 
-	// 读取数据块（默认 64KB）
-	data, done, err := fdr.streamReader.Read(0)
+	select {
+	case res, ok := <-fdr.readChan:
+		if !ok {
+			fdr.mutex.Lock()
+			fdr.reading = false
+			fdr.readInFlight = false
+			fdr.mutex.Unlock()
+			return
+		}
+		fdr.mutex.Lock()
+		fdr.readInFlight = false
+		fdr.mutex.Unlock()
+		fdr.handleReadResult(res)
+	default:
+		fdr.mutex.Lock()
+		shouldPoll := fdr.readInFlight && !fdr.isPaused && !fdr.destroyed && !fdr.closed
+		fdr.reading = false
+		fdr.mutex.Unlock()
+		if shouldPoll {
+			fdr.scheduleProcessReadResults()
+		}
+	}
+}
 
-	if err != nil {
+func (fdr *FormDataReadable) handleReadResult(res readResult) {
+	if res.err != nil {
+		fdr.emitError(res.err)
+		fdr.emitClose()
+		fdr.closeInternal()
 		fdr.mutex.Lock()
 		fdr.reading = false
 		fdr.mutex.Unlock()
-		fdr.emitError(err)
-		fdr.emitClose() // 🔥 错误后也要触发 close 事件（符合 Node.js 行为）
-		fdr.closeInternal()
 		return
 	}
 
-	if done {
+	if res.done {
 		fdr.mutex.Lock()
 		fdr.reading = false
 
@@ -213,27 +283,23 @@ func (fdr *FormDataReadable) readNextChunk() {
 		dest := fdr.pipeDestination
 		fdr.mutex.Unlock()
 
-		// 如果有 pipe，调用目标的 end 方法
 		if hasPipe && hasEnd && endFunc != nil {
 			endFunc(dest)
 		}
 
-		// 🔥 触发 end 事件，然后触发 close 事件
 		fdr.emitEnd()
 		fdr.emitClose()
 		fdr.closeInternal()
 		return
 	}
 
-	// 如果有数据
-	if len(data) > 0 {
-		// 创建 Buffer
-		dataValue := fdr.createBuffer(data)
+	if len(res.data) > 0 {
+		dataValue := fdr.createBuffer(res.data)
 
-		// 🔥 先触发 data 事件（无论是否有 pipe）
+		// 先触发 data 事件
 		fdr.emitData(dataValue)
 
-		// 🔥 如果有 pipe，写入目标
+		// 如果有 pipe，写入目标
 		fdr.mutex.Lock()
 		hasPipe := fdr.pipeDestination != nil
 		writeFunc := fdr.pipeWriteFunc
@@ -245,37 +311,34 @@ func (fdr *FormDataReadable) readNextChunk() {
 		if hasPipe && writeFunc != nil {
 			result, err := writeFunc(dest, dataValue)
 			if err != nil {
+				fdr.emitError(err)
+				fdr.emitClose()
+				fdr.closeInternal()
 				fdr.mutex.Lock()
 				fdr.reading = false
 				fdr.mutex.Unlock()
-				fdr.emitError(err)
-				fdr.emitClose() // 🔥 写入错误后也要触发 close 事件
-				fdr.closeInternal()
 				return
 			}
 
-			// 检查背压：如果 write 返回 false，等待 drain 事件
+			// 背压处理
 			if !result.ToBoolean() && hasOn {
 				fdr.mutex.Lock()
 				fdr.isPaused = true
 
-				// 🔥 只在未注册时注册 drain 监听器
 				if !fdr.drainRegistered {
 					fdr.drainRegistered = true
 					fdr.reading = false
 					fdr.mutex.Unlock()
 
-					// 检查目标是否支持 once
 					onceFunc, hasOnce := goja.AssertFunction(dest.Get("once"))
 					removeListenerFunc, hasRemove := goja.AssertFunction(dest.Get("removeListener"))
 
 					if hasOnce {
-						// 🔥 使用 once：触发一次后自动移除，允许下次重新注册
 						var drainHandler goja.Value
 						drainHandler = fdr.runtime.ToValue(func(call goja.FunctionCall) goja.Value {
 							fdr.mutex.Lock()
 							fdr.isPaused = false
-							fdr.drainRegistered = false // 🔥 once 自动移除后，重置标记允许重新注册
+							fdr.drainRegistered = false
 							fdr.mutex.Unlock()
 
 							fdr.scheduleNextRead()
@@ -283,15 +346,13 @@ func (fdr *FormDataReadable) readNextChunk() {
 						})
 						onceFunc(dest, fdr.runtime.ToValue("drain"), drainHandler)
 					} else if hasRemove {
-						// 🔥 有 removeListener：手动移除后重置标记
 						var drainHandler goja.Value
 						drainHandler = fdr.runtime.ToValue(func(call goja.FunctionCall) goja.Value {
-							// 先移除监听器
 							removeListenerFunc(dest, fdr.runtime.ToValue("drain"), drainHandler)
 
 							fdr.mutex.Lock()
 							fdr.isPaused = false
-							fdr.drainRegistered = false // 🔥 移除后重置标记
+							fdr.drainRegistered = false
 							fdr.mutex.Unlock()
 
 							fdr.scheduleNextRead()
@@ -299,14 +360,10 @@ func (fdr *FormDataReadable) readNextChunk() {
 						})
 						onFunc(dest, fdr.runtime.ToValue("drain"), drainHandler)
 					} else {
-						// 🔥 既没有 once 也没有 removeListener：
-						// 只注册一次，handler 保持挂载，不重置 drainRegistered
-						// 这样 handler 会在每次 drain 时触发，但不会累积
 						var drainHandler goja.Value
 						drainHandler = fdr.runtime.ToValue(func(call goja.FunctionCall) goja.Value {
 							fdr.mutex.Lock()
 							fdr.isPaused = false
-							// 🔥 不重置 drainRegistered，防止重复注册
 							fdr.mutex.Unlock()
 
 							fdr.scheduleNextRead()
@@ -315,8 +372,6 @@ func (fdr *FormDataReadable) readNextChunk() {
 						onFunc(dest, fdr.runtime.ToValue("drain"), drainHandler)
 					}
 				} else {
-					// 已经注册了 drain 监听，只需更新状态
-					fdr.reading = false
 					fdr.mutex.Unlock()
 				}
 
@@ -325,7 +380,7 @@ func (fdr *FormDataReadable) readNextChunk() {
 		}
 	}
 
-	// 继续读取下一块
+	// 继续读取
 	fdr.scheduleNextRead()
 }
 
@@ -335,13 +390,8 @@ func (fdr *FormDataReadable) scheduleNextRead() {
 	fdr.reading = false
 	fdr.mutex.Unlock()
 
-	setImmediate := fdr.runtime.Get("setImmediate")
-	if setImmediateFn, ok := goja.AssertFunction(setImmediate); ok {
-		setImmediateFn(goja.Undefined(), fdr.runtime.ToValue(func(call goja.FunctionCall) goja.Value {
-			fdr.startReading()
-			return goja.Undefined()
-		}))
-	}
+	fdr.enqueueRead()
+	fdr.scheduleProcessReadResults()
 }
 
 // createBuffer 创建 Buffer
