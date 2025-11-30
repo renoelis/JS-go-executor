@@ -555,28 +555,28 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 			}
 
 			headers, err := nfm.collectSubmitHeaders(runtime, formDataObj, target.headers)
-				if err != nil {
-					panic(runtime.NewGoError(err))
-				}
+			if err != nil {
+				panic(runtime.NewGoError(err))
+			}
 
-				// auth: 自动生成 Basic Authorization 头（与 Node http.request 保持一致）
-				if target.auth != "" {
-					if headers == nil {
-						headers = map[string]string{}
-					}
-					if _, ok := headers["authorization"]; !ok {
-						authStr := target.auth
-						if !strings.Contains(authStr, ":") {
-							authStr += ":"
-						}
-						headers["authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(authStr))
-					}
+			// auth: 自动生成 Basic Authorization 头（与 Node http.request 保持一致）
+			if target.auth != "" {
+				if headers == nil {
+					headers = map[string]string{}
 				}
+				if _, ok := headers["authorization"]; !ok {
+					authStr := target.auth
+					if !strings.Contains(authStr, ":") {
+						authStr += ":"
+					}
+					headers["authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(authStr))
+				}
+			}
 
-				// 构造 fetch 选项
-				options := runtime.NewObject()
-				options.Set("method", strings.ToUpper(target.method))
-				options.Set("body", formDataObj)
+			// 构造 fetch 选项
+			options := runtime.NewObject()
+			options.Set("method", strings.ToUpper(target.method))
+			options.Set("body", formDataObj)
 
 			headersObj := runtime.NewObject()
 			for k, v := range headers {
@@ -2035,27 +2035,43 @@ func arrayBufferToBuffer(runtime *goja.Runtime, val goja.Value) (goja.Value, err
 	return bufVal, nil
 }
 
-func convertResponseHeaders(runtime *goja.Runtime, headersVal goja.Value) *goja.Object {
+func convertResponseHeaders(runtime *goja.Runtime, headersVal goja.Value) (*goja.Object, []string) {
 	headersObj := runtime.NewObject()
+	rawHeaders := make([]string, 0)
 	if runtime == nil || headersVal == nil || goja.IsUndefined(headersVal) || goja.IsNull(headersVal) {
-		return headersObj
+		return headersObj, rawHeaders
 	}
 
 	rawObj := headersVal.ToObject(runtime)
 	if rawObj == nil {
-		return headersObj
+		return headersObj, rawHeaders
 	}
 
 	if forEachFn, ok := goja.AssertFunction(rawObj.Get("forEach")); ok {
 		forEachFn(rawObj, runtime.ToValue(func(call goja.FunctionCall) goja.Value {
 			val := call.Argument(0)
 			key := call.Argument(1)
-			headersObj.Set(strings.ToLower(key.String()), val.String())
+
+			keyStr := key.String()
+			headersObj.Set(strings.ToLower(keyStr), val.String())
+
+			switch exported := val.Export().(type) {
+			case []interface{}:
+				for _, item := range exported {
+					rawHeaders = append(rawHeaders, keyStr, fmt.Sprintf("%v", item))
+				}
+			case []string:
+				for _, item := range exported {
+					rawHeaders = append(rawHeaders, keyStr, item)
+				}
+			default:
+				rawHeaders = append(rawHeaders, keyStr, val.String())
+			}
 			return goja.Undefined()
 		}))
 	}
 
-	return headersObj
+	return headersObj, rawHeaders
 }
 
 func (nfm *NodeFormDataModule) createIncomingMessage(runtime *goja.Runtime, responseVal goja.Value, onError func(goja.Value)) *goja.Object {
@@ -2079,7 +2095,13 @@ func (nfm *NodeFormDataModule) createIncomingMessage(runtime *goja.Runtime, resp
 	} else {
 		incoming.Set("statusMessage", "")
 	}
-	incoming.Set("headers", convertResponseHeaders(runtime, respObj.Get("headers")))
+	headersObj, rawHeaders := convertResponseHeaders(runtime, respObj.Get("headers"))
+	incoming.Set("headers", headersObj)
+	rawHeadersArr := runtime.NewArray()
+	for idx, v := range rawHeaders {
+		rawHeadersArr.Set(strconv.Itoa(idx), v)
+	}
+	incoming.Set("rawHeaders", rawHeadersArr)
 
 	var started bool
 	var ended bool
