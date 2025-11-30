@@ -216,6 +216,15 @@ func (sfd *StreamingFormData) detectStreamingMode() bool {
 	return isStreaming
 }
 
+// HasStreamingEntries 返回是否包含真正的流式 Reader（非 bytes.Reader）
+// 用于在 getBuffer 等场景提前拒绝流式数据，避免与 Node form-data 行为不一致
+func (sfd *StreamingFormData) HasStreamingEntries() bool {
+	if sfd == nil {
+		return false
+	}
+	return sfd.detectStreamingMode()
+}
+
 // CreateReader 创建读取器（核心方法）
 // 🔥 新方案：根据数据类型检测模式，应用差异化限制
 // - 缓冲模式（Blob/Buffer）：限制 1MB，直接读取到内存

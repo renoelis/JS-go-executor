@@ -327,6 +327,15 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 		// getBuffer() - 获取完整的 multipart/form-data Buffer
 		// 🔥 关键方法：用于与 fetch API 集成
 		formDataObj.Set("getBuffer", func(call goja.FunctionCall) goja.Value {
+			// Node form-data 行为：只支持已缓冲的数据；遇到流会在 Buffer.from 时抛 TypeError
+			if hasStream, streamType := detectStreamingEntryForBuffer(streamingFormData); hasStream {
+				errMsg := fmt.Sprintf(
+					"The \"string\" argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object. Received an instance of %s",
+					streamType,
+				)
+				panic(runtime.NewTypeError(errMsg))
+			}
+
 			// 创建 Reader 并读取所有数据
 			reader, err := streamingFormData.CreateReader()
 			if err != nil {
@@ -335,8 +344,21 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 
 			// 读取所有数据到 Buffer
 			var buf bytes.Buffer
-			if _, err := io.Copy(&buf, reader); err != nil {
+			copyReader := reader
+			maxBufferedSize := int64(0)
+			if cfg := streamingFormData.GetConfig(); cfg != nil {
+				maxBufferedSize = cfg.MaxBufferedFormDataSize
+			}
+			if maxBufferedSize > 0 {
+				copyReader = io.LimitReader(reader, maxBufferedSize+1)
+			}
+
+			n, err := io.Copy(&buf, copyReader)
+			if err != nil {
 				panic(runtime.NewGoError(fmt.Errorf("读取表单数据失败: %w", err)))
+			}
+			if maxBufferedSize > 0 && n > maxBufferedSize {
+				panic(runtime.NewGoError(fmt.Errorf("FormData getBuffer size exceeds limit: %d > %d bytes", n, maxBufferedSize)))
 			}
 
 			// 转换为 goja Buffer
@@ -2348,4 +2370,72 @@ func detectTypedArrayOrArrayBuffer(runtime *goja.Runtime, obj *goja.Object) (str
 	default:
 		return name, false
 	}
+}
+
+// detectStreamingEntryForBuffer 检查 FormData 中是否包含流式字段（非 bytes.Reader）
+// 如果存在流，getBuffer 应该与 Node form-data 一样直接抛出类型错误，避免同步读取大流
+func detectStreamingEntryForBuffer(streamingFormData *formdata.StreamingFormData) (bool, string) {
+	if streamingFormData == nil {
+		return false, ""
+	}
+
+	entries := streamingFormData.GetEntries()
+	for _, entry := range entries {
+		if isStreamingValue(entry.Value) {
+			return true, streamTypeName(entry.Value)
+		}
+	}
+
+	// entries 可能在流式消费后被清空，使用缓存的模式或未知长度标记兜底
+	if streamingFormData.HasStreamingEntries() || streamingFormData.HasUnknownStreamLength() {
+		return true, "stream"
+	}
+
+	return false, ""
+}
+
+// isStreamingValue 判断单个值是否为流式数据
+func isStreamingValue(val interface{}) bool {
+	switch v := val.(type) {
+	case formdata.UnknownLengthStreamPlaceholder:
+		return v.NeedsLength
+	case *formdata.UnknownLengthStreamPlaceholder:
+		if v == nil {
+			return false
+		}
+		return v.NeedsLength
+	case io.Reader:
+		if _, ok := v.(*bytes.Reader); ok {
+			return false
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+// streamTypeName 返回用于错误提示的类型名称，尽量贴近 Node 抛出的类型描述
+func streamTypeName(val interface{}) string {
+	if val == nil {
+		return "stream"
+	}
+
+	// UnknownLengthStreamPlaceholder 不需要暴露内部实现细节
+	switch val.(type) {
+	case formdata.UnknownLengthStreamPlaceholder, *formdata.UnknownLengthStreamPlaceholder:
+		return "stream"
+	}
+
+	t := reflect.TypeOf(val)
+	if t == nil {
+		return "stream"
+	}
+
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.Name() != "" {
+		return t.Name()
+	}
+	return t.String()
 }
