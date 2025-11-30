@@ -405,6 +405,9 @@ func ExecuteRequestAsync(
 	// shouldCancelContext: 是否需要在 defer 中取消 context
 	shouldCloseBody := true     // 默认需要清理 body
 	shouldCancelContext := true // 默认需要取消 context
+	// drainBody: 是否需要在关闭前耗尽响应体（用于连接复用）
+	// 超限/错误分支应跳过耗尽，避免无意义的带宽/CPU 消耗
+	drainBody := true
 
 	defer func() {
 		// 清理上传 context（如果有）
@@ -415,7 +418,9 @@ func ExecuteRequestAsync(
 		// 清理响应 body
 		if shouldCloseBody && resp != nil && resp.Body != nil {
 			// 清空 Body 以帮助连接复用 (性能提升 ~100x)
-			io.Copy(io.Discard, resp.Body)
+			if drainBody {
+				io.Copy(io.Discard, resp.Body)
+			}
 			resp.Body.Close()
 		}
 
@@ -452,6 +457,13 @@ func ExecuteRequestAsync(
 			sizeMB := float64(resp.ContentLength) / 1024 / 1024
 			limitMB := float64(config.MaxStreamingSize) / 1024 / 1024
 			excessBytes := resp.ContentLength - config.MaxStreamingSize
+
+			// 超限场景不再耗尽 body，直接取消请求并关闭
+			drainBody = false
+			if reqCancel != nil {
+				reqCancel()
+				shouldCancelContext = false
+			}
 
 			req.resultCh <- FetchResult{
 				nil,
@@ -544,6 +556,12 @@ func ExecuteRequestAsync(
 					// 已知 Content-Length 的响应超过限制，直接报错（保持旧行为）
 					sizeMB := float64(len(bodyBytes)) / 1024 / 1024
 					limitMB := float64(config.MaxResponseSize) / 1024 / 1024
+					// 超限时不再继续耗尽 body，直接取消
+					drainBody = false
+					if reqCancel != nil {
+						reqCancel()
+						shouldCancelContext = false
+					}
 					req.resultCh <- FetchResult{
 						nil,
 						fmt.Errorf(
