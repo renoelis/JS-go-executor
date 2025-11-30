@@ -707,7 +707,7 @@ func determineResponseTypeForNode(mode string) string {
 
 // PollResult 使用定时轮询请求结果 (EventLoop 模式)
 // 🔥 通过 setTimeout 低频轮询，避免 setImmediate 紧密堆积导致 EventLoop 忙等
-func PollResult(runtime *goja.Runtime, req *FetchRequest, resolve, reject func(goja.Value), setImmediate goja.Value, recreateResponse func(*goja.Runtime, *ResponseData) goja.Value) {
+func PollResult(runtime *goja.Runtime, req *FetchRequest, resolve, reject func(goja.Value), setImmediate goja.Value, recreateResponse func(*goja.Runtime, *ResponseData) goja.Value, cleanup func(error)) {
 	immediateFn, ok := goja.AssertFunction(setImmediate)
 	if !ok {
 		reject(CreateErrorObject(runtime, fmt.Errorf("setImmediate 不是一个函数")))
@@ -735,6 +735,9 @@ func PollResult(runtime *goja.Runtime, req *FetchRequest, resolve, reject func(g
 		select {
 		case result := <-req.resultCh:
 			// 有结果了
+			if cleanup != nil {
+				cleanup(result.err)
+			}
 			if result.err != nil {
 				// 🔥 检查是否为 AbortError
 				if _, isAbortError := result.err.(*AbortError); isAbortError {

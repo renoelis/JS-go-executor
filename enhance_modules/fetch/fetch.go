@@ -1247,16 +1247,22 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 		}
 
 		registeredStreamWriterIDs := make([]string, 0)
-		defer func() {
-			if len(registeredStreamWriterIDs) == 0 {
-				return
-			}
-			for _, id := range registeredStreamWriterIDs {
-				if writer := fe.removeRequestStreamWriter(id); writer != nil {
-					writer.closeWithError(fmt.Errorf("request aborted"))
+		cleanupDone := make(chan struct{})
+		var closeWritersOnce sync.Once
+		closeRegisteredStreamWriters := func(err error) {
+			closeWritersOnce.Do(func() {
+				if len(registeredStreamWriterIDs) > 0 {
+					for _, id := range registeredStreamWriterIDs {
+						if writer := fe.removeRequestStreamWriter(id); writer != nil {
+							writer.closeWithError(err)
+						}
+					}
+					registeredStreamWriterIDs = nil
 				}
-			}
-		}()
+				close(cleanupDone)
+			})
+		}
+		defer closeRegisteredStreamWriters(fmt.Errorf("request aborted"))
 
 		// 1. 解析 URL（支持 string 或 Request 对象）
 		var url string
@@ -1815,7 +1821,17 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 
 		// 7. 异步执行请求（不阻塞 EventLoop）
 		go ExecuteRequestAsync(fe.config, fe.client, req, fe.createBodyWrapper)
-		registeredStreamWriterIDs = nil
+
+		// 🔥 如果 body 是 ReadableStream，监听 abort 事件并兜底关闭 writer
+		if len(registeredStreamWriterIDs) > 0 {
+			go func() {
+				select {
+				case <-abortCh:
+					closeRegisteredStreamWriters(context.Canceled)
+				case <-cleanupDone:
+				}
+			}()
+		}
 
 		// 8. 检查是否在 EventLoop 环境中
 		setImmediateFn := runtime.Get("setImmediate")
@@ -1824,10 +1840,11 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 			// EventLoop 模式：使用轮询机制
 			resolveFunc := func(value goja.Value) { resolve(value) }
 			rejectFunc := func(value goja.Value) { reject(value) }
-			PollResult(runtime, req, resolveFunc, rejectFunc, setImmediateFn, fe.recreateResponse)
+			PollResult(runtime, req, resolveFunc, rejectFunc, setImmediateFn, fe.recreateResponse, closeRegisteredStreamWriters)
 		} else {
 			// Runtime Pool 模式：同步等待
 			result := <-req.resultCh
+			closeRegisteredStreamWriters(result.err)
 			if result.err != nil {
 				// 🔥 检查是否为 AbortError
 				if _, isAbortError := result.err.(*AbortError); isAbortError {
