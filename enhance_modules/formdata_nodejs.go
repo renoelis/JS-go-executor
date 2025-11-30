@@ -2,6 +2,7 @@ package enhance_modules
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"flow-codeblock-go/enhance_modules/fetch"
 	"flow-codeblock-go/enhance_modules/internal/formdata"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dop251/goja"
 	"github.com/dop251/goja_nodejs/eventloop"
@@ -958,7 +960,7 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 			needsLength := !hasKnownLength && shouldMeasureNodeStreamLength(obj)
 
 			// 优先尝试将 Node Readable 转换为 io.Reader，确保真实数据写入
-			if reader, err := nfm.convertNodeReadableStream(runtime, obj); err == nil && reader != nil {
+			if reader, err := nfm.convertNodeReadableStream(runtime, obj, streamingFormData); err == nil && reader != nil {
 				if filename == "" {
 					if pathVal := obj.Get("path"); pathVal != nil && !goja.IsUndefined(pathVal) && !goja.IsNull(pathVal) {
 						filename = pathVal.String()
@@ -1394,8 +1396,8 @@ func (nfm *NodeFormDataModule) appendUnknownStream(streamingFormData *formdata.S
 	streamingFormData.AddToTotalSize(estimated)
 }
 
-// convertNodeReadableStream 将 Node.js Readable 对象转换为 io.ReadCloser，保持数据流式写入
-func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, streamObj *goja.Object) (io.ReadCloser, error) {
+// convertNodeReadableStream 将 Node.js Readable 对象转换为 io.ReadCloser，保持数据流式写入并绑定取消信号
+func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, streamObj *goja.Object, streamingFormData *formdata.StreamingFormData) (io.ReadCloser, error) {
 	if runtime == nil || streamObj == nil {
 		return nil, fmt.Errorf("invalid readable stream")
 	}
@@ -1404,6 +1406,31 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 	onFn, ok := goja.AssertFunction(onVal)
 	if !ok {
 		return nil, fmt.Errorf("stream.on is not a function")
+	}
+
+	// 绑定 FormData/请求的上下文与超时，避免 goroutine 常驻
+	var (
+		ctx       context.Context = context.Background()
+		timeout   time.Duration
+		ctxDoneCh <-chan struct{}
+	)
+	if streamingFormData != nil {
+		if cfg := streamingFormData.GetConfig(); cfg != nil {
+			if cfg.Context != nil {
+				ctx = cfg.Context
+			}
+			timeout = cfg.Timeout
+		}
+	}
+	if ctx != nil {
+		ctxDoneCh = ctx.Done()
+	}
+
+	var timer *time.Timer
+	var timeoutCh <-chan time.Time
+	if timeout > 0 {
+		timer = time.NewTimer(timeout)
+		timeoutCh = timer.C
 	}
 
 	pr, pw := io.Pipe()
@@ -1420,8 +1447,22 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 			}
 			close(closedCh)
 			close(chunkCh)
+			if timer != nil {
+				timer.Stop()
+			}
 		})
 	}
+
+	// 监听 context/超时，防止读端缺失事件时泄漏
+	go func() {
+		select {
+		case <-closedCh:
+		case <-ctxDoneCh:
+			signalClose(fmt.Errorf("readable stream canceled: %v", ctx.Err()))
+		case <-timeoutCh:
+			signalClose(fmt.Errorf("readable stream timeout after %v", timeout))
+		}
+	}()
 
 	// 单 goroutine 顺序写入，防止 goroutine 风暴
 	go func() {
@@ -1465,6 +1506,10 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 			select {
 			case <-closedCh:
 				// 已关闭，直接丢弃
+			case <-ctxDoneCh:
+				signalClose(fmt.Errorf("readable stream canceled: %v", ctx.Err()))
+			case <-timeoutCh:
+				signalClose(fmt.Errorf("readable stream timeout after %v", timeout))
 			case chunkCh <- bufCopy:
 				// 正常写入
 			}
