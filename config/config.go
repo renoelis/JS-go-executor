@@ -454,7 +454,7 @@ func LoadConfig() *Config {
 		Timeout:             time.Duration(getEnvInt("FETCH_TIMEOUT_MS", 30000)) * time.Millisecond,                // 🔥 请求超时：默认 30 秒
 		ResponseReadTimeout: time.Duration(getEnvInt("FETCH_RESPONSE_READ_TIMEOUT_MS", 300000)) * time.Millisecond, // 🔥 响应读取超时：默认 5 分钟
 		MaxBlobFileSize:     int64(getEnvInt("MAX_BLOB_FILE_SIZE_MB", 100)) * 1024 * 1024,
-		FormDataBufferSize:  getEnvInt("FORMDATA_BUFFER_SIZE", 2*1024*1024),
+		FormDataBufferSize:  getEnvInt("FORMDATA_BUFFER_SIZE", 64*1024),
 		MaxFileSize:         int64(getEnvInt("MAX_FILE_SIZE_MB", 50)) * 1024 * 1024,
 
 		// 🔥 下载限制（新方案）

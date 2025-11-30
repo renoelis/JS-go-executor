@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+const (
+	// 默认 64KB 缓冲区，兼顾吞吐与 GC 压力；可通过配置覆盖
+	defaultFormDataBufferSize = 64 * 1024
+)
+
 // FormDataEntry 表示单个 FormData 字段
 type FormDataEntry struct {
 	Name        string      // 字段名
@@ -67,6 +72,10 @@ type FormDataStreamConfig struct {
 // maxFileSize: 单文件最大大小（字节）
 // timeout: HTTP 请求超时
 func DefaultFormDataStreamConfigWithBuffer(bufferSize int, maxBufferedSize, maxStreamingSize, maxFileSize int64, timeout time.Duration) *FormDataStreamConfig {
+	if bufferSize <= 0 {
+		bufferSize = defaultFormDataBufferSize
+	}
+
 	return &FormDataStreamConfig{
 		// 🔥 新方案：差异化限制
 		MaxBufferedFormDataSize:  maxBufferedSize,  // 缓冲模式限制
@@ -87,11 +96,11 @@ func DefaultFormDataStreamConfigWithBuffer(bufferSize int, maxBufferedSize, maxS
 // DefaultFormDataStreamConfig 默认配置（兼容旧代码）
 func DefaultFormDataStreamConfig() *FormDataStreamConfig {
 	return DefaultFormDataStreamConfigWithBuffer(
-		2*1024*1024,    // 默认 2MB 缓冲区
-		1*1024*1024,    // 默认 1MB 缓冲模式限制
-		100*1024*1024,  // 默认 100MB 流式模式限制
-		50*1024*1024,   // 默认 50MB 单文件大小
-		30*time.Second, // 默认 30 秒超时
+		defaultFormDataBufferSize, // 默认 64KB 缓冲区
+		1*1024*1024,               // 默认 1MB 缓冲模式限制
+		100*1024*1024,             // 默认 100MB 流式模式限制
+		50*1024*1024,              // 默认 50MB 单文件大小
+		30*time.Second,            // 默认 30 秒超时
 	)
 }
 
@@ -101,6 +110,11 @@ func NewStreamingFormData(config *FormDataStreamConfig) *StreamingFormData {
 		config = DefaultFormDataStreamConfig()
 	}
 
+	// 确保缓冲区大小有效，避免出现 0/负值导致的零长度读写
+	if config.BufferSize <= 0 {
+		config.BufferSize = defaultFormDataBufferSize
+	}
+
 	return &StreamingFormData{
 		entries:          make([]FormDataEntry, 0),
 		boundary:         randomBoundary(),
@@ -108,7 +122,7 @@ func NewStreamingFormData(config *FormDataStreamConfig) *StreamingFormData {
 		config:           config,
 		bufferPool: &sync.Pool{
 			New: func() interface{} {
-				return bytes.NewBuffer(make([]byte, 0, config.BufferSize))
+				return make([]byte, config.BufferSize)
 			},
 		},
 	}
@@ -641,8 +655,11 @@ func (sfd *StreamingFormData) copyStreaming(dst io.Writer, src io.Reader) (int64
 		return 0, fmt.Errorf("StreamingFormData 或 config 为 nil")
 	}
 
-	// 使用固定大小的缓冲区进行流式复制
-	buffer := make([]byte, sfd.config.BufferSize)
+	buffer := sfd.getBuffer()
+	if len(buffer) == 0 {
+		return 0, fmt.Errorf("buffer size must be greater than 0")
+	}
+	defer sfd.putBuffer(buffer)
 
 	written := int64(0)
 
@@ -692,6 +709,32 @@ func (sfd *StreamingFormData) copyStreaming(dst io.Writer, src io.Reader) (int64
 	}
 
 	return written, nil
+}
+
+// getBuffer 从池中获取缓冲区，避免频繁分配大块内存
+func (sfd *StreamingFormData) getBuffer() []byte {
+	if sfd == nil || sfd.config == nil {
+		return nil
+	}
+	if sfd.bufferPool == nil {
+		return make([]byte, sfd.config.BufferSize)
+	}
+	if buf, ok := sfd.bufferPool.Get().([]byte); ok && cap(buf) >= sfd.config.BufferSize {
+		return buf[:sfd.config.BufferSize]
+	}
+	return make([]byte, sfd.config.BufferSize)
+}
+
+// putBuffer 归还缓冲区到池中，必要时调整长度
+func (sfd *StreamingFormData) putBuffer(buf []byte) {
+	if sfd == nil || sfd.bufferPool == nil || buf == nil {
+		return
+	}
+	// 统一长度，避免后续使用时出现意外的更小切片
+	if cap(buf) >= sfd.config.BufferSize {
+		buf = buf[:sfd.config.BufferSize]
+	}
+	sfd.bufferPool.Put(buf)
 }
 
 // AddEntry 添加条目并更新总大小
