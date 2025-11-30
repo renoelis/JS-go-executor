@@ -2,11 +2,14 @@ package enhance_modules
 
 import (
 	"bytes"
+	"encoding/base64"
 	"flow-codeblock-go/enhance_modules/fetch"
 	"flow-codeblock-go/enhance_modules/internal/formdata"
 	"flow-codeblock-go/utils"
 	"fmt"
 	"io"
+	"net"
+	neturl "net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -527,9 +530,9 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 				panic(runtime.NewTypeError("submit 需要一个 URL 参数"))
 			}
 
-			url := call.Arguments[0].String()
+			targetArg := call.Arguments[0]
 			var callback goja.Callable
-			if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) {
+			if len(call.Arguments) > 1 && !goja.IsUndefined(call.Arguments[1]) && !goja.IsNull(call.Arguments[1]) {
 				var ok bool
 				callback, ok = goja.AssertFunction(call.Arguments[1])
 				if !ok {
@@ -537,65 +540,219 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 				}
 			}
 
+			target, err := parseSubmitTarget(runtime, targetArg)
+			if err != nil {
+				panic(runtime.NewGoError(err))
+			}
+
+			if target.method == "" {
+				target.method = "POST"
+			}
+
+			finalURL, err := buildURLFromTarget(target)
+			if err != nil {
+				panic(runtime.NewGoError(err))
+			}
+
+			headers, err := nfm.collectSubmitHeaders(runtime, formDataObj, target.headers)
+				if err != nil {
+					panic(runtime.NewGoError(err))
+				}
+
+				// auth: 自动生成 Basic Authorization 头（与 Node http.request 保持一致）
+				if target.auth != "" {
+					if headers == nil {
+						headers = map[string]string{}
+					}
+					if _, ok := headers["authorization"]; !ok {
+						authStr := target.auth
+						if !strings.Contains(authStr, ":") {
+							authStr += ":"
+						}
+						headers["authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(authStr))
+					}
+				}
+
+				// 构造 fetch 选项
+				options := runtime.NewObject()
+				options.Set("method", strings.ToUpper(target.method))
+				options.Set("body", formDataObj)
+
+			headersObj := runtime.NewObject()
+			for k, v := range headers {
+				headersObj.Set(k, v)
+			}
+			options.Set("headers", headersObj)
+
+			// AbortController 支持，供 abort/destroy 使用
+			var abortController *goja.Object
+			if acCtor := runtime.Get("AbortController"); acCtor != nil && !goja.IsUndefined(acCtor) && !goja.IsNull(acCtor) {
+				if ctor, ok := goja.AssertFunction(acCtor); ok {
+					if val, err := ctor(goja.Undefined()); err == nil {
+						abortController = val.ToObject(runtime)
+					}
+				}
+			}
+			if abortController != nil {
+				if signal := abortController.Get("signal"); signal != nil {
+					options.Set("signal", signal)
+				}
+			}
+
+			// 构造 ClientRequest 风格对象
+			requestObj := runtime.NewObject()
+			reqEmitter := newJSEventEmitter(runtime, requestObj)
+			var callbackCalled bool
+			var aborted bool
+			var finishedOnce sync.Once
+
+			emitFinish := func() {
+				finishedOnce.Do(func() {
+					reqEmitter.emit("finish")
+				})
+			}
+
+			callCallback := func(err goja.Value, res goja.Value) {
+				if callback == nil || callbackCalled {
+					return
+				}
+				callbackCalled = true
+				scheduleAsync(runtime, func() {
+					callback(goja.Undefined(), err, res)
+				})
+			}
+
+			failWithError := func(errVal goja.Value) {
+				if errVal == nil {
+					errVal = runtime.NewTypeError("request error")
+				}
+				errVal = normalizeRequestErrorValue(runtime, errVal, "ECONNRESET")
+				emitFinish()
+				reqEmitter.emit("error", errVal)
+				callCallback(errVal, goja.Null())
+			}
+
+			triggerAbort := func(reason goja.Value) {
+				if aborted {
+					return
+				}
+				aborted = true
+				requestObj.Set("aborted", true)
+				if abortController != nil {
+					if abortFn, ok := goja.AssertFunction(abortController.Get("abort")); ok {
+						abortFn(abortController)
+					}
+				}
+				if reason == nil || goja.IsUndefined(reason) || goja.IsNull(reason) {
+					reason = runtime.NewTypeError("aborted")
+				}
+				failWithError(normalizeRequestErrorValue(runtime, reason, "ECONNRESET"))
+			}
+
+			// on/once 事件
+			requestObj.Set("on", func(call goja.FunctionCall) goja.Value {
+				if len(call.Arguments) >= 2 {
+					reqEmitter.on(call.Arguments[0].String(), call.Arguments[1])
+				}
+				return requestObj
+			})
+
+			requestObj.Set("once", func(call goja.FunctionCall) goja.Value {
+				if len(call.Arguments) >= 2 {
+					reqEmitter.once(call.Arguments[0].String(), call.Arguments[1])
+				}
+				return requestObj
+			})
+
+			// abort/destroy/end
+			requestObj.Set("abort", func(call goja.FunctionCall) goja.Value {
+				var reason goja.Value
+				if len(call.Arguments) > 0 {
+					reason = call.Arguments[0]
+				}
+				triggerAbort(reason)
+				return requestObj
+			})
+
+			requestObj.Set("destroy", func(call goja.FunctionCall) goja.Value {
+				var reason goja.Value
+				if len(call.Arguments) > 0 {
+					reason = call.Arguments[0]
+				}
+				triggerAbort(reason)
+				requestObj.Set("destroyed", true)
+				return requestObj
+			})
+
+			requestObj.Set("end", func(call goja.FunctionCall) goja.Value {
+				emitFinish()
+				return requestObj
+			})
+
+			// 异步触发 socket 事件
+			scheduleAsync(runtime, func() {
+				reqEmitter.emit("socket", runtime.NewObject())
+			})
+
 			// 使用 fetch API 发送请求
 			fetchFunc := runtime.Get("fetch")
 			if goja.IsUndefined(fetchFunc) {
-				panic(runtime.NewTypeError("fetch 不可用"))
+				failWithError(runtime.NewTypeError("fetch 不可用"))
+				return requestObj
 			}
 
 			fetch, ok := goja.AssertFunction(fetchFunc)
 			if !ok {
-				panic(runtime.NewTypeError("fetch 不是一个函数"))
+				failWithError(runtime.NewTypeError("fetch 不是一个函数"))
+				return requestObj
 			}
 
-			// 构建 fetch 选项
-			options := runtime.NewObject()
-			options.Set("method", "POST")
-			options.Set("body", formDataObj)
-
-			// 调用 fetch
-			result, err := fetch(goja.Undefined(), runtime.ToValue(url), options)
+			result, err := fetch(goja.Undefined(), runtime.ToValue(finalURL), options)
 			if err != nil {
-				if callback != nil {
-					// 错误应该作为 Error 对象传递
-					// 🔥 修复：callback(thisObj, arg1, arg2...) - 第一个参数是 this
-					callback(goja.Undefined(), runtime.NewGoError(err), goja.Null())
-				} else {
-					panic(runtime.NewGoError(err))
-				}
-				return goja.Undefined()
+				failWithError(runtime.NewGoError(err))
+				return requestObj
 			}
 
-			// 如果有回调，处理响应
-			if callback != nil {
-				// 假设 result 是 Promise
-				promise := result.ToObject(runtime)
+			promiseObj := result.ToObject(runtime)
+			if promiseObj == nil {
+				failWithError(runtime.NewTypeError("无效的 fetch 返回值"))
+				return requestObj
+			}
 
-				// 🔥 修复：分别设置 .then() 和 .catch()
-				thenFunc, ok := goja.AssertFunction(promise.Get("then"))
-				if ok {
-					// 调用 .then(callback_success)
-					promise2Val, _ := thenFunc(promise, runtime.ToValue(func(response goja.Value) goja.Value {
-						// 成功：callback(null, response)
-						callback(goja.Undefined(), goja.Null(), response)
+			handleResponse := func(respVal goja.Value) {
+				if aborted {
+					return
+				}
+				respObj := nfm.createIncomingMessage(runtime, respVal, func(errVal goja.Value) {
+					reqEmitter.emit("error", normalizeRequestErrorValue(runtime, errVal, "ECONNRESET"))
+				})
+				if respObj == nil {
+					failWithError(runtime.NewTypeError("无效的响应对象"))
+					return
+				}
+				emitFinish()
+				callCallback(goja.Null(), respObj)
+				reqEmitter.emit("response", respObj)
+			}
+
+			if thenFunc, ok := goja.AssertFunction(promiseObj.Get("then")); ok {
+				thenFunc(promiseObj, runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+					handleResponse(call.Argument(0))
+					return goja.Undefined()
+				}))
+			}
+
+			if catchFunc, ok := goja.AssertFunction(promiseObj.Get("catch")); ok {
+				catchFunc(promiseObj, runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+					if aborted {
 						return goja.Undefined()
-					}))
-
-					// 调用 .catch(callback_error)
-					if promise2 := promise2Val.ToObject(runtime); promise2 != nil {
-						if catchFunc, ok := goja.AssertFunction(promise2.Get("catch")); ok {
-							catchFunc(promise2, runtime.ToValue(func(err goja.Value) goja.Value {
-								// 失败：callback(err, null)
-								callback(goja.Undefined(), err, goja.Null())
-								return goja.Undefined()
-							}))
-						}
 					}
-				}
-				return goja.Undefined()
+					failWithError(call.Argument(0))
+					return goja.Undefined()
+				}))
 			}
 
-			return result
+			return requestObj
 		})
 
 		// 设置原型链（支持 instanceof 检查）
@@ -1499,6 +1656,556 @@ func isBufferValue(runtime *goja.Runtime, val goja.Value) bool {
 	}
 
 	return false
+}
+
+// scheduleAsync 使用 setImmediate/setTimeout 异步调度
+func scheduleAsync(runtime *goja.Runtime, fn func()) {
+	if runtime == nil || fn == nil {
+		return
+	}
+
+	if siVal := runtime.GlobalObject().Get("setImmediate"); siVal != nil && !goja.IsUndefined(siVal) && !goja.IsNull(siVal) {
+		if si, ok := goja.AssertFunction(siVal); ok {
+			if _, err := si(goja.Undefined(), runtime.ToValue(func(goja.FunctionCall) goja.Value {
+				fn()
+				return goja.Undefined()
+			})); err == nil {
+				return
+			}
+		}
+	}
+
+	if stVal := runtime.GlobalObject().Get("setTimeout"); stVal != nil && !goja.IsUndefined(stVal) && !goja.IsNull(stVal) {
+		if st, ok := goja.AssertFunction(stVal); ok {
+			if _, err := st(goja.Undefined(), runtime.ToValue(func(goja.FunctionCall) goja.Value {
+				fn()
+				return goja.Undefined()
+			}), runtime.ToValue(0)); err == nil {
+				return
+			}
+		}
+	}
+
+	fn()
+}
+
+type eventListener struct {
+	cb   goja.Callable
+	once bool
+}
+
+type jsEventEmitter struct {
+	runtime   *goja.Runtime
+	target    *goja.Object
+	listeners map[string][]eventListener
+}
+
+func newJSEventEmitter(runtime *goja.Runtime, target *goja.Object) *jsEventEmitter {
+	return &jsEventEmitter{
+		runtime:   runtime,
+		target:    target,
+		listeners: make(map[string][]eventListener),
+	}
+}
+
+func (em *jsEventEmitter) on(event string, cb goja.Value) {
+	if em == nil || em.runtime == nil || em.target == nil {
+		return
+	}
+	callable, ok := goja.AssertFunction(cb)
+	if !ok {
+		return
+	}
+	em.listeners[event] = append(em.listeners[event], eventListener{cb: callable})
+}
+
+func (em *jsEventEmitter) once(event string, cb goja.Value) {
+	if em == nil || em.runtime == nil || em.target == nil {
+		return
+	}
+	callable, ok := goja.AssertFunction(cb)
+	if !ok {
+		return
+	}
+	em.listeners[event] = append(em.listeners[event], eventListener{cb: callable, once: true})
+}
+
+func (em *jsEventEmitter) emit(event string, args ...goja.Value) {
+	if em == nil || em.runtime == nil {
+		return
+	}
+	listeners := em.listeners[event]
+	if len(listeners) == 0 {
+		return
+	}
+
+	// 移除 once 监听
+	remaining := make([]eventListener, 0, len(listeners))
+	for _, l := range listeners {
+		if !l.once {
+			remaining = append(remaining, l)
+		}
+	}
+	em.listeners[event] = remaining
+
+	callList := make([]eventListener, len(listeners))
+	copy(callList, listeners)
+
+	scheduleAsync(em.runtime, func() {
+		for _, l := range callList {
+			func(li eventListener) {
+				defer func() { _ = recover() }()
+				_, _ = li.cb(em.target, args...)
+			}(l)
+		}
+	})
+}
+
+type submitTarget struct {
+	protocol string
+	host     string
+	hostname string
+	port     string
+	path     string
+	rawQuery string
+	auth     string
+	method   string
+	headers  map[string]string
+}
+
+func parseSubmitTarget(runtime *goja.Runtime, val goja.Value) (submitTarget, error) {
+	target := submitTarget{
+		path:    "/",
+		headers: map[string]string{},
+	}
+
+	if goja.IsUndefined(val) || goja.IsNull(val) {
+		return target, fmt.Errorf("invalid submit target")
+	}
+
+	// 字符串 URL
+	if exported := val.Export(); exported != nil {
+		if str, ok := exported.(string); ok {
+			urlStr := str
+			parsed, err := neturl.Parse(urlStr)
+			if err != nil || parsed.Scheme == "" {
+				parsed, err = neturl.Parse("http://" + urlStr)
+				if err != nil {
+					return target, err
+				}
+			}
+			target.protocol = parsed.Scheme
+			target.host = parsed.Host
+			if host, port, err := net.SplitHostPort(parsed.Host); err == nil {
+				target.hostname = host
+				target.port = port
+			} else {
+				target.hostname = parsed.Host
+			}
+			if parsed.Path != "" {
+				target.path = parsed.Path
+			}
+			target.rawQuery = parsed.RawQuery
+			if parsed.User != nil {
+				target.auth = parsed.User.String()
+			}
+			return target, nil
+		}
+	}
+
+	// options 对象
+	obj := val.ToObject(runtime)
+	if obj == nil {
+		return target, fmt.Errorf("invalid submit options")
+	}
+
+	if protocolVal := obj.Get("protocol"); protocolVal != nil && !goja.IsUndefined(protocolVal) && !goja.IsNull(protocolVal) {
+		target.protocol = strings.TrimSuffix(protocolVal.String(), ":")
+	}
+	if hostVal := obj.Get("host"); hostVal != nil && !goja.IsUndefined(hostVal) && !goja.IsNull(hostVal) {
+		target.host = hostVal.String()
+	}
+	if hostnameVal := obj.Get("hostname"); hostnameVal != nil && !goja.IsUndefined(hostnameVal) && !goja.IsNull(hostnameVal) {
+		target.hostname = hostnameVal.String()
+	}
+	if portVal := obj.Get("port"); portVal != nil && !goja.IsUndefined(portVal) && !goja.IsNull(portVal) {
+		target.port = fmt.Sprintf("%v", portVal.Export())
+	}
+	if pathVal := obj.Get("path"); pathVal != nil && !goja.IsUndefined(pathVal) && !goja.IsNull(pathVal) {
+		target.path = pathVal.String()
+	}
+	if methodVal := obj.Get("method"); methodVal != nil && !goja.IsUndefined(methodVal) && !goja.IsNull(methodVal) {
+		target.method = methodVal.String()
+	}
+	if headersVal := obj.Get("headers"); headersVal != nil && !goja.IsUndefined(headersVal) && !goja.IsNull(headersVal) {
+		target.headers = convertHeadersValue(runtime, headersVal)
+	}
+	if queryVal := obj.Get("query"); queryVal != nil && !goja.IsUndefined(queryVal) && !goja.IsNull(queryVal) {
+		target.rawQuery = queryVal.String()
+	}
+	if authVal := obj.Get("auth"); authVal != nil && !goja.IsUndefined(authVal) && !goja.IsNull(authVal) {
+		if authObj := authVal.ToObject(runtime); authObj != nil {
+			user := ""
+			pass := ""
+			if v := authObj.Get("username"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
+				user = v.String()
+			} else if v := authObj.Get("user"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
+				user = v.String()
+			}
+			if v := authObj.Get("password"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
+				pass = v.String()
+			} else if v := authObj.Get("pass"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
+				pass = v.String()
+			}
+			if user != "" || pass != "" {
+				target.auth = fmt.Sprintf("%s:%s", user, pass)
+			} else {
+				target.auth = authVal.String()
+			}
+		} else {
+			target.auth = authVal.String()
+		}
+	}
+
+	if target.path == "" {
+		target.path = "/"
+	}
+
+	return target, nil
+}
+
+func convertHeadersValue(runtime *goja.Runtime, val goja.Value) map[string]string {
+	headers := map[string]string{}
+	if runtime == nil || val == nil || goja.IsUndefined(val) || goja.IsNull(val) {
+		return headers
+	}
+	obj := val.ToObject(runtime)
+	if obj == nil {
+		return headers
+	}
+	for _, key := range obj.Keys() {
+		headers[strings.ToLower(key)] = fmt.Sprintf("%v", obj.Get(key))
+	}
+	return headers
+}
+
+func buildURLFromTarget(target submitTarget) (string, error) {
+	protocol := target.protocol
+	if protocol == "" {
+		protocol = "http"
+	}
+	protocol = strings.TrimSuffix(protocol, ":")
+
+	host := target.host
+	if host == "" {
+		host = target.hostname
+	}
+	if host == "" {
+		host = "localhost"
+	}
+
+	if target.port != "" {
+		if _, _, err := net.SplitHostPort(host); err != nil {
+			host = net.JoinHostPort(host, target.port)
+		}
+	}
+
+	path := target.path
+	if path == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	if target.rawQuery != "" && !strings.Contains(path, "?") {
+		path = path + "?" + target.rawQuery
+	}
+
+	return fmt.Sprintf("%s://%s%s", protocol, host, path), nil
+}
+
+func (nfm *NodeFormDataModule) collectSubmitHeaders(runtime *goja.Runtime, formDataObj *goja.Object, extra map[string]string) (map[string]string, error) {
+	if runtime == nil || formDataObj == nil {
+		return nil, fmt.Errorf("runtime or formDataObj is nil")
+	}
+
+	getHeadersVal := formDataObj.Get("getHeaders")
+	getHeadersFn, ok := goja.AssertFunction(getHeadersVal)
+	if !ok {
+		return nil, fmt.Errorf("getHeaders 不可用")
+	}
+
+	var arg []goja.Value
+	if len(extra) > 0 {
+		headersObj := runtime.NewObject()
+		for k, v := range extra {
+			headersObj.Set(k, v)
+		}
+		arg = append(arg, headersObj)
+	}
+
+	headersVal, err := getHeadersFn(formDataObj, arg...)
+	if err != nil {
+		return nil, err
+	}
+
+	headersObj := headersVal.ToObject(runtime)
+	if headersObj == nil {
+		return nil, fmt.Errorf("getHeaders 返回无效对象")
+	}
+
+	return convertHeadersValue(runtime, headersObj), nil
+}
+
+func normalizeRequestErrorValue(runtime *goja.Runtime, val goja.Value, fallbackCode string) goja.Value {
+	if runtime == nil {
+		return val
+	}
+
+	if err, ok := val.Export().(error); ok {
+		val = fetch.CreateErrorObjectWithName(runtime, err, "Error")
+	}
+
+	obj := val.ToObject(runtime)
+	if obj == nil {
+		obj = runtime.NewObject()
+		obj.Set("message", fmt.Sprintf("%v", val))
+		val = obj
+	}
+
+	message := ""
+	if msg := obj.Get("message"); msg != nil && !goja.IsUndefined(msg) && !goja.IsNull(msg) {
+		message = msg.String()
+	} else {
+		message = val.String()
+		obj.Set("message", message)
+	}
+
+	code := ""
+	if codeVal := obj.Get("code"); codeVal != nil && !goja.IsUndefined(codeVal) && !goja.IsNull(codeVal) {
+		code = codeVal.String()
+	}
+
+	if code == "" {
+		lower := strings.ToLower(message)
+		switch {
+		case strings.Contains(lower, "refused"):
+			code = "ECONNREFUSED"
+		case strings.Contains(lower, "not found"), strings.Contains(lower, "enotfound"), strings.Contains(lower, "dns"):
+			code = "ENOTFOUND"
+		case strings.Contains(lower, "timeout"), strings.Contains(lower, "timed out"):
+			code = "ETIMEDOUT"
+		case strings.Contains(lower, "reset"):
+			code = "ECONNRESET"
+		case strings.Contains(lower, "abort"):
+			code = "ECONNRESET"
+		}
+		if code == "" {
+			code = fallbackCode
+		}
+		if code == "" {
+			code = "ECONNRESET"
+		}
+		obj.Set("code", code)
+	}
+
+	return obj
+}
+
+func arrayBufferToBuffer(runtime *goja.Runtime, val goja.Value) (goja.Value, error) {
+	if runtime == nil {
+		return nil, fmt.Errorf("runtime is nil")
+	}
+	bufferCtor := runtime.Get("Buffer")
+	if bufferCtor == nil || goja.IsUndefined(bufferCtor) || goja.IsNull(bufferCtor) {
+		return nil, fmt.Errorf("Buffer 不可用")
+	}
+	bufferObj := bufferCtor.ToObject(runtime)
+	if bufferObj == nil {
+		return nil, fmt.Errorf("Buffer 不可用")
+	}
+	fromFn, ok := goja.AssertFunction(bufferObj.Get("from"))
+	if !ok {
+		return nil, fmt.Errorf("Buffer.from 不可用")
+	}
+	bufVal, err := fromFn(bufferObj, val)
+	if err != nil {
+		return nil, err
+	}
+	return bufVal, nil
+}
+
+func convertResponseHeaders(runtime *goja.Runtime, headersVal goja.Value) *goja.Object {
+	headersObj := runtime.NewObject()
+	if runtime == nil || headersVal == nil || goja.IsUndefined(headersVal) || goja.IsNull(headersVal) {
+		return headersObj
+	}
+
+	rawObj := headersVal.ToObject(runtime)
+	if rawObj == nil {
+		return headersObj
+	}
+
+	if forEachFn, ok := goja.AssertFunction(rawObj.Get("forEach")); ok {
+		forEachFn(rawObj, runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+			val := call.Argument(0)
+			key := call.Argument(1)
+			headersObj.Set(strings.ToLower(key.String()), val.String())
+			return goja.Undefined()
+		}))
+	}
+
+	return headersObj
+}
+
+func (nfm *NodeFormDataModule) createIncomingMessage(runtime *goja.Runtime, responseVal goja.Value, onError func(goja.Value)) *goja.Object {
+	if runtime == nil {
+		return nil
+	}
+	respObj := responseVal.ToObject(runtime)
+	if respObj == nil {
+		return nil
+	}
+
+	incoming := runtime.NewObject()
+	emitter := newJSEventEmitter(runtime, incoming)
+	incoming.Set("readable", true)
+
+	if statusVal := respObj.Get("status"); statusVal != nil && !goja.IsUndefined(statusVal) && !goja.IsNull(statusVal) {
+		incoming.Set("statusCode", statusVal.ToInteger())
+	}
+	if statusText := respObj.Get("statusText"); statusText != nil && !goja.IsUndefined(statusText) && !goja.IsNull(statusText) {
+		incoming.Set("statusMessage", statusText.String())
+	} else {
+		incoming.Set("statusMessage", "")
+	}
+	incoming.Set("headers", convertResponseHeaders(runtime, respObj.Get("headers")))
+
+	var started bool
+	var ended bool
+	var destroyed bool
+
+	startReading := func() {
+		if started || destroyed {
+			return
+		}
+		started = true
+
+		arrayBufferFn, ok := goja.AssertFunction(respObj.Get("arrayBuffer"))
+		if !ok {
+			errVal := normalizeRequestErrorValue(runtime, runtime.NewTypeError("response.arrayBuffer 不可用"), "ECONNRESET")
+			emitter.emit("error", errVal)
+			if onError != nil {
+				onError(errVal)
+			}
+			return
+		}
+
+		promiseVal, err := arrayBufferFn(respObj)
+		if err != nil {
+			errVal := normalizeRequestErrorValue(runtime, runtime.NewGoError(err), "ECONNRESET")
+			emitter.emit("error", errVal)
+			if onError != nil {
+				onError(errVal)
+			}
+			return
+		}
+
+		promiseObj := promiseVal.ToObject(runtime)
+		if promiseObj == nil {
+			errVal := normalizeRequestErrorValue(runtime, runtime.NewTypeError("无效的响应 Promise"), "ECONNRESET")
+			emitter.emit("error", errVal)
+			if onError != nil {
+				onError(errVal)
+			}
+			return
+		}
+
+		if thenFn, ok := goja.AssertFunction(promiseObj.Get("then")); ok {
+			thenFn(promiseObj, runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+				if destroyed {
+					return goja.Undefined()
+				}
+				bufVal, bufErr := arrayBufferToBuffer(runtime, call.Argument(0))
+				if bufErr != nil {
+					errVal := normalizeRequestErrorValue(runtime, runtime.NewGoError(bufErr), "ECONNRESET")
+					emitter.emit("error", errVal)
+					if onError != nil {
+						onError(errVal)
+					}
+					return goja.Undefined()
+				}
+
+				emitter.emit("data", bufVal)
+				if !ended {
+					ended = true
+					emitter.emit("end")
+					emitter.emit("close")
+				}
+				return goja.Undefined()
+			}))
+		}
+
+		if catchFn, ok := goja.AssertFunction(promiseObj.Get("catch")); ok {
+			catchFn(promiseObj, runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+				errVal := normalizeRequestErrorValue(runtime, call.Argument(0), "ECONNRESET")
+				emitter.emit("error", errVal)
+				if onError != nil {
+					onError(errVal)
+				}
+				if !ended {
+					ended = true
+					emitter.emit("close")
+				}
+				return goja.Undefined()
+			}))
+		}
+	}
+
+	incoming.Set("on", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) >= 2 {
+			eventName := call.Arguments[0].String()
+			emitter.on(eventName, call.Arguments[1])
+			if eventName == "data" {
+				startReading()
+			}
+		}
+		return incoming
+	})
+
+	incoming.Set("once", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) >= 2 {
+			eventName := call.Arguments[0].String()
+			emitter.once(eventName, call.Arguments[1])
+			if eventName == "data" {
+				startReading()
+			}
+		}
+		return incoming
+	})
+
+	incoming.Set("resume", func(call goja.FunctionCall) goja.Value {
+		startReading()
+		return incoming
+	})
+
+	incoming.Set("destroy", func(call goja.FunctionCall) goja.Value {
+		if destroyed {
+			return incoming
+		}
+		destroyed = true
+		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) && !goja.IsNull(call.Arguments[0]) {
+			errVal := normalizeRequestErrorValue(runtime, call.Arguments[0], "ECONNRESET")
+			emitter.emit("error", errVal)
+			if onError != nil {
+				onError(errVal)
+			}
+		}
+		emitter.emit("close")
+		return incoming
+	})
+
+	return incoming
 }
 
 // detectTypedArrayOrArrayBuffer 检测是否为 TypedArray/ArrayBuffer（排除 Buffer）
