@@ -13,6 +13,14 @@
       return;
     }
     
+    function safeAppend(fd, key, value) {
+      // Symbol 需要显式转成字符串以避免同步抛错
+      if (typeof value === 'symbol') {
+        value = value.toString();
+      }
+      fd.append(key, value);
+    }
+    
     // 添加 postForm 方法
     if (!instance.postForm) {
       instance.postForm = function(url, data, config) {
@@ -25,7 +33,7 @@
           var formData = new FormData();
           for (var key in data) {
             if (Object.prototype.hasOwnProperty.call(data, key)) {
-              formData.append(key, data[key]);
+              safeAppend(formData, key, data[key]);
             }
           }
           finalConfig.data = formData;
@@ -54,7 +62,7 @@
           var formData = new FormData();
           for (var key in data) {
             if (Object.prototype.hasOwnProperty.call(data, key)) {
-              formData.append(key, data[key]);
+              safeAppend(formData, key, data[key]);
             }
           }
           finalConfig.data = formData;
@@ -83,7 +91,7 @@
           var formData = new FormData();
           for (var key in data) {
             if (Object.prototype.hasOwnProperty.call(data, key)) {
-              formData.append(key, data[key]);
+              safeAppend(formData, key, data[key]);
             }
           }
           finalConfig.data = formData;

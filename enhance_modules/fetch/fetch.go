@@ -3159,10 +3159,13 @@ func (fe *FetchEnhancer) newResponseReadableStream(
 		resultCh := make(chan readResult, 1)
 		go func() {
 			data, done, err := streamReader.Read(0)
-			// 🔥 修复竞态条件：如果读取成功但流已完成，再次检查 abort 状态
-			// 使用 CheckAbortAndGetError() 直接检查 channel 状态
-			// 因为 abort 信号可能在 Read() 执行期间或之后到达
-			if err == nil && done {
+			// 🔥 区分两种情况：
+			// 1. done=true（流已完全读取完成）：不检查 abort 状态
+			//    根据 WHATWG Fetch 规范，abort 应该中止"正在进行的"操作，
+			//    而不是撤销"已完成的"操作。
+			// 2. done=false（流还在读取中）：检查 abort 状态
+			//    如果在读取过程中被 abort，后续读取应该抛出 AbortError。
+			if err == nil && !done {
 				if abortErr := streamReader.CheckAbortAndGetError(); abortErr != nil {
 					err = abortErr
 				}
@@ -3197,24 +3200,9 @@ func (fe *FetchEnhancer) newResponseReadableStream(
 			}
 
 			if res.done {
-				// 🔥 修复竞态条件：在关闭流之前，检查是否已被 abort
-				// 如果 streamReader 已经被 abort，应该触发 error 而不是 close
-				if abortErr := streamReader.CheckAbortAndGetError(); abortErr != nil {
-					var value goja.Value = runtime.NewGoError(abortErr)
-					if convertStreamError != nil {
-						value = convertStreamError(abortErr)
-					}
-					if errorFn, ok := goja.AssertFunction(errorVal); ok {
-						if _, callErr := errorFn(controller, value); callErr != nil {
-							panic(callErr)
-						}
-					}
-					if onCancel != nil {
-						onCancel()
-					}
-					return
-				}
-
+				// 🔥 done=true 表示流已完全读取完成，不再检查 abort 状态。
+				// 根据 WHATWG Fetch 规范，abort 应该中止"正在进行的"操作，
+				// 而不是撤销"已完成的"操作。
 				shouldClose := true
 				if isCancelled != nil && isCancelled() {
 					shouldClose = false
