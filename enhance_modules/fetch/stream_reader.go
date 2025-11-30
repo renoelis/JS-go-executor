@@ -120,20 +120,15 @@ func (sr *StreamReader) Read(size int) ([]byte, bool, error) {
 		return nil, true, err
 	}
 
-	if sr.closed {
-		return nil, true, fmt.Errorf("stream已关闭")
-	}
-	if sr.reader == nil {
-		sr.closed = true
-		return nil, true, fmt.Errorf("stream已关闭")
+	// 已关闭的流按照 "done" 处理（与 ReadableStream.cancel 后的行为一致）
+	if sr.closed || sr.reader == nil {
+		return nil, true, nil
 	}
 
-	// 如果上次已经到达 EOF，这次直接返回 done=true
+	// 如果上次已经到达 EOF，这次直接返回 done=true，并且不再响应后续 abort
 	if sr.reachedEOF {
-		if err := sr.checkAbortedLocked(); err != nil {
-			return nil, true, err
-		}
 		sr.closed = true
+		sr.detachAbortLocked()
 		return nil, true, nil
 	}
 
@@ -178,6 +173,8 @@ func (sr *StreamReader) Read(size int) ([]byte, bool, error) {
 	if err == io.EOF {
 		// 🔥 关键修复：遇到 EOF 时
 		sr.reachedEOF = true
+		// EOF 之后不应再被 late abort 影响（与 Node 行为对齐）
+		sr.detachAbortLocked()
 
 		if n > 0 {
 			// 如果还有数据，先返回数据（done=false）
@@ -210,6 +207,7 @@ func (sr *StreamReader) Close() error {
 		return nil
 	}
 	sr.closed = true
+	sr.abortCh = nil
 	reader := sr.reader
 	sr.reader = nil
 	sr.mutex.Unlock()
@@ -366,6 +364,12 @@ func (sr *StreamReader) closeWatcher() {
 	sr.closeOnce.Do(func() {
 		close(sr.closeCh)
 	})
+}
+
+// detachAbortLocked 在流已完成时解绑 abort 监听，避免晚到的 abort 干扰已完成的读取
+func (sr *StreamReader) detachAbortLocked() {
+	sr.abortCh = nil
+	sr.closeWatcher()
 }
 
 // AttachAbortSignal 绑定 AbortSignal（用于流式读取阶段）

@@ -1385,32 +1385,31 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 	}
 
 	pr, pw := io.Pipe()
-	chunkCh := make(chan []byte, 8)
+	chunkCh := make(chan []byte, 16) // 小缓冲 + 背压，避免 per-chunk goroutine
+	closedCh := make(chan struct{})
 	var closeOnce sync.Once
 	var closeErr error
-	var sendWg sync.WaitGroup
 
-	closeStream := func(err error) {
+	// 统一关闭管道和信号
+	signalClose := func(err error) {
 		closeOnce.Do(func() {
 			if err != nil && closeErr == nil {
 				closeErr = err
 			}
-			go func() {
-				sendWg.Wait()
-				close(chunkCh)
-			}()
+			close(closedCh)
+			close(chunkCh)
 		})
 	}
 
-	// 顺序写入，确保 end 事件后数据也能完全落盘
+	// 单 goroutine 顺序写入，防止 goroutine 风暴
 	go func() {
 		for chunk := range chunkCh {
 			if len(chunk) == 0 {
 				continue
 			}
 			if _, err := pw.Write(chunk); err != nil {
-				closeStream(err)
-				return
+				signalClose(err)
+				break
 			}
 		}
 		if closeErr != nil {
@@ -1427,28 +1426,32 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 		}
 		data, err := exportNodeStreamChunk(runtime, chunk)
 		if err != nil {
-			closeStream(err)
+			signalClose(err)
 			return goja.Undefined()
 		}
 		if len(data) == 0 {
 			return goja.Undefined()
 		}
 		bufCopy := append([]byte(nil), data...)
-		sendWg.Add(1)
-		go func() {
-			defer sendWg.Done()
+		func() {
 			defer func() {
+				// channel 可能已被关闭，忽略 panic
 				if r := recover(); r != nil {
 					_ = r
 				}
 			}()
-			chunkCh <- bufCopy
+			select {
+			case <-closedCh:
+				// 已关闭，直接丢弃
+			case chunkCh <- bufCopy:
+				// 正常写入
+			}
 		}()
 		return goja.Undefined()
 	}
 
 	endHandler := func(goja.FunctionCall) goja.Value {
-		closeStream(nil)
+		signalClose(nil)
 		return goja.Undefined()
 	}
 
@@ -1459,12 +1462,12 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 		} else {
 			msg = "Unknown stream error"
 		}
-		closeStream(fmt.Errorf("%s", msg))
+		signalClose(fmt.Errorf("%s", msg))
 		return goja.Undefined()
 	}
 
 	if _, err := onFn(streamObj, runtime.ToValue("data"), runtime.ToValue(dataHandler)); err != nil {
-		closeStream(err)
+		signalClose(err)
 		return nil, err
 	}
 	onFn(streamObj, runtime.ToValue("end"), runtime.ToValue(endHandler))
