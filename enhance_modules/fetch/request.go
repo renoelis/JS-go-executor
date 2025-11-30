@@ -705,13 +705,28 @@ func determineResponseTypeForNode(mode string) string {
 
 // ==================== Promise 轮询和错误处理 ====================
 
-// PollResult 使用 setImmediate 轮询请求结果 (EventLoop 模式)
-// 🔥 不阻塞 EventLoop,保持异步特性
+// PollResult 使用定时轮询请求结果 (EventLoop 模式)
+// 🔥 通过 setTimeout 低频轮询，避免 setImmediate 紧密堆积导致 EventLoop 忙等
 func PollResult(runtime *goja.Runtime, req *FetchRequest, resolve, reject func(goja.Value), setImmediate goja.Value, recreateResponse func(*goja.Runtime, *ResponseData) goja.Value) {
-	fn, ok := goja.AssertFunction(setImmediate)
+	immediateFn, ok := goja.AssertFunction(setImmediate)
 	if !ok {
 		reject(CreateErrorObject(runtime, fmt.Errorf("setImmediate 不是一个函数")))
 		return
+	}
+
+	timeoutVal := runtime.Get("setTimeout")
+	timeoutFn, hasTimeout := goja.AssertFunction(timeoutVal)
+
+	delayMs := int64(1) // 初始 1ms，后续指数退避降低调度频率
+
+	scheduleNext := func(check goja.Value) {
+		if hasTimeout {
+			// 使用 setTimeout(…, delayMs)，避免 setImmediate 的紧密自旋
+			_, _ = timeoutFn(goja.Undefined(), check, runtime.ToValue(delayMs))
+		} else {
+			// 兜底：依旧使用 setImmediate，但不再传递无效的 delay 参数
+			_, _ = immediateFn(goja.Undefined(), check)
+		}
 	}
 
 	// 创建轮询函数
@@ -736,15 +751,20 @@ func PollResult(runtime *goja.Runtime, req *FetchRequest, resolve, reject func(g
 				resolve(recreateResponse(runtime, result.response))
 			}
 		default:
-			// 🔥 修复: 添加 1ms 延迟避免 CPU 空转
-			// 还没结果,继续轮询
-			fn(goja.Undefined(), runtime.ToValue(checkResult), runtime.ToValue(1))
+			// 还没结果，继续轮询（指数退避上限 8ms，降低高并发下的回调排队）
+			if delayMs < 8 {
+				delayMs *= 2
+				if delayMs > 8 {
+					delayMs = 8
+				}
+			}
+			scheduleNext(runtime.ToValue(checkResult))
 		}
 		return goja.Undefined()
 	}
 
 	// 开始第一次轮询
-	fn(goja.Undefined(), runtime.ToValue(checkResult), runtime.ToValue(1))
+	scheduleNext(runtime.ToValue(checkResult))
 }
 
 // CreateErrorObject 创建标准的 JavaScript Error 对象
