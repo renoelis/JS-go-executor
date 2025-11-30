@@ -89,8 +89,23 @@ func (se *StreamEnhancer) RegisterStreamModule(registry *require.Registry) {
 			panic(runtime.NewGoError(fmt.Errorf("加载 stream.bundle.js 后未找到 __stream_bundle__ 对象")))
 		}
 
-		// 导出 stream
-		module.Set("exports", streamVal)
+		// Node 风格：默认导出应为 Stream 构造函数，兼容旧行为保留属性拷贝
+		exportVal := streamVal
+		streamObj := streamVal.ToObject(runtime)
+		if streamObj != nil {
+			if def := streamObj.Get("default"); def != nil && !goja.IsUndefined(def) && !goja.IsNull(def) {
+				exportVal = def
+			}
+			// 将 bundle 中的附加属性挂到导出对象上，保持 API 兼容
+			if exportObj := exportVal.ToObject(runtime); exportObj != nil {
+				for _, key := range streamObj.Keys() {
+					exportObj.Set(key, streamObj.Get(key))
+				}
+				exportObj.Set("default", exportVal)
+			}
+		}
+
+		module.Set("exports", exportVal)
 	})
 }
 

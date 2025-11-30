@@ -766,7 +766,43 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 		return formDataObj
 	}
 
-	return runtime.ToValue(constructor)
+	constructorVal := runtime.ToValue(constructor)
+	constructorObj := constructorVal.ToObject(runtime)
+
+	if constructorObj != nil {
+		// 确保 prototype 存在，方便挂载 @@toStringTag / toString
+		var formProto *goja.Object
+		if protoVal := constructorObj.Get("prototype"); protoVal != nil && !goja.IsUndefined(protoVal) && !goja.IsNull(protoVal) {
+			formProto = protoVal.ToObject(runtime)
+		}
+		if formProto == nil {
+			formProto = runtime.NewObject()
+			constructorObj.Set("prototype", formProto)
+		}
+
+		// 原型链指向 stream.Stream.prototype，保证 instanceof Stream 与 Node 行为一致
+		if streamProto := nfm.getStreamPrototype(runtime); streamProto != nil {
+			formProto.SetPrototype(streamProto)
+		}
+
+		// 在原型上定义 @@toStringTag（不可写、不可枚举、可配置）
+		if err := formProto.DefineDataPropertySymbol(goja.SymToStringTag, runtime.ToValue("FormData"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
+			formProto.SetSymbol(goja.SymToStringTag, runtime.ToValue("FormData"))
+		}
+
+		// 定义匿名 toString，name 需要为空字符串以对齐 form-data 行为
+		toStringVal := runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+			return runtime.ToValue("[object FormData]")
+		})
+		formProto.Set("toString", toStringVal)
+		if fnObj := toStringVal.ToObject(runtime); fnObj != nil {
+			if err := fnObj.DefineDataProperty("name", runtime.ToValue(""), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE); err != nil {
+				fnObj.Set("name", runtime.ToValue(""))
+			}
+		}
+	}
+
+	return constructorVal
 }
 
 // isNodeReadableObject 简易判定 goja 对象是否类似 Node.js Readable 流（无已知长度）
@@ -800,6 +836,51 @@ func shouldMeasureNodeStreamLength(obj *goja.Object) bool {
 	}
 
 	return false
+}
+
+// getStreamPrototype 尝试获取 stream 模块的原型（兼容导出函数或导出对象的场景）
+func (nfm *NodeFormDataModule) getStreamPrototype(runtime *goja.Runtime) *goja.Object {
+	if runtime == nil {
+		return nil
+	}
+
+	reqVal := runtime.GlobalObject().Get("require")
+	if reqVal == nil || goja.IsUndefined(reqVal) || goja.IsNull(reqVal) {
+		return nil
+	}
+
+	reqFn, ok := goja.AssertFunction(reqVal)
+	if !ok {
+		return nil
+	}
+
+	streamVal, err := reqFn(goja.Undefined(), runtime.ToValue("stream"))
+	if err != nil {
+		return nil
+	}
+
+	streamObj := streamVal.ToObject(runtime)
+	if streamObj == nil {
+		return nil
+	}
+
+	// 优先使用模块导出自身的 prototype（当 require('stream') 直接返回构造函数时）
+	if protoVal := streamObj.Get("prototype"); protoVal != nil && !goja.IsUndefined(protoVal) && !goja.IsNull(protoVal) {
+		if protoObj := protoVal.ToObject(runtime); protoObj != nil {
+			return protoObj
+		}
+	}
+
+	// 兼容模块导出对象的情况，从 Stream 属性上拿 prototype
+	if streamCtorVal := streamObj.Get("Stream"); streamCtorVal != nil && !goja.IsUndefined(streamCtorVal) && !goja.IsNull(streamCtorVal) {
+		if ctorObj := streamCtorVal.ToObject(runtime); ctorObj != nil {
+			if protoVal := ctorObj.Get("prototype"); protoVal != nil && !goja.IsUndefined(protoVal) && !goja.IsNull(protoVal) {
+				return protoVal.ToObject(runtime)
+			}
+		}
+	}
+
+	return nil
 }
 
 // handleAppend 处理 append 方法的不同值类型
