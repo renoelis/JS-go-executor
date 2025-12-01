@@ -1467,6 +1467,18 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 	var cleanupOnce sync.Once
 	var closeErr error
 	var dataHandlerVal, endHandlerVal, errorHandlerVal goja.Value
+	var pauseFn, resumeFn goja.Callable
+
+	if pauseVal := streamObj.Get("pause"); pauseVal != nil && !goja.IsUndefined(pauseVal) && !goja.IsNull(pauseVal) {
+		if fn, ok := goja.AssertFunction(pauseVal); ok {
+			pauseFn = fn
+		}
+	}
+	if resumeVal := streamObj.Get("resume"); resumeVal != nil && !goja.IsUndefined(resumeVal) && !goja.IsNull(resumeVal) {
+		if fn, ok := goja.AssertFunction(resumeVal); ok {
+			resumeFn = fn
+		}
+	}
 
 	// 统一关闭管道和信号
 	signalClose := func(err error) {
@@ -1547,6 +1559,22 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 		if len(data) == 0 {
 			return goja.Undefined()
 		}
+
+		scheduleResume := func() {
+			if resumeFn == nil {
+				return
+			}
+			scheduleAsync(runtime, func() {
+				select {
+				case <-closedCh:
+					return
+				default:
+				}
+				defer func() { _ = recover() }()
+				resumeFn(streamObj)
+			})
+		}
+
 		func() {
 			defer func() {
 				// channel 可能已被关闭，忽略 panic
@@ -1563,6 +1591,28 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 				signalClose(fmt.Errorf("readable stream timeout after %v", timeout))
 			case chunkCh <- data:
 				// 正常写入
+			default:
+				// 背压：暂停流，后台等待写入后再恢复
+				if pauseFn != nil {
+					defer func() { _ = recover() }()
+					pauseFn(streamObj)
+				}
+				go func(buf []byte) {
+					defer func() {
+						if r := recover(); r != nil {
+							_ = r
+						}
+					}()
+					select {
+					case <-closedCh:
+					case <-ctxDoneCh:
+						signalClose(fmt.Errorf("readable stream canceled: %v", ctx.Err()))
+					case <-timeoutCh:
+						signalClose(fmt.Errorf("readable stream timeout after %v", timeout))
+					case chunkCh <- buf:
+						scheduleResume()
+					}
+				}(append([]byte(nil), data...))
 			}
 		}()
 		return goja.Undefined()
@@ -1598,11 +1648,9 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 	onFn(streamObj, runtime.ToValue("error"), errorHandlerVal)
 
 	// 确保流进入 flowing 模式
-	if resumeVal := streamObj.Get("resume"); resumeVal != nil && !goja.IsUndefined(resumeVal) && !goja.IsNull(resumeVal) {
-		if resumeFn, ok := goja.AssertFunction(resumeVal); ok {
-			if _, err := resumeFn(streamObj); err != nil {
-				// 忽略 resume 错误，保持兼容性
-			}
+	if resumeFn != nil {
+		if _, err := resumeFn(streamObj); err != nil {
+			// 忽略 resume 错误，保持兼容性
 		}
 	}
 
