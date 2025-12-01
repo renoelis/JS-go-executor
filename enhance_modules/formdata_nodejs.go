@@ -92,6 +92,24 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 		// _boundary: 暴露当前 boundary 字符串，供测试判断是否为"Node form-data 实例"
 		formDataObj.Set("_boundary", streamingFormData.GetBoundary())
 
+		// 清理 _streams 的辅助函数：在流式消费后移除对大对象的引用，便于 GC 回收
+		clearStreamsArray := func() {
+			if streamsArray == nil {
+				return
+			}
+			newArr := runtime.NewArray()
+			formDataObj.Set("_streams", newArr)
+			streamsArray = newArr
+		}
+
+		// 流式模式下 CreateReader 成功后，主动清空 _streams，避免长时间持有 Buffer/流引用
+		streamingFormData.SetAfterCreateReaderHook(func(isStreaming bool) {
+			if !isStreaming {
+				return
+			}
+			clearStreamsArray()
+		})
+
 		// 设置类型标识（区分 Node.js FormData 和浏览器 FormData）
 		formDataObj.Set("__isNodeFormData", true)
 		formDataObj.Set("__isFormData", false) // 不是浏览器版本

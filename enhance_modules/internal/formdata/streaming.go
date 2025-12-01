@@ -32,13 +32,14 @@ type FormDataEntry struct {
 type StreamingFormData struct {
 	entries             []FormDataEntry
 	boundary            string
-	streamingEnabled    bool                  // 是否启用流式处理
-	config              *FormDataStreamConfig // 配置
-	bufferPool          *sync.Pool            // 内存池
-	totalSize           int64                 // 预估总大小
-	isStreamingMode     bool                  // 🔥 缓存检测到的模式（避免重复检测）
-	modeDetected        bool                  // 🔥 模式是否已检测
-	hasUnknownStreamLen bool                  // 是否存在未知长度的流（影响 getLengthSync/hasKnownLength）
+	streamingEnabled    bool                   // 是否启用流式处理
+	config              *FormDataStreamConfig  // 配置
+	bufferPool          *sync.Pool             // 内存池
+	totalSize           int64                  // 预估总大小
+	isStreamingMode     bool                   // 🔥 缓存检测到的模式（避免重复检测）
+	modeDetected        bool                   // 🔥 模式是否已检测
+	hasUnknownStreamLen bool                   // 是否存在未知长度的流（影响 getLengthSync/hasKnownLength）
+	afterCreateReader   func(isStreaming bool) // 可选回调：CreateReader 成功后触发（用于释放外部引用）
 }
 
 // UnknownLengthStreamPlaceholder 用于标记未知长度的 Node.js Readable 流
@@ -178,6 +179,15 @@ func (sfd *StreamingFormData) SetBoundary(boundary string) {
 	sfd.boundary = boundary
 }
 
+// SetAfterCreateReaderHook 设置 CreateReader 成功后的回调（可选）
+// 用于在流式模式下通知上层释放额外引用（如 JS 侧的 _streams 占位）
+func (sfd *StreamingFormData) SetAfterCreateReaderHook(fn func(isStreaming bool)) {
+	if sfd == nil {
+		return
+	}
+	sfd.afterCreateReader = fn
+}
+
 // AppendEntry 添加一个条目
 func (sfd *StreamingFormData) AppendEntry(entry FormDataEntry) {
 	if sfd.entries == nil {
@@ -299,6 +309,11 @@ func (sfd *StreamingFormData) CreateReader() (io.Reader, error) {
 
 	if err != nil {
 		return nil, err
+	}
+
+	// CreateReader 成功后通知上层（如 Node form-data 适配层）释放额外引用
+	if sfd.afterCreateReader != nil {
+		sfd.afterCreateReader(isStreaming)
 	}
 
 	// 🔥 清理 entries，释放内存（仅流式模式）
