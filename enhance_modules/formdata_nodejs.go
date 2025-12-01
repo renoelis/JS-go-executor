@@ -636,14 +636,28 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 				})
 			}
 
+			// 若提供了 callback，按 Node 行为为 error 事件注册监听，防止无监听时直接抛出
+			if callback != nil {
+				reqEmitter.once("error", runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+					callCallback(call.Argument(0), goja.Null())
+					return goja.Undefined()
+				}))
+			}
+
 			failWithError := func(errVal goja.Value) {
 				if errVal == nil {
 					errVal = runtime.NewTypeError("request error")
 				}
 				errVal = normalizeRequestErrorValue(runtime, errVal, "ECONNRESET")
-				emitFinish()
-				reqEmitter.emit("error", errVal)
 				callCallback(errVal, goja.Null())
+				emitFinish()
+				// error 事件应被监听；若无监听，避免直接 panic 使 callback 丢失
+				defer func() {
+					if r := recover(); r != nil {
+						// 已触发 callback，压制无监听 error 的 panic
+					}
+				}()
+				reqEmitter.emit("error", errVal)
 			}
 
 			triggerAbort := func(reason goja.Value) {
@@ -676,6 +690,43 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 					reqEmitter.once(call.Arguments[0].String(), call.Arguments[1])
 				}
 				return requestObj
+			})
+
+			requestObj.Set("off", func(call goja.FunctionCall) goja.Value {
+				if len(call.Arguments) >= 2 {
+					reqEmitter.removeListener(call.Arguments[0].String(), call.Arguments[1])
+				}
+				return requestObj
+			})
+
+			requestObj.Set("removeListener", func(call goja.FunctionCall) goja.Value {
+				if len(call.Arguments) >= 2 {
+					reqEmitter.removeListener(call.Arguments[0].String(), call.Arguments[1])
+				}
+				return requestObj
+			})
+
+			requestObj.Set("removeAllListeners", func(call goja.FunctionCall) goja.Value {
+				if len(call.Arguments) > 0 {
+					reqEmitter.removeAllListeners(call.Arguments[0].String())
+				} else {
+					reqEmitter.removeAllListeners("")
+				}
+				return requestObj
+			})
+
+			requestObj.Set("setMaxListeners", func(call goja.FunctionCall) goja.Value {
+				if len(call.Arguments) > 0 {
+					reqEmitter.setMaxListeners(call.Arguments[0].ToInteger())
+				}
+				return requestObj
+			})
+
+			requestObj.Set("listenerCount", func(call goja.FunctionCall) goja.Value {
+				if len(call.Arguments) == 0 {
+					return runtime.ToValue(0)
+				}
+				return runtime.ToValue(reqEmitter.listenerCount(call.Arguments[0].String()))
 			})
 
 			// abort/destroy/end
@@ -1829,54 +1880,184 @@ func scheduleAsync(runtime *goja.Runtime, fn func()) {
 	fn()
 }
 
-type eventListener struct {
-	cb   goja.Callable
-	once bool
-}
-
 type jsEventEmitter struct {
 	runtime   *goja.Runtime
-	target    *goja.Object
+	emitter   *goja.Object
+	useNative bool
+	maxListen int
 	listeners map[string][]eventListener
 }
 
+type eventListener struct {
+	cb   goja.Callable
+	val  goja.Value
+	once bool
+}
+
 func newJSEventEmitter(runtime *goja.Runtime, target *goja.Object) *jsEventEmitter {
-	return &jsEventEmitter{
+	em := &jsEventEmitter{
 		runtime:   runtime,
-		target:    target,
+		emitter:   target,
+		maxListen: 10,
 		listeners: make(map[string][]eventListener),
 	}
+
+	if runtime == nil {
+		return em
+	}
+
+	if em.emitter == nil {
+		em.emitter = runtime.NewObject()
+	}
+
+	// 尝试直接复用 Node 原生 EventEmitter，保持 error 默认抛错、同步触发与 off/removeListener 等完整语义
+	if reqVal := runtime.GlobalObject().Get("require"); reqVal != nil && !goja.IsUndefined(reqVal) && !goja.IsNull(reqVal) {
+		if reqFn, ok := goja.AssertFunction(reqVal); ok {
+			if eventsVal, err := reqFn(goja.Undefined(), runtime.ToValue("events")); err == nil {
+				if eventsObj := eventsVal.ToObject(runtime); eventsObj != nil {
+					ctorVal := eventsObj.Get("EventEmitter")
+					if ctorVal != nil && !goja.IsUndefined(ctorVal) && !goja.IsNull(ctorVal) {
+						if ctor, ok := goja.AssertFunction(ctorVal); ok {
+							// 初始化 _events 等内部字段
+							if _, err := ctor(em.emitter); err == nil {
+								// 继承原型方法
+								if ctorObj := ctorVal.ToObject(runtime); ctorObj != nil {
+									if protoVal := ctorObj.Get("prototype"); protoVal != nil && !goja.IsUndefined(protoVal) && !goja.IsNull(protoVal) {
+										if protoObj := protoVal.ToObject(runtime); protoObj != nil {
+											em.emitter.SetPrototype(protoObj)
+										}
+									}
+								}
+								em.useNative = true
+								return em
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 保底：fallback 简易实现（同步触发，支持 on/once/off/removeListener/removeAllListeners）
+	em.useNative = false
+	return em
 }
 
 func (em *jsEventEmitter) on(event string, cb goja.Value) {
-	if em == nil || em.runtime == nil || em.target == nil {
+	if em == nil || em.runtime == nil {
+		return
+	}
+	if em.useNative {
+		em.call("on", em.runtime.ToValue(event), cb)
 		return
 	}
 	callable, ok := goja.AssertFunction(cb)
 	if !ok {
 		return
 	}
-	em.listeners[event] = append(em.listeners[event], eventListener{cb: callable})
+	em.listeners[event] = append(em.listeners[event], eventListener{cb: callable, val: cb})
 }
 
 func (em *jsEventEmitter) once(event string, cb goja.Value) {
-	if em == nil || em.runtime == nil || em.target == nil {
+	if em == nil || em.runtime == nil {
+		return
+	}
+	if em.useNative {
+		em.call("once", em.runtime.ToValue(event), cb)
 		return
 	}
 	callable, ok := goja.AssertFunction(cb)
 	if !ok {
 		return
 	}
-	em.listeners[event] = append(em.listeners[event], eventListener{cb: callable, once: true})
+	em.listeners[event] = append(em.listeners[event], eventListener{cb: callable, val: cb, once: true})
 }
 
-func (em *jsEventEmitter) emit(event string, args ...goja.Value) {
+func (em *jsEventEmitter) removeListener(event string, cb goja.Value) {
 	if em == nil || em.runtime == nil {
+		return
+	}
+	if em.useNative {
+		em.call("removeListener", em.runtime.ToValue(event), cb)
+		em.call("off", em.runtime.ToValue(event), cb)
+		return
+	}
+	if cb == nil || goja.IsUndefined(cb) || goja.IsNull(cb) {
 		return
 	}
 	listeners := em.listeners[event]
 	if len(listeners) == 0 {
 		return
+	}
+	remaining := make([]eventListener, 0, len(listeners))
+	for _, l := range listeners {
+		if l.val != nil && cb == l.val {
+			continue
+		}
+		remaining = append(remaining, l)
+	}
+	em.listeners[event] = remaining
+}
+
+func (em *jsEventEmitter) removeAllListeners(event string) {
+	if em == nil || em.runtime == nil {
+		return
+	}
+	if em.useNative {
+		if event == "" {
+			em.call("removeAllListeners")
+		} else {
+			em.call("removeAllListeners", em.runtime.ToValue(event))
+		}
+		return
+	}
+	if event == "" {
+		em.listeners = make(map[string][]eventListener)
+		return
+	}
+	delete(em.listeners, event)
+}
+
+func (em *jsEventEmitter) setMaxListeners(n int64) {
+	if em == nil || em.runtime == nil {
+		return
+	}
+	if em.useNative {
+		em.call("setMaxListeners", em.runtime.ToValue(n))
+		return
+	}
+	if n < 0 {
+		em.maxListen = -1
+	} else {
+		em.maxListen = int(n)
+	}
+}
+
+func (em *jsEventEmitter) listenerCount(event string) int {
+	if em == nil || em.runtime == nil {
+		return 0
+	}
+	if em.useNative {
+		val := em.call("listenerCount", em.runtime.ToValue(event))
+		return int(val.ToInteger())
+	}
+	return len(em.listeners[event])
+}
+
+func (em *jsEventEmitter) emit(event string, args ...goja.Value) bool {
+	if em == nil || em.runtime == nil {
+		return false
+	}
+	if em.useNative {
+		val := em.call("emit", append([]goja.Value{em.runtime.ToValue(event)}, args...)...)
+		return val.ToBoolean()
+	}
+	listeners := em.listeners[event]
+	if len(listeners) == 0 {
+		if event == "error" {
+			panic(em.runtime.NewGoError(fmt.Errorf("Unhandled 'error' event")))
+		}
+		return false
 	}
 
 	// 移除 once 监听
@@ -1888,17 +2069,31 @@ func (em *jsEventEmitter) emit(event string, args ...goja.Value) {
 	}
 	em.listeners[event] = remaining
 
-	callList := make([]eventListener, len(listeners))
-	copy(callList, listeners)
+	for _, l := range listeners {
+		func(li eventListener) {
+			defer func() { _ = recover() }()
+			if li.cb != nil {
+				_, _ = li.cb(em.emitter, args...)
+			}
+		}(l)
+	}
+	return true
+}
 
-	scheduleAsync(em.runtime, func() {
-		for _, l := range callList {
-			func(li eventListener) {
-				defer func() { _ = recover() }()
-				_, _ = li.cb(em.target, args...)
-			}(l)
-		}
-	})
+func (em *jsEventEmitter) call(method string, args ...goja.Value) goja.Value {
+	if em == nil || em.emitter == nil {
+		return goja.Undefined()
+	}
+	fnVal := em.emitter.Get(method)
+	fn, ok := goja.AssertFunction(fnVal)
+	if !ok {
+		return goja.Undefined()
+	}
+	val, err := fn(em.emitter, args...)
+	if err != nil {
+		panic(err)
+	}
+	return val
 }
 
 type submitTarget struct {
@@ -2180,9 +2375,9 @@ func buildURLFromTarget(target submitTarget) (string, error) {
 	}
 	protocol = strings.TrimSuffix(protocol, ":")
 
-	host := target.host
+	host := target.hostname
 	if host == "" {
-		host = target.hostname
+		host = target.host
 	}
 	if host == "" {
 		host = "localhost"
@@ -2242,6 +2437,10 @@ func normalizeRequestErrorValue(runtime *goja.Runtime, val goja.Value, fallbackC
 		return val
 	}
 
+	if val == nil || goja.IsUndefined(val) || goja.IsNull(val) {
+		val = runtime.NewTypeError("request error")
+	}
+
 	if err, ok := val.Export().(error); ok {
 		val = fetch.CreateErrorObjectWithName(runtime, err, "Error")
 	}
@@ -2271,7 +2470,7 @@ func normalizeRequestErrorValue(runtime *goja.Runtime, val goja.Value, fallbackC
 		switch {
 		case strings.Contains(lower, "refused"):
 			code = "ECONNREFUSED"
-		case strings.Contains(lower, "not found"), strings.Contains(lower, "enotfound"), strings.Contains(lower, "dns"):
+		case strings.Contains(lower, "not found"), strings.Contains(lower, "enotfound"), strings.Contains(lower, "dns"), strings.Contains(lower, "no such host"), strings.Contains(lower, "lookup"):
 			code = "ENOTFOUND"
 		case strings.Contains(lower, "timeout"), strings.Contains(lower, "timed out"):
 			code = "ETIMEDOUT"
@@ -2642,6 +2841,43 @@ func (nfm *NodeFormDataModule) createIncomingMessage(runtime *goja.Runtime, resp
 			}
 		}
 		return incoming
+	})
+
+	incoming.Set("off", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) >= 2 {
+			emitter.removeListener(call.Arguments[0].String(), call.Arguments[1])
+		}
+		return incoming
+	})
+
+	incoming.Set("removeListener", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) >= 2 {
+			emitter.removeListener(call.Arguments[0].String(), call.Arguments[1])
+		}
+		return incoming
+	})
+
+	incoming.Set("removeAllListeners", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) > 0 {
+			emitter.removeAllListeners(call.Arguments[0].String())
+		} else {
+			emitter.removeAllListeners("")
+		}
+		return incoming
+	})
+
+	incoming.Set("setMaxListeners", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) > 0 {
+			emitter.setMaxListeners(call.Arguments[0].ToInteger())
+		}
+		return incoming
+	})
+
+	incoming.Set("listenerCount", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			return runtime.ToValue(0)
+		}
+		return runtime.ToValue(emitter.listenerCount(call.Arguments[0].String()))
 	})
 
 	incoming.Set("resume", func(call goja.FunctionCall) goja.Value {
