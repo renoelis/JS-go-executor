@@ -177,6 +177,8 @@ func (sfd *StreamingFormData) GetEntriesCount() int {
 // SetBoundary 设置 boundary 字符串
 func (sfd *StreamingFormData) SetBoundary(boundary string) {
 	sfd.boundary = boundary
+	// boundary 与流模式无关，这里仅防御性清缓存，避免后续检测沿用旧状态
+	sfd.invalidateDetection()
 }
 
 // SetAfterCreateReaderHook 设置 CreateReader 成功后的回调（可选）
@@ -195,6 +197,7 @@ func (sfd *StreamingFormData) AppendEntry(entry FormDataEntry) {
 	}
 	sfd.entries = append(sfd.entries, entry)
 	sfd.markUnknownStreamLength(entry)
+	sfd.invalidateDetection()
 }
 
 // AddToTotalSize 增加总大小估算（供 Node.js FormData 模块使用）
@@ -756,6 +759,7 @@ func (sfd *StreamingFormData) putBuffer(buf []byte) {
 func (sfd *StreamingFormData) AddEntry(entry FormDataEntry) {
 	sfd.entries = append(sfd.entries, entry)
 	sfd.markUnknownStreamLength(entry)
+	sfd.invalidateDetection()
 
 	// 🔥 不在这里计算，统一在 GetTotalSize() 中精确计算
 	// 原因：multipart/form-data 格式包含 boundary、headers 等开销
@@ -797,6 +801,15 @@ func (sfd *StreamingFormData) markUnknownStreamLength(entry FormDataEntry) {
 	if sfd.isUnknownLengthStream(&entry) {
 		sfd.hasUnknownStreamLen = true
 	}
+}
+
+// invalidateDetection 清除模式检测缓存，确保新增条目后重新评估
+func (sfd *StreamingFormData) invalidateDetection() {
+	if sfd == nil {
+		return
+	}
+	sfd.modeDetected = false
+	sfd.isStreamingMode = false
 }
 
 // isUnknownLengthStream 判断单个 entry 是否为未知长度的流
