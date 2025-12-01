@@ -131,12 +131,17 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 		// 1. append(name, value, filename) - filename 作为字符串
 		// 2. append(name, value, options) - options 对象 {filename, contentType, knownLength}
 		formDataObj.Set("append", func(call goja.FunctionCall) goja.Value {
-			if len(call.Arguments) < 2 {
-				panic(runtime.NewTypeError("FormData.append 需要至少 2 个参数"))
+			// Node form-data 不会在缺少参数时立刻抛错，缺省时视为 undefined
+			nameVal := goja.Undefined()
+			if len(call.Arguments) > 0 {
+				nameVal = call.Arguments[0]
+			}
+			value := goja.Undefined()
+			if len(call.Arguments) > 1 {
+				value = call.Arguments[1]
 			}
 
-			name := call.Arguments[0].String()
-			value := call.Arguments[1]
+			name := nameVal.String()
 
 			var filename string
 			var contentType string
