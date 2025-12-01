@@ -1461,13 +1461,15 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 	}
 
 	pr, pw := io.Pipe()
-	chunkCh := make(chan []byte, 16) // 小缓冲 + 背压，避免 per-chunk goroutine
+	chunkCh := make(chan []byte, 32) // 小缓冲 + 背压
+	backlogCh := make(chan []byte, 128)
 	closedCh := make(chan struct{})
 	var closeOnce sync.Once
 	var cleanupOnce sync.Once
 	var closeErr error
 	var dataHandlerVal, endHandlerVal, errorHandlerVal goja.Value
 	var pauseFn, resumeFn goja.Callable
+	var backpressureDrainerOnce sync.Once
 
 	if pauseVal := streamObj.Get("pause"); pauseVal != nil && !goja.IsUndefined(pauseVal) && !goja.IsNull(pauseVal) {
 		if fn, ok := goja.AssertFunction(pauseVal); ok {
@@ -1478,6 +1480,21 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 		if fn, ok := goja.AssertFunction(resumeVal); ok {
 			resumeFn = fn
 		}
+	}
+
+	scheduleResume := func() {
+		if resumeFn == nil {
+			return
+		}
+		scheduleAsync(runtime, func() {
+			select {
+			case <-closedCh:
+				return
+			default:
+			}
+			defer func() { _ = recover() }()
+			resumeFn(streamObj)
+		})
 	}
 
 	// 统一关闭管道和信号
@@ -1546,6 +1563,43 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 		}
 	}()
 
+	// 背压队列 drain：单 worker 顺序推进 backlog -> chunkCh，避免 per-chunk goroutine
+	startBackpressureDrainer := func() {
+		backpressureDrainerOnce.Do(func() {
+			go func() {
+				for {
+					select {
+					case <-closedCh:
+						return
+					case <-ctxDoneCh:
+						signalClose(fmt.Errorf("readable stream canceled: %v", ctx.Err()))
+						return
+					case <-timeoutCh:
+						signalClose(fmt.Errorf("readable stream timeout after %v", timeout))
+						return
+					case buf := <-backlogCh:
+						for {
+							select {
+							case <-closedCh:
+								return
+							case <-ctxDoneCh:
+								signalClose(fmt.Errorf("readable stream canceled: %v", ctx.Err()))
+								return
+							case <-timeoutCh:
+								signalClose(fmt.Errorf("readable stream timeout after %v", timeout))
+								return
+							case chunkCh <- buf:
+								scheduleResume()
+								goto nextChunk
+							}
+						}
+					nextChunk:
+					}
+				}
+			}()
+		})
+	}
+
 	dataHandler := func(call goja.FunctionCall) goja.Value {
 		chunk := call.Argument(0)
 		if goja.IsUndefined(chunk) || goja.IsNull(chunk) {
@@ -1558,21 +1612,6 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 		}
 		if len(data) == 0 {
 			return goja.Undefined()
-		}
-
-		scheduleResume := func() {
-			if resumeFn == nil {
-				return
-			}
-			scheduleAsync(runtime, func() {
-				select {
-				case <-closedCh:
-					return
-				default:
-				}
-				defer func() { _ = recover() }()
-				resumeFn(streamObj)
-			})
 		}
 
 		func() {
@@ -1592,27 +1631,17 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 			case chunkCh <- data:
 				// 正常写入
 			default:
-				// 背压：暂停流，后台等待写入后再恢复
+				// 背压：暂停流，入队有限队列，单 worker 推进，避免 goroutine 积累
 				if pauseFn != nil {
 					defer func() { _ = recover() }()
 					pauseFn(streamObj)
 				}
-				go func(buf []byte) {
-					defer func() {
-						if r := recover(); r != nil {
-							_ = r
-						}
-					}()
-					select {
-					case <-closedCh:
-					case <-ctxDoneCh:
-						signalClose(fmt.Errorf("readable stream canceled: %v", ctx.Err()))
-					case <-timeoutCh:
-						signalClose(fmt.Errorf("readable stream timeout after %v", timeout))
-					case chunkCh <- buf:
-						scheduleResume()
-					}
-				}(append([]byte(nil), data...))
+				select {
+				case backlogCh <- append([]byte(nil), data...):
+					startBackpressureDrainer()
+				default:
+					signalClose(fmt.Errorf("readable stream backpressure overflow"))
+				}
 			}
 		}()
 		return goja.Undefined()
