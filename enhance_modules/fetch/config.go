@@ -33,6 +33,10 @@ type FetchConfig struct {
 	MaxResponseSize  int64 // 缓冲读取限制（arrayBuffer/blob/text/json）
 	MaxStreamingSize int64 // 流式读取限制（getReader）
 
+	// ==================== 请求体流式写入限制 ====================
+	// 用于 ReadableStream 作为请求体时的缓冲上限（超过则阻塞等待消费，形成背压）
+	RequestStreamBufferLimit int64
+
 	// ==================== FormData 配置 ====================
 	FormDataConfig *formdata.FormDataStreamConfig // FormData 流式处理配置
 
@@ -79,6 +83,9 @@ func DefaultFetchConfig() *FetchConfig {
 		// 响应大小限制（差异化）
 		MaxResponseSize:  1 * 1024 * 1024,   // 缓冲模式：1MB（arrayBuffer/blob/text/json）
 		MaxStreamingSize: 100 * 1024 * 1024, // 流式模式：100MB（getReader）
+
+		// 请求体流式写入限制（有界缓冲，避免无限堆积）
+		RequestStreamBufferLimit: 8 * 1024 * 1024, // 默认 8MB
 
 		// FormData 配置（差异化限制）
 		FormDataConfig: formdata.DefaultFormDataStreamConfig(),
@@ -140,6 +147,13 @@ func WithMaxResponseSize(size int64) FetchConfigOption {
 func WithMaxStreamingSize(size int64) FetchConfigOption {
 	return func(c *FetchConfig) {
 		c.MaxStreamingSize = size
+	}
+}
+
+// WithRequestStreamBufferLimit 设置 ReadableStream 请求体的缓冲上限
+func WithRequestStreamBufferLimit(limit int64) FetchConfigOption {
+	return func(c *FetchConfig) {
+		c.RequestStreamBufferLimit = limit
 	}
 }
 
@@ -205,6 +219,10 @@ func (c *FetchConfig) Validate() {
 
 	if c.MaxStreamingSize <= 0 {
 		c.MaxStreamingSize = 100 * 1024 * 1024 // 默认 100MB
+	}
+
+	if c.RequestStreamBufferLimit <= 0 {
+		c.RequestStreamBufferLimit = 8 * 1024 * 1024 // 默认 8MB
 	}
 
 	if c.MaxBlobFileSize <= 0 {

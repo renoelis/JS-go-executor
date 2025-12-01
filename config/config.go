@@ -104,6 +104,7 @@ type FetchConfig struct {
 	// 🔥 上传限制（新）
 	MaxBufferedFormDataSize  int64 // FormData 缓冲上传限制：Web FormData + Blob、Node.js form-data + Buffer（默认 1MB）
 	MaxStreamingFormDataSize int64 // FormData 流式上传限制：Node.js form-data + Stream（默认 100MB）
+	RequestStreamBufferLimit int64 // ReadableStream 请求体本地缓冲上限（超出则背压阻塞，默认 8MB）
 
 	// 🛡️ SSRF 防护配置（新增）
 	EnableSSRFProtection bool // 是否启用 SSRF 防护（默认：根据部署环境自动判断）
@@ -462,8 +463,9 @@ func LoadConfig() *Config {
 		MaxStreamingSize: int64(getEnvInt("MAX_STREAMING_SIZE_MB", 100)) * 1024 * 1024, // 默认 100MB - 流式读取（getReader）
 
 		// 🔥 上传限制（新方案）
-		MaxBufferedFormDataSize:  int64(getEnvInt("MAX_BUFFERED_FORMDATA_MB", 1)) * 1024 * 1024,    // 默认 1MB - 缓冲上传（Blob/Buffer）
-		MaxStreamingFormDataSize: int64(getEnvInt("MAX_STREAMING_FORMDATA_MB", 100)) * 1024 * 1024, // 默认 100MB - 流式上传（Stream）
+		MaxBufferedFormDataSize:  int64(getEnvInt("MAX_BUFFERED_FORMDATA_MB", 1)) * 1024 * 1024,       // 默认 1MB - 缓冲上传（Blob/Buffer）
+		MaxStreamingFormDataSize: int64(getEnvInt("MAX_STREAMING_FORMDATA_MB", 100)) * 1024 * 1024,    // 默认 100MB - 流式上传（Stream）
+		RequestStreamBufferLimit: int64(getEnvInt("REQUEST_STREAM_BUFFER_LIMIT_MB", 8)) * 1024 * 1024, // 默认 8MB - ReadableStream 请求体背压缓冲
 
 		// 🔧 废弃但保留兼容（优先使用新字段）
 		MaxFormDataSize:     int64(getEnvInt("MAX_FORMDATA_SIZE_MB", 100)) * 1024 * 1024,          // 废弃

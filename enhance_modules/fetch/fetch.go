@@ -3654,12 +3654,14 @@ type requestStreamWriter struct {
 	id     string
 	writer *io.PipeWriter
 
-	mu        sync.Mutex
-	closed    bool
-	err       error
-	queue     [][]byte
-	cond      *sync.Cond
-	closeOnce sync.Once
+	mu               sync.Mutex
+	closed           bool
+	err              error
+	queue            [][]byte
+	queuedBytes      int64
+	maxBufferedBytes int64
+	cond             *sync.Cond
+	closeOnce        sync.Once
 }
 
 func (w *requestStreamWriter) write(data []byte) error {
@@ -3676,8 +3678,20 @@ func (w *requestStreamWriter) write(data []byte) error {
 		w.cond = sync.NewCond(&w.mu)
 	}
 
+	dataLen := int64(len(data))
+	for w.maxBufferedBytes > 0 && w.queuedBytes+dataLen > w.maxBufferedBytes && !w.closed {
+		w.cond.Wait()
+	}
+	if w.closed {
+		if w.err != nil {
+			return w.err
+		}
+		return io.ErrClosedPipe
+	}
+
 	// 将数据入队，由专用 goroutine 顺序写入 PipeWriter，避免阻塞 goja 线程
 	w.queue = append(w.queue, data)
+	w.queuedBytes += dataLen
 	w.cond.Signal()
 	return nil
 }
@@ -3693,6 +3707,7 @@ func (w *requestStreamWriter) closeWithError(err error) {
 		w.err = err
 		// 错误场景直接丢弃待写入队列，避免继续写入阻塞
 		w.queue = nil
+		w.queuedBytes = 0
 	}
 	if w.cond != nil {
 		w.cond.Broadcast()
@@ -3726,6 +3741,10 @@ func (w *requestStreamWriter) start() {
 			// 取出队首数据后立即解锁，避免阻塞写入路径
 			data := w.queue[0]
 			w.queue = w.queue[1:]
+			w.queuedBytes -= int64(len(data))
+			if w.cond != nil {
+				w.cond.Signal() // 唤醒等待背压的写入
+			}
 			w.mu.Unlock()
 
 			if _, err := w.writer.Write(data); err != nil {
@@ -3749,8 +3768,9 @@ func (fe *FetchEnhancer) registerRequestStreamWriter(pw *io.PipeWriter) string {
 	fe.requestStreamSeq++
 	id := fmt.Sprintf("rsw_%d", fe.requestStreamSeq)
 	writer := &requestStreamWriter{
-		id:     id,
-		writer: pw,
+		id:               id,
+		writer:           pw,
+		maxBufferedBytes: fe.config.RequestStreamBufferLimit,
 	}
 	writer.cond = sync.NewCond(&writer.mu)
 	writer.start()

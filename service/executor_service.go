@@ -320,6 +320,7 @@ func (e *JSExecutor) registerModules(cfg *config.Config) {
 			enhance_modules.WithResponseBodyIdleTimeout(cfg.Fetch.ResponseBodyIdleTimeout),
 			enhance_modules.WithMaxResponseSize(cfg.Fetch.MaxResponseSize),
 			enhance_modules.WithMaxStreamingSize(cfg.Fetch.MaxStreamingSize),
+			enhance_modules.WithRequestStreamBufferLimit(cfg.Fetch.RequestStreamBufferLimit),
 			enhance_modules.WithMaxBlobFileSize(cfg.Fetch.MaxBlobFileSize),
 			enhance_modules.WithTransportConfig(&enhance_modules.HTTPTransportConfig{
 				MaxIdleConns:          cfg.Fetch.HTTPMaxIdleConns,
