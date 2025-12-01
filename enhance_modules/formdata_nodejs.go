@@ -1427,6 +1427,10 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 			timeout = cfg.Timeout
 		}
 	}
+	// 超时下限保护：cfg.Timeout 可能为 0（自定义配置漏校验），统一回落到 30s
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
 	if ctx != nil {
 		ctxDoneCh = ctx.Done()
 	}
@@ -1525,7 +1529,6 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 		if len(data) == 0 {
 			return goja.Undefined()
 		}
-		bufCopy := append([]byte(nil), data...)
 		func() {
 			defer func() {
 				// channel 可能已被关闭，忽略 panic
@@ -1540,7 +1543,7 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 				signalClose(fmt.Errorf("readable stream canceled: %v", ctx.Err()))
 			case <-timeoutCh:
 				signalClose(fmt.Errorf("readable stream timeout after %v", timeout))
-			case chunkCh <- bufCopy:
+			case chunkCh <- data:
 				// 正常写入
 			}
 		}()
