@@ -3688,6 +3688,7 @@ type requestStreamWriter struct {
 	maxBufferedBytes int64
 	cond             *sync.Cond
 	closeOnce        sync.Once
+	closeTimer       *time.Timer
 }
 
 func (w *requestStreamWriter) write(data []byte) error {
@@ -3729,6 +3730,9 @@ func (w *requestStreamWriter) closeWithError(err error) {
 		return
 	}
 	w.closed = true
+	if w.closeTimer != nil {
+		w.closeTimer.Stop()
+	}
 	if err != nil {
 		w.err = err
 		// 错误场景直接丢弃待写入队列，避免继续写入阻塞
@@ -3751,7 +3755,13 @@ func (w *requestStreamWriter) closeWithError(err error) {
 	}
 }
 
-func (w *requestStreamWriter) start() {
+func (w *requestStreamWriter) start(timeout time.Duration) {
+	// 防御性 watchdog：如果长时间没有关闭信号，按超时自动关闭，避免 goroutine 永久等待
+	if timeout > 0 {
+		w.closeTimer = time.AfterFunc(timeout, func() {
+			w.closeWithError(context.DeadlineExceeded)
+		})
+	}
 	go func() {
 		for {
 			w.mu.Lock()
@@ -3799,7 +3809,7 @@ func (fe *FetchEnhancer) registerRequestStreamWriter(pw *io.PipeWriter) string {
 		maxBufferedBytes: fe.config.RequestStreamBufferLimit,
 	}
 	writer.cond = sync.NewCond(&writer.mu)
-	writer.start()
+	writer.start(fe.config.RequestTimeout)
 	fe.requestStreamWriters[id] = writer
 	return id
 }
