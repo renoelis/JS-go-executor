@@ -74,32 +74,72 @@ func NewFetchEnhancer(args ...time.Duration) *FetchEnhancer {
 // timeout, responseReadTimeout, maxBufferedFormDataSize, maxStreamingFormDataSize,
 // enableChunked, maxBlobFileSize, bufferSize, maxFileSize,
 // maxResponseSize, maxStreamingSize, httpTransportConfig, responseBodyIdleTimeout, ssrfProtectionConfig
-func NewFetchEnhancerWithConfig(args ...interface{}) *FetchEnhancer {
+func NewFetchEnhancerWithConfig(args ...interface{}) (*FetchEnhancer, error) {
+	argErr := func(index int, expect string, got interface{}) error {
+		return fmt.Errorf("NewFetchEnhancerWithConfig: 第 %d 个参数期望 %s，收到 %T", index, expect, got)
+	}
+
 	// 新 API：接收单个 *FetchConfig 参数
 	if len(args) == 1 {
 		if config, ok := args[0].(*FetchConfig); ok {
-			return fetch.NewFetchEnhancerWithConfig(config)
+			return fetch.NewFetchEnhancerWithConfig(config), nil
 		}
+		return nil, argErr(1, "*FetchConfig", args[0])
 	}
 
 	// 旧 API：固定 13 个参数
 	if len(args) == 13 {
 		timeout, ok1 := args[0].(time.Duration)
+		if !ok1 {
+			return nil, argErr(1, "time.Duration", args[0])
+		}
 		responseReadTimeout, ok2 := args[1].(time.Duration)
+		if !ok2 {
+			return nil, argErr(2, "time.Duration", args[1])
+		}
 		maxBufferedFormDataSize, ok3 := args[2].(int64)
+		if !ok3 {
+			return nil, argErr(3, "int64", args[2])
+		}
 		maxStreamingFormDataSize, ok4 := args[3].(int64)
+		if !ok4 {
+			return nil, argErr(4, "int64", args[3])
+		}
 		enableChunked, ok5 := args[4].(bool)
+		if !ok5 {
+			return nil, argErr(5, "bool", args[4])
+		}
 		maxBlobFileSize, ok6 := args[5].(int64)
+		if !ok6 {
+			return nil, argErr(6, "int64", args[5])
+		}
 		bufferSize, ok7 := args[6].(int)
+		if !ok7 {
+			return nil, argErr(7, "int", args[6])
+		}
 		maxFileSize, ok8 := args[7].(int64)
+		if !ok8 {
+			return nil, argErr(8, "int64", args[7])
+		}
 		maxResponseSize, ok9 := args[8].(int64)
+		if !ok9 {
+			return nil, argErr(9, "int64", args[8])
+		}
 		maxStreamingSize, ok10 := args[9].(int64)
+		if !ok10 {
+			return nil, argErr(10, "int64", args[9])
+		}
 		httpTransportConfig, ok11 := args[10].(*transport.HTTPTransportConfig)
+		if !ok11 {
+			return nil, argErr(11, "*transport.HTTPTransportConfig", args[10])
+		}
 		responseBodyIdleTimeout, ok12 := args[11].(time.Duration)
+		if !ok12 {
+			return nil, argErr(12, "time.Duration", args[11])
+		}
 		ssrfProtectionConfig, ok13 := args[12].(*ssrf.SSRFProtectionConfig)
-
-		if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 || !ok7 || !ok8 || !ok9 || !ok10 || !ok11 || !ok12 || !ok13 {
-			panic("NewFetchEnhancerWithConfig: 13参数版本类型不匹配")
+		if !ok13 {
+			return nil, argErr(13, "*ssrf.SSRFProtectionConfig", args[12])
 		}
 
 		config := fetch.NewFetchConfig(
@@ -121,11 +161,20 @@ func NewFetchEnhancerWithConfig(args ...interface{}) *FetchEnhancer {
 			fetch.WithSSRFConfig(ssrfProtectionConfig),
 		)
 
-		return fetch.NewFetchEnhancerWithConfig(config)
+		return fetch.NewFetchEnhancerWithConfig(config), nil
 	}
 
 	// 参数错误
-	panic(fmt.Sprintf("NewFetchEnhancerWithConfig: 不支持的参数数量 %d（期望 1 或 13）", len(args)))
+	return nil, fmt.Errorf("NewFetchEnhancerWithConfig: 不支持的参数数量 %d（期望 1 或 13）", len(args))
+}
+
+// MustNewFetchEnhancerWithConfig 兼容旧行为：内部 panic，供确需失败即崩溃的场景使用
+func MustNewFetchEnhancerWithConfig(args ...interface{}) *FetchEnhancer {
+	enhancer, err := NewFetchEnhancerWithConfig(args...)
+	if err != nil {
+		panic(err)
+	}
+	return enhancer
 }
 
 // NewStreamingFormData 创建 StreamingFormData 实例

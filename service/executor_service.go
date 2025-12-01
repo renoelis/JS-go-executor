@@ -313,7 +313,7 @@ func (e *JSExecutor) registerModules(cfg *config.Config) {
 	e.moduleRegistry.Register(enhance_modules.NewCryptoJSEnhancerWithEmbedded(assets.CryptoJS))
 
 	// 注册 Fetch 模块
-	fetchEnhancer := enhance_modules.NewFetchEnhancerWithConfig(
+	fetchEnhancer, fetchErr := enhance_modules.NewFetchEnhancerWithConfig(
 		enhance_modules.NewFetchConfig(
 			enhance_modules.WithRequestTimeout(cfg.Fetch.Timeout),
 			enhance_modules.WithResponseReadTimeout(cfg.Fetch.ResponseReadTimeout),
@@ -348,6 +348,10 @@ func (e *JSExecutor) registerModules(cfg *config.Config) {
 			),
 		),
 	)
+	if fetchErr != nil {
+		zap.L().Error("创建 Fetch 增强器失败，使用默认配置回退", zap.Error(fetchErr))
+		fetchEnhancer = enhance_modules.NewFetchEnhancer()
+	}
 	e.moduleRegistry.Register(fetchEnhancer)
 
 	// 注册 FormData 模块（需要访问 fetchEnhancer）
