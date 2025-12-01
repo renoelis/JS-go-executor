@@ -222,9 +222,26 @@ func ExecuteRequestAsync(
 	}
 
 	// 5. 设置请求头
-	if headers, ok := req.options["headers"].(map[string]interface{}); ok {
+	if headers, ok := req.options["headers"].(map[string][]string); ok {
+		for key, values := range headers {
+			for _, v := range values {
+				httpReq.Header.Add(key, fmt.Sprintf("%v", v))
+			}
+		}
+	} else if headers, ok := req.options["headers"].(map[string]interface{}); ok {
 		for key, value := range headers {
-			httpReq.Header.Set(key, fmt.Sprintf("%v", value))
+			switch vals := value.(type) {
+			case []string:
+				for _, v := range vals {
+					httpReq.Header.Add(key, fmt.Sprintf("%v", v))
+				}
+			case []interface{}:
+				for _, v := range vals {
+					httpReq.Header.Add(key, fmt.Sprintf("%v", v))
+				}
+			default:
+				httpReq.Header.Set(key, fmt.Sprintf("%v", value))
+			}
 		}
 	}
 	if contentType != "" && httpReq.Header.Get("Content-Type") == "" {

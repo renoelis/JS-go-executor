@@ -46,31 +46,27 @@ func normalizeRequestMethodForProperty(method string) string {
 	return method
 }
 
-func setHeaderWithValidation(headers map[string]string, runtime *goja.Runtime, ctx, name, value string) string {
+func setHeaderWithValidation(headers map[string][]string, runtime *goja.Runtime, ctx, name, value string) string {
 	ensureValidHeaderName(runtime, ctx, name)
 	normalized := normalizeHeaderValue(value)
 	ensureValidHeaderValue(runtime, ctx, normalized)
 	ensureASCIIHeaderValue(runtime, normalized)
-	headers[strings.ToLower(name)] = normalized
+	headers[strings.ToLower(name)] = []string{normalized}
 	return normalized
 }
 
-func appendHeaderWithValidation(headers map[string]string, runtime *goja.Runtime, ctx, name, value string) string {
+func appendHeaderWithValidation(headers map[string][]string, runtime *goja.Runtime, ctx, name, value string) string {
 	ensureValidHeaderName(runtime, ctx, name)
 	normalized := normalizeHeaderValue(value)
 	ensureValidHeaderValue(runtime, ctx, normalized)
 	ensureASCIIHeaderValue(runtime, normalized)
 	key := strings.ToLower(name)
-	if existing, ok := headers[key]; ok {
-		headers[key] = existing + ", " + normalized
-	} else {
-		headers[key] = normalized
-	}
+	headers[key] = append(headers[key], normalized)
 	return normalized
 }
 
 // sortedHeaderKeys 返回按字母顺序排序的 header 名称列表
-func sortedHeaderKeys(headers map[string]string) []string {
+func sortedHeaderKeys(headers map[string][]string) []string {
 	keys := make([]string, 0, len(headers))
 	for key := range headers {
 		keys = append(keys, key)
@@ -92,7 +88,7 @@ func sortedHeaderKeys(headers map[string]string) []string {
 // - 自动转换 header 名称为小写（HTTP/2 规范）
 func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) *goja.Object {
 	return func(call goja.ConstructorCall) *goja.Object {
-		headers := make(map[string]string)
+		headers := make(map[string][]string)
 		setCookieKey := strings.ToLower("Set-Cookie")
 		var setCookieValues []string
 
@@ -111,10 +107,12 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 		// 从参数初始化 Headers
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) && !goja.IsNull(call.Arguments[0]) {
 			if normalized, err := normalizeHeadersInit(runtime, call.Arguments[0], "Headers.append"); err == nil {
-				for key, value := range normalized {
-					norm := setHeaderWithValidation(headers, runtime, "Headers.append", key, fmt.Sprintf("%v", value))
-					if strings.EqualFold(key, "Set-Cookie") {
-						setSetCookie([]string{norm})
+				for key, values := range normalized {
+					for _, value := range values {
+						norm := appendHeaderWithValidation(headers, runtime, "Headers.append", key, fmt.Sprintf("%v", value))
+						if strings.EqualFold(key, "Set-Cookie") {
+							appendSetCookie(norm)
+						}
 					}
 				}
 			} else {
@@ -132,8 +130,8 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			nameRaw := call.Arguments[0].String()
 			ensureValidHeaderName(runtime, "Headers.get", nameRaw)
 			name := strings.ToLower(nameRaw)
-			if value, ok := headers[name]; ok {
-				return runtime.ToValue(value)
+			if values, ok := headers[name]; ok && len(values) > 0 {
+				return runtime.ToValue(strings.Join(values, ", "))
 			}
 			return goja.Null()
 		})
@@ -160,8 +158,8 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			nameRaw := call.Arguments[0].String()
 			ensureValidHeaderName(runtime, "Headers.has", nameRaw)
 			name := strings.ToLower(nameRaw)
-			_, ok := headers[name]
-			return runtime.ToValue(ok)
+			values, ok := headers[name]
+			return runtime.ToValue(ok && len(values) > 0)
 		})
 
 		// delete(name) - 删除头部
@@ -209,7 +207,7 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			}
 
 			for _, key := range sortedHeaderKeys(headers) {
-				value := headers[key]
+				value := strings.Join(headers[key], ", ")
 				if _, err := callback(thisArg, runtime.ToValue(value), runtime.ToValue(key), obj); err != nil {
 					panic(err)
 				}
@@ -221,7 +219,7 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 		obj.Set("entries", func(call goja.FunctionCall) goja.Value {
 			entries := make([]interface{}, 0, len(headers))
 			for _, key := range sortedHeaderKeys(headers) {
-				entries = append(entries, []interface{}{key, headers[key]})
+				entries = append(entries, []interface{}{key, strings.Join(headers[key], ", ")})
 			}
 
 			iterator := runtime.NewObject()
@@ -280,7 +278,7 @@ func CreateHeadersConstructor(runtime *goja.Runtime) func(goja.ConstructorCall) 
 			keys := sortedHeaderKeys(headers)
 			values := make([]string, 0, len(keys))
 			for _, key := range keys {
-				values = append(values, headers[key])
+				values = append(values, strings.Join(headers[key], ", "))
 			}
 
 			iterator := runtime.NewObject()
@@ -410,7 +408,7 @@ type requestCloneContext struct {
 	method              string
 	body                interface{}
 	hasBody             bool
-	headers             map[string]string
+	headers             map[string][]string
 	cacheValue          string
 	credentialsValue    string
 	modeValue           string
@@ -973,9 +971,9 @@ func attachRequestCloneMethod(runtime *goja.Runtime, requestObj *goja.Object, ct
 			}
 		}
 
-		clonedHeaders := make(map[string]string, len(targetCtx.headers))
+		clonedHeaders := make(map[string][]string, len(targetCtx.headers))
 		for k, v := range targetCtx.headers {
-			clonedHeaders[k] = v
+			clonedHeaders[k] = append([]string(nil), v...)
 		}
 
 		clonedRequest := runtime.NewObject()
@@ -1151,16 +1149,16 @@ func rejectRequestBodyPromise(runtime *goja.Runtime, err interface{}) goja.Value
 
 // createHeadersObject 创建一个带有完整 Headers 接口方法的对象
 // 这个辅助函数用于为 Request/Response 对象创建 headers 属性
-func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja.Object {
+func createHeadersObject(runtime *goja.Runtime, headers map[string][]string) *goja.Object {
 	obj := runtime.NewObject()
 	if headers == nil {
-		headers = make(map[string]string)
+		headers = make(map[string][]string)
 	}
 	setCookieKey := strings.ToLower("Set-Cookie")
 	var setCookieValues []string
 
-	if value, ok := headers[setCookieKey]; ok && value != "" {
-		setCookieValues = append(setCookieValues, value)
+	if values, ok := headers[setCookieKey]; ok && len(values) > 0 {
+		setCookieValues = append(setCookieValues, values...)
 	}
 
 	setSetCookie := func(values []string) {
@@ -1181,8 +1179,8 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 			return goja.Null()
 		}
 		name := strings.ToLower(call.Arguments[0].String())
-		if value, ok := headers[name]; ok {
-			return runtime.ToValue(value)
+		if values, ok := headers[name]; ok && len(values) > 0 {
+			return runtime.ToValue(strings.Join(values, ", "))
 		}
 		return goja.Null()
 	})
@@ -1207,8 +1205,8 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 			return runtime.ToValue(false)
 		}
 		name := strings.ToLower(call.Arguments[0].String())
-		_, ok := headers[name]
-		return runtime.ToValue(ok)
+		values, ok := headers[name]
+		return runtime.ToValue(ok && len(values) > 0)
 	})
 
 	// delete(name) - 删除头部
@@ -1254,7 +1252,7 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 		}
 
 		for _, key := range sortedHeaderKeys(headers) {
-			value := headers[key]
+			value := strings.Join(headers[key], ", ")
 			if _, err := callback(thisArg, runtime.ToValue(value), runtime.ToValue(key), obj); err != nil {
 				panic(err)
 			}
@@ -1266,7 +1264,7 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 	obj.Set("entries", func(call goja.FunctionCall) goja.Value {
 		entries := make([]interface{}, 0, len(headers))
 		for _, key := range sortedHeaderKeys(headers) {
-			entries = append(entries, []interface{}{key, headers[key]})
+			entries = append(entries, []interface{}{key, strings.Join(headers[key], ", ")})
 		}
 
 		iterator := runtime.NewObject()
@@ -1324,7 +1322,7 @@ func createHeadersObject(runtime *goja.Runtime, headers map[string]string) *goja
 		keys := sortedHeaderKeys(headers)
 		values := make([]string, 0, len(keys))
 		for _, key := range keys {
-			values = append(values, headers[key])
+			values = append(values, strings.Join(headers[key], ", "))
 		}
 
 		iterator := runtime.NewObject()
@@ -1583,7 +1581,7 @@ func CreateRequestConstructor(runtime *goja.Runtime, fe *FetchEnhancer) func(goj
 		methodDisplay := normalizeRequestMethodForProperty(methodSource)
 
 		// 解析 headers
-		headers := make(map[string]string)
+		headers := make(map[string][]string)
 		parseHeaders := func(val goja.Value) bool {
 			if val == nil || goja.IsUndefined(val) || goja.IsNull(val) {
 				return false
@@ -1592,22 +1590,33 @@ func CreateRequestConstructor(runtime *goja.Runtime, fe *FetchEnhancer) func(goj
 			if err != nil {
 				panic(runtime.NewTypeError("解析 headers 失败: " + err.Error()))
 			}
-			for key, value := range normalized {
-				headers[strings.ToLower(key)] = normalizeHeaderValue(fmt.Sprintf("%v", value))
+			for key, values := range normalized {
+				for _, v := range values {
+					headers[strings.ToLower(key)] = append(headers[strings.ToLower(key)], normalizeHeaderValue(fmt.Sprintf("%v", v)))
+				}
 			}
 			return len(normalized) > 0
 		}
 
 		if !parseHeaders(headersVal) {
-			if h, ok := options["headers"].(map[string]interface{}); ok {
+			switch h := options["headers"].(type) {
+			case map[string]interface{}:
 				for key, value := range h {
-					headers[strings.ToLower(key)] = normalizeHeaderValue(fmt.Sprintf("%v", value))
+					headers[strings.ToLower(key)] = append(headers[strings.ToLower(key)], normalizeHeaderValue(fmt.Sprintf("%v", value)))
+				}
+			case map[string][]string:
+				for key, values := range h {
+					for _, v := range values {
+						headers[strings.ToLower(key)] = append(headers[strings.ToLower(key)], normalizeHeaderValue(v))
+					}
 				}
 			}
 		}
 
-		for _, v := range headers {
-			ensureASCIIHeaderValue(runtime, v)
+		for _, vals := range headers {
+			for _, v := range vals {
+				ensureASCIIHeaderValue(runtime, v)
+			}
 		}
 
 		// 解析 body（保持原始类型）

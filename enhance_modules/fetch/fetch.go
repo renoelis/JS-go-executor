@@ -888,8 +888,8 @@ func addHTTPHeaderTupleFromExport(runtime *goja.Runtime, ctx string, entry inter
 	panic(runtime.NewTypeError(fmt.Sprintf("%s: Invalid header entry", ctx)))
 }
 
-func normalizeHeadersInit(runtime *goja.Runtime, value goja.Value, opCtx string) (map[string]interface{}, error) {
-	result := make(map[string]interface{})
+func normalizeHeadersInit(runtime *goja.Runtime, value goja.Value, opCtx string) (map[string][]string, error) {
+	result := make(map[string][]string)
 	if runtime == nil || value == nil || goja.IsUndefined(value) || goja.IsNull(value) {
 		return result, nil
 	}
@@ -917,6 +917,13 @@ func normalizeHeadersInit(runtime *goja.Runtime, value goja.Value, opCtx string)
 				addNormalizedHeaderEntry(runtime, opCtx, key, fmt.Sprintf("%v", val), result)
 			}
 			return result, nil
+		case map[string][]string:
+			for key, vals := range h {
+				for _, v := range vals {
+					addNormalizedHeaderEntry(runtime, opCtx, key, v, result)
+				}
+			}
+			return result, nil
 		case map[string]string:
 			for key, val := range h {
 				addNormalizedHeaderEntry(runtime, opCtx, key, val, result)
@@ -933,7 +940,7 @@ func normalizeHeadersInit(runtime *goja.Runtime, value goja.Value, opCtx string)
 	return nil, fmt.Errorf("%s: Invalid Headers init input", opCtx)
 }
 
-func populateHeadersFromObject(runtime *goja.Runtime, value goja.Value, target map[string]interface{}, opCtx string) (bool, error) {
+func populateHeadersFromObject(runtime *goja.Runtime, value goja.Value, target map[string][]string, opCtx string) (bool, error) {
 	obj, ok := value.(*goja.Object)
 	if !ok || obj == nil {
 		return false, nil
@@ -999,7 +1006,7 @@ func populateHeadersFromObject(runtime *goja.Runtime, value goja.Value, target m
 	return false, nil
 }
 
-func iterateHeaderIterator(runtime *goja.Runtime, iteratorVal goja.Value, target map[string]interface{}, opCtx string) error {
+func iterateHeaderIterator(runtime *goja.Runtime, iteratorVal goja.Value, target map[string][]string, opCtx string) error {
 	if iteratorVal == nil || goja.IsUndefined(iteratorVal) || goja.IsNull(iteratorVal) {
 		return nil
 	}
@@ -1034,7 +1041,7 @@ func iterateHeaderIterator(runtime *goja.Runtime, iteratorVal goja.Value, target
 	return nil
 }
 
-func appendHeaderTuplesFromArray(runtime *goja.Runtime, opCtx string, arrayObj *goja.Object, target map[string]interface{}) {
+func appendHeaderTuplesFromArray(runtime *goja.Runtime, opCtx string, arrayObj *goja.Object, target map[string][]string) {
 	if arrayObj == nil || target == nil {
 		return
 	}
@@ -1046,7 +1053,7 @@ func appendHeaderTuplesFromArray(runtime *goja.Runtime, opCtx string, arrayObj *
 	}
 }
 
-func appendHeaderTuplesFromSlice(runtime *goja.Runtime, opCtx string, entries []interface{}, target map[string]interface{}) {
+func appendHeaderTuplesFromSlice(runtime *goja.Runtime, opCtx string, entries []interface{}, target map[string][]string) {
 	if target == nil {
 		return
 	}
@@ -1055,7 +1062,7 @@ func appendHeaderTuplesFromSlice(runtime *goja.Runtime, opCtx string, entries []
 	}
 }
 
-func appendHeaderTupleValue(runtime *goja.Runtime, opCtx string, val goja.Value, target map[string]interface{}) {
+func appendHeaderTupleValue(runtime *goja.Runtime, opCtx string, val goja.Value, target map[string][]string) {
 	if target == nil || val == nil || goja.IsUndefined(val) || goja.IsNull(val) {
 		return
 	}
@@ -1073,7 +1080,7 @@ func appendHeaderTupleValue(runtime *goja.Runtime, opCtx string, val goja.Value,
 	appendHeaderTupleFromExport(runtime, opCtx, val.Export(), target)
 }
 
-func appendHeaderTupleFromExport(runtime *goja.Runtime, opCtx string, entry interface{}, target map[string]interface{}) {
+func appendHeaderTupleFromExport(runtime *goja.Runtime, opCtx string, entry interface{}, target map[string][]string) {
 	if target == nil || entry == nil {
 		return
 	}
@@ -1096,7 +1103,7 @@ func appendHeaderTupleFromExport(runtime *goja.Runtime, opCtx string, entry inte
 	panic(runtime.NewTypeError(fmt.Sprintf("%s: Invalid header entry", opCtx)))
 }
 
-func addNormalizedHeaderEntry(runtime *goja.Runtime, opCtx, name, value string, target map[string]interface{}) {
+func addNormalizedHeaderEntry(runtime *goja.Runtime, opCtx, name, value string, target map[string][]string) {
 	if target == nil {
 		return
 	}
@@ -1105,18 +1112,32 @@ func addNormalizedHeaderEntry(runtime *goja.Runtime, opCtx, name, value string, 
 	ensureValidHeaderValue(runtime, opCtx, normalized)
 	ensureASCIIHeaderValue(runtime, normalized)
 	lowerName := strings.ToLower(name)
-	if existing, ok := target[lowerName]; ok {
-		existingStr := fmt.Sprintf("%v", existing)
-		if existingStr == "" {
-			target[lowerName] = normalized
-		} else if normalized == "" {
-			target[lowerName] = existingStr
-		} else {
-			target[lowerName] = existingStr + ", " + normalized
-		}
-	} else {
-		target[lowerName] = normalized
+	target[lowerName] = append(target[lowerName], normalized)
+}
+
+// ensureHeaderOptionsMap 确保 options 中的 headers 使用 map[string][]string 形式存储
+func ensureHeaderOptionsMap(options map[string]interface{}) map[string][]string {
+	if options == nil {
+		return nil
 	}
+
+	if headers, ok := options["headers"].(map[string][]string); ok && headers != nil {
+		return headers
+	}
+
+	if headers, ok := options["headers"].(map[string]interface{}); ok && headers != nil {
+		converted := make(map[string][]string, len(headers))
+		for key, val := range headers {
+			lower := strings.ToLower(key)
+			converted[lower] = append(converted[lower], normalizeHeaderValue(fmt.Sprintf("%v", val)))
+		}
+		options["headers"] = converted
+		return converted
+	}
+
+	newMap := make(map[string][]string)
+	options["headers"] = newMap
+	return newMap
 }
 
 func (fe *FetchEnhancer) createBlobFromBytes(runtime *goja.Runtime, data []byte, contentType string) (*goja.Object, error) {
@@ -1585,13 +1606,9 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 
 			if username != "" {
 				authHeader := "Basic " + base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", username, password)))
-				if headers, ok := options["headers"].(map[string]interface{}); ok {
+				if headers := ensureHeaderOptionsMap(options); headers != nil {
 					if _, exists := headers["authorization"]; !exists {
-						headers["authorization"] = authHeader
-					}
-				} else {
-					options["headers"] = map[string]interface{}{
-						"authorization": authHeader,
+						headers["authorization"] = []string{authHeader}
 					}
 				}
 			}
@@ -1668,13 +1685,9 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 								options["__formDataBoundary"] = boundary
 
 								// 自动设置 Content-Type（如果用户没有手动设置）
-								if headers, ok := options["headers"].(map[string]interface{}); ok {
+								if headers := ensureHeaderOptionsMap(options); headers != nil {
 									if _, hasContentType := headers["content-type"]; !hasContentType {
-										headers["content-type"] = fmt.Sprintf("multipart/form-data; boundary=%s", boundary)
-									}
-								} else {
-									options["headers"] = map[string]interface{}{
-										"content-type": fmt.Sprintf("multipart/form-data; boundary=%s", boundary),
+										headers["content-type"] = []string{fmt.Sprintf("multipart/form-data; boundary=%s", boundary)}
 									}
 								}
 							} else {
@@ -1738,13 +1751,9 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 							options["__formDataBoundary"] = boundary
 
 							// 自动设置 Content-Type
-							if headers, ok := options["headers"].(map[string]interface{}); ok {
+							if headers := ensureHeaderOptionsMap(options); headers != nil {
 								if _, hasContentType := headers["content-type"]; !hasContentType {
-									headers["content-type"] = fmt.Sprintf("multipart/form-data; boundary=%s", boundary)
-								}
-							} else {
-								options["headers"] = map[string]interface{}{
-									"content-type": fmt.Sprintf("multipart/form-data; boundary=%s", boundary),
+									headers["content-type"] = []string{fmt.Sprintf("multipart/form-data; boundary=%s", boundary)}
 								}
 							}
 						}
@@ -1786,20 +1795,9 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 							if ct != "" {
 								// 如果没有手动设置 Content-Type，则使用自动检测的
 								// 🔥 修复：大小写不敏感检查 Content-Type
-								if headers, ok := options["headers"].(map[string]interface{}); ok {
-									hasContentType := false
-									for key := range headers {
-										if strings.EqualFold(key, "Content-Type") {
-											hasContentType = true
-											break
-										}
-									}
-									if !hasContentType {
-										headers["Content-Type"] = ct
-									}
-								} else {
-									options["headers"] = map[string]interface{}{
-										"Content-Type": ct,
+								if headers := ensureHeaderOptionsMap(options); headers != nil {
+									if _, hasContentType := headers["content-type"]; !hasContentType {
+										headers["content-type"] = []string{ct}
 									}
 								}
 							}
@@ -1868,6 +1866,12 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 		if headers, ok := options["headers"].(map[string]interface{}); ok {
 			for _, v := range headers {
 				ensureASCIIHeaderValue(runtime, fmt.Sprintf("%v", v))
+			}
+		} else if headers, ok := options["headers"].(map[string][]string); ok {
+			for _, vals := range headers {
+				for _, v := range vals {
+					ensureASCIIHeaderValue(runtime, v)
+				}
 			}
 		}
 
