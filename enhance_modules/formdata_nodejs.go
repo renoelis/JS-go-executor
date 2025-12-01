@@ -10,6 +10,7 @@ import (
 	"flow-codeblock-go/utils"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	neturl "net/url"
 	"reflect"
@@ -212,7 +213,24 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 					if _, isFunc := goja.AssertFunction(value); isFunc {
 						valueForStream = runtime.ToValue("[function]")
 					} else {
-						valueForStream = value
+						exportType := value.ExportType()
+						// 与 Node form-data 对齐：数字（含 NaN/Infinity/-0）需要按 JS 规则转字符串
+						if exportType != nil {
+							switch exportType.Kind() {
+							case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+								reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+								reflect.Float32, reflect.Float64:
+								valueForStream = runtime.ToValue(value.String())
+							}
+						}
+						if valueForStream == nil {
+							if _, ok := value.Export().(*big.Int); ok {
+								valueForStream = runtime.ToValue(value.String())
+							}
+						}
+						if valueForStream == nil {
+							valueForStream = value
+						}
 					}
 				}
 				idxValue := fmt.Sprintf("%d", length+1)
@@ -1171,7 +1189,13 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 		return nil
 	case int, int32, int64, float32, float64:
 		// 数字类型
-		nfm.appendField(streamingFormData, name, fmt.Sprintf("%v", v), contentType, hasKnownLength, knownLength)
+		nfm.appendField(streamingFormData, name, value.String(), contentType, hasKnownLength, knownLength)
+		return nil
+	case uint, uint8, uint16, uint32, uint64:
+		nfm.appendField(streamingFormData, name, value.String(), contentType, hasKnownLength, knownLength)
+		return nil
+	case *big.Int:
+		nfm.appendField(streamingFormData, name, value.String(), contentType, hasKnownLength, knownLength)
 		return nil
 	case []uint8:
 		// []byte 类型 - 直接作为文件
