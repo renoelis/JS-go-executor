@@ -1614,10 +1614,11 @@ func exportNodeStreamChunk(runtime *goja.Runtime, value goja.Value) ([]byte, err
 		return nil, fmt.Errorf("runtime is nil")
 	}
 
-	// 尝试直接导出为 []byte（支持 Buffer/TypedArray）
+	// 尝试直接导出为 []byte（支持 Buffer/TypedArray/ArrayBuffer）
 	var data []byte
 	if err := runtime.ExportTo(value, &data); err == nil {
-		return append([]byte(nil), data...), nil
+		// ExportTo 返回的 []byte 已经是底层视图，避免额外拷贝
+		return data, nil
 	}
 
 	// 字符串处理
@@ -1629,10 +1630,11 @@ func exportNodeStreamChunk(runtime *goja.Runtime, value goja.Value) ([]byte, err
 		case string:
 			return []byte(v), nil
 		case []byte:
-			return append([]byte(nil), v...), nil
+			// 已经是字节切片，直接返回
+			return v, nil
 		case goja.ArrayBuffer:
 			bytes := v.Bytes()
-			return append([]byte(nil), bytes...), nil
+			return bytes, nil
 		}
 	}
 
@@ -1641,7 +1643,7 @@ func exportNodeStreamChunk(runtime *goja.Runtime, value goja.Value) ([]byte, err
 		if exported := obj.Export(); exported != nil {
 			if ab, ok := exported.(goja.ArrayBuffer); ok {
 				bytes := ab.Bytes()
-				return append([]byte(nil), bytes...), nil
+				return bytes, nil
 			}
 		}
 	}
