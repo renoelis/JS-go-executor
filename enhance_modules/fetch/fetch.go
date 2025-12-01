@@ -378,6 +378,12 @@ func (fe *FetchEnhancer) ClearRuntimeContext(runtime *goja.Runtime) {
 	fe.runtimeCtxMu.Unlock()
 }
 
+// GetRuntimeContext 返回与 runtime 关联的上层 context（只读）
+// 用于其他模块（如 form-data）继承相同的生命周期，避免后台 goroutine 越界存活
+func (fe *FetchEnhancer) GetRuntimeContext(runtime *goja.Runtime) context.Context {
+	return fe.getRuntimeContext(runtime)
+}
+
 // getRuntimeContext 读取与 runtime 关联的上层 context（可能为空）
 func (fe *FetchEnhancer) getRuntimeContext(runtime *goja.Runtime) context.Context {
 	if fe == nil || runtime == nil {

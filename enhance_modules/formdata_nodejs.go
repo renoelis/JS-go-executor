@@ -75,6 +75,12 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 		} else {
 			config = formdata.DefaultFormDataStreamConfig()
 		}
+		// 将 runtime 关联的上层 context 传递给 FormData，确保流式 goroutine 在请求结束时及时退出
+		if nfm.fetchEnhancer != nil {
+			if ctx := nfm.fetchEnhancer.GetRuntimeContext(runtime); ctx != nil {
+				config.Context = ctx
+			}
+		}
 		streamingFormData := NewStreamingFormData(config)
 		if streamingFormData == nil {
 			panic(runtime.NewGoError(fmt.Errorf("创建 StreamingFormData 实例失败")))
@@ -1599,17 +1605,17 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 
 	dataHandler := func(call goja.FunctionCall) goja.Value {
 		chunk := call.Argument(0)
-			if goja.IsUndefined(chunk) || goja.IsNull(chunk) {
-				return goja.Undefined()
-			}
-			data, err := exportNodeStreamChunk(runtime, chunk)
-			if err != nil {
-				signalClose(err, true)
-				return goja.Undefined()
-			}
-			if len(data) == 0 {
-				return goja.Undefined()
-			}
+		if goja.IsUndefined(chunk) || goja.IsNull(chunk) {
+			return goja.Undefined()
+		}
+		data, err := exportNodeStreamChunk(runtime, chunk)
+		if err != nil {
+			signalClose(err, true)
+			return goja.Undefined()
+		}
+		if len(data) == 0 {
+			return goja.Undefined()
+		}
 
 		func() {
 			defer func() {
@@ -1877,6 +1883,19 @@ func isBufferValue(runtime *goja.Runtime, val goja.Value) bool {
 func scheduleAsync(runtime *goja.Runtime, fn func()) {
 	if runtime == nil || fn == nil {
 		return
+	}
+
+	// 优先使用 Fetch 注入的 LoopScheduler，在 EventLoop 线程内调度
+	if schedulerVal := runtime.Get(fetch.LoopSchedulerGlobalKey); schedulerVal != nil && !goja.IsUndefined(schedulerVal) && !goja.IsNull(schedulerVal) {
+		if scheduler, ok := schedulerVal.Export().(fetch.LoopScheduler); ok && scheduler != nil {
+			if scheduler.RunOnLoop(func(*goja.Runtime) {
+				fn()
+			}) {
+				return
+			}
+			// RunOnLoop 返回 false 代表 loop 已不可用，直接返回以避免在已关闭的 runtime 上调度
+			return
+		}
 	}
 
 	if siVal := runtime.GlobalObject().Get("setImmediate"); siVal != nil && !goja.IsUndefined(siVal) && !goja.IsNull(siVal) {
