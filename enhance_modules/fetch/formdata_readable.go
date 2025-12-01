@@ -58,6 +58,9 @@ type FormDataReadable struct {
 	readReqChan    chan struct{}   // 触发单次读取的请求通道
 	readWorkerOnce sync.Once       // 确保只启动一个读取 worker
 	readInFlight   bool            // 是否有正在进行的读取
+	stopChan       chan struct{}   // 触发读协程退出
+	stopOnce       sync.Once
+	readChanOnce   sync.Once // 保护 readChan 关闭
 	// pipe 相关
 	pipeDestination *goja.Object  // pipe 目标
 	pipeWriteFunc   goja.Callable // 目标的 write 方法
@@ -91,6 +94,7 @@ func NewFormDataReadable(readerFactory func() (io.ReadCloser, error), runtime *g
 		listeners:     make(map[string][]onceWrapper),
 		readChan:      make(chan readResult, 4),
 		readReqChan:   make(chan struct{}, 1),
+		stopChan:      make(chan struct{}),
 		consumed:      false,
 		isPaused:      false,
 		closed:        false,
@@ -110,6 +114,7 @@ func NewFormDataReadableFromReader(reader io.ReadCloser, runtime *goja.Runtime) 
 		listeners:     make(map[string][]onceWrapper),
 		readChan:      make(chan readResult, 4),
 		readReqChan:   make(chan struct{}, 1),
+		stopChan:      make(chan struct{}),
 		consumed:      false,
 		isPaused:      false,
 		closed:        false,
@@ -177,22 +182,33 @@ func (fdr *FormDataReadable) startReading() {
 func (fdr *FormDataReadable) startReadWorker() {
 	fdr.readWorkerOnce.Do(func() {
 		go func() {
-			for range fdr.readReqChan {
-				fdr.mutex.Lock()
-				if fdr.destroyed || fdr.closed || fdr.streamReader == nil {
-					fdr.mutex.Unlock()
-					fdr.readChan <- readResult{err: fmt.Errorf("stream closed")}
-					close(fdr.readChan)
+			for {
+				select {
+				case <-fdr.stopChan:
+					fdr.readChanOnce.Do(func() { close(fdr.readChan) })
 					return
-				}
-				sr := fdr.streamReader
-				fdr.mutex.Unlock()
+				case _, ok := <-fdr.readReqChan:
+					if !ok {
+						fdr.readChanOnce.Do(func() { close(fdr.readChan) })
+						return
+					}
 
-				data, done, err := sr.Read(0)
-				fdr.readChan <- readResult{data: data, done: done, err: err}
-				if err != nil || done {
-					close(fdr.readChan)
-					return
+					fdr.mutex.Lock()
+					if fdr.destroyed || fdr.closed || fdr.streamReader == nil {
+						fdr.mutex.Unlock()
+						fdr.readChan <- readResult{err: fmt.Errorf("stream closed")}
+						fdr.readChanOnce.Do(func() { close(fdr.readChan) })
+						return
+					}
+					sr := fdr.streamReader
+					fdr.mutex.Unlock()
+
+					data, done, err := sr.Read(0)
+					fdr.readChan <- readResult{data: data, done: done, err: err}
+					if err != nil || done {
+						fdr.readChanOnce.Do(func() { close(fdr.readChan) })
+						return
+					}
 				}
 			}
 		}()
@@ -584,6 +600,10 @@ func (fdr *FormDataReadable) closeInternal() error {
 	fdr.closed = true
 	fdr.reading = false
 	fdr.mutex.Unlock()
+
+	fdr.stopOnce.Do(func() {
+		close(fdr.stopChan)
+	})
 
 	// 关闭底层 reader
 	if fdr.streamReader != nil {
