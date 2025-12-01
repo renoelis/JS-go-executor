@@ -3123,15 +3123,53 @@ func (fe *FetchEnhancer) convertNodeFormDataToBytes(runtime *goja.Runtime, formD
 		return nil, "", fmt.Errorf("Node.js FormData 为 nil")
 	}
 
+	// 兜底配置，保证有大小上限
+	if fe.config == nil {
+		fe.config = DefaultFetchConfig()
+	}
+	if fe.config.FormDataConfig == nil {
+		fe.config.FormDataConfig = formdata.DefaultFormDataStreamConfig()
+	}
+	maxBuffered := fe.config.FormDataConfig.MaxBufferedFormDataSize
+	maxStreaming := fe.config.FormDataConfig.MaxStreamingFormDataSize
+	chooseLimit := func(stream bool) int64 {
+		if stream {
+			if maxStreaming > 0 {
+				return maxStreaming
+			}
+			if maxBuffered > 0 {
+				return maxBuffered
+			}
+			return 0
+		}
+		if maxBuffered > 0 {
+			return maxBuffered
+		}
+		if maxStreaming > 0 {
+			return maxStreaming
+		}
+		return 0
+	}
+
 	if goStreamingFD := formDataObj.Get("__getGoStreamingFormData"); !goja.IsUndefined(goStreamingFD) && goStreamingFD != nil {
 		if streamingFormData, ok := goStreamingFD.Export().(*formdata.StreamingFormData); ok && streamingFormData != nil {
+			totalSize := streamingFormData.GetTotalSize()
+			shouldStream := streamingFormData.ShouldUseStreaming() || (maxBuffered > 0 && totalSize > maxBuffered)
+			maxAllowed := chooseLimit(shouldStream)
+			if maxAllowed > 0 && totalSize > maxAllowed {
+				sizeMB := float64(totalSize) / 1024 / 1024
+				limitMB := float64(maxAllowed) / 1024 / 1024
+				return nil, "", fmt.Errorf("Node.js FormData 大小超过限制: %.2fMB > %.2fMB", sizeMB, limitMB)
+			}
+
 			reader, err := streamingFormData.CreateReader()
 			if err != nil {
 				return nil, "", fmt.Errorf("创建 FormData reader 失败: %w", err)
 			}
-			data, err := io.ReadAll(reader)
+
+			data, err := readAllWithLimit(reader, maxAllowed)
 			if err != nil {
-				return nil, "", fmt.Errorf("读取 FormData 失败: %w", err)
+				return nil, "", err
 			}
 			return data, streamingFormData.GetBoundary(), nil
 		}
@@ -3161,6 +3199,12 @@ func (fe *FetchEnhancer) convertNodeFormDataToBytes(runtime *goja.Runtime, formD
 		return nil, "", fmt.Errorf("提取 buffer 数据失败: %w", err)
 	}
 
+	if maxAllowed := chooseLimit(false); maxAllowed > 0 && int64(len(data)) > maxAllowed {
+		sizeMB := float64(len(data)) / 1024 / 1024
+		limitMB := float64(maxAllowed) / 1024 / 1024
+		return nil, "", fmt.Errorf("Node.js FormData 大小超过限制: %.2fMB > %.2fMB", sizeMB, limitMB)
+	}
+
 	boundary := ""
 	if boundaryGetter := formDataObj.Get("getBoundary"); !goja.IsUndefined(boundaryGetter) && boundaryGetter != nil {
 		getBoundaryFn, ok := goja.AssertFunction(boundaryGetter)
@@ -3175,6 +3219,35 @@ func (fe *FetchEnhancer) convertNodeFormDataToBytes(runtime *goja.Runtime, formD
 	}
 
 	return data, boundary, nil
+}
+
+// readAllWithLimit 读取数据并应用大小上限（0 表示不限制）
+func readAllWithLimit(reader io.Reader, limit int64) ([]byte, error) {
+	if reader == nil {
+		return nil, fmt.Errorf("读取 FormData 失败: reader 为 nil")
+	}
+
+	if limit <= 0 {
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			return nil, fmt.Errorf("读取 FormData 失败: %w", err)
+		}
+		return data, nil
+	}
+
+	limited := io.LimitReader(reader, limit+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, fmt.Errorf("读取 FormData 失败: %w", err)
+	}
+
+	if int64(len(data)) > limit {
+		sizeMB := float64(len(data)) / 1024 / 1024
+		limitMB := float64(limit) / 1024 / 1024
+		return nil, fmt.Errorf("Node.js FormData 大小超过限制: %.2fMB > %.2fMB", sizeMB, limitMB)
+	}
+
+	return data, nil
 }
 
 // ==================== Body Wrapper ====================
