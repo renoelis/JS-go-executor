@@ -174,7 +174,7 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 				// 写入 header（goja.Object.Set 需要 string key，这里使用索引字符串）
 				idxHeader := fmt.Sprintf("%d", length)
 				streamsArray.Set(idxHeader, header)
-				// 写入值：对基础类型使用字符串，其余保持原样，仅要求 JS 侧 typeof !== 'function'
+				// 写入值：保留原值，避免对 Buffer/大文本强制 toString 造成冗余拷贝
 				var valueForStream goja.Value
 				switch {
 				case goja.IsUndefined(value):
@@ -182,8 +182,12 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 				case goja.IsNull(value):
 					valueForStream = runtime.ToValue("null")
 				default:
-					// 对象的 String() 结果在测试只需可见即可
-					valueForStream = runtime.ToValue(value.String())
+					// 函数占位，避免被序列化；其余保持原值以贴近 Node form-data 行为
+					if _, isFunc := goja.AssertFunction(value); isFunc {
+						valueForStream = runtime.ToValue("[function]")
+					} else {
+						valueForStream = value
+					}
 				}
 				idxValue := fmt.Sprintf("%d", length+1)
 				streamsArray.Set(idxValue, valueForStream)
