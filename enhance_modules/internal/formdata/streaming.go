@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,7 +17,30 @@ import (
 const (
 	// 默认 64KB 缓冲区，兼顾吞吐与 GC 压力；可通过配置覆盖
 	defaultFormDataBufferSize = 64 * 1024
+	// 默认数据通道容量（与 Node.js 场景保持兼容，避免无限堆积）
+	defaultFormDataChunkQueueSize   = 32
+	defaultFormDataBacklogQueueSize = 128
 )
+
+// defaultStreamQueueSizes 读取环境变量，允许覆盖默认通道容量
+func defaultStreamQueueSizes() (int, int) {
+	chunkSize := defaultFormDataChunkQueueSize
+	backlogSize := defaultFormDataBacklogQueueSize
+
+	if v := strings.TrimSpace(os.Getenv("FORM_DATA_STREAM_CHUNK_QUEUE_SIZE")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			chunkSize = n
+		}
+	}
+
+	if v := strings.TrimSpace(os.Getenv("FORM_DATA_STREAM_BACKLOG_QUEUE_SIZE")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			backlogSize = n
+		}
+	}
+
+	return chunkSize, backlogSize
+}
 
 // FormDataEntry 表示单个 FormData 字段
 type FormDataEntry struct {
@@ -55,11 +80,13 @@ type FormDataStreamConfig struct {
 	MaxStreamingFormDataSize int64 // 流式模式限制：Node.js form-data + Stream（默认 100MB）
 
 	// 其他配置
-	EnableChunkedUpload bool            // 启用分块传输编码
-	BufferSize          int             // 缓冲区大小
-	MaxFileSize         int64           // 单个文件最大大小
-	Timeout             time.Duration   // 🔥 HTTP 请求超时（用于计算写入超时）
-	Context             context.Context // 🔥 v2.4.2: HTTP 请求的 context（用于取消信号传递）
+	EnableChunkedUpload    bool            // 启用分块传输编码
+	BufferSize             int             // 缓冲区大小
+	StreamChunkQueueSize   int             // 主数据通道容量（背压前的缓冲）
+	StreamBacklogQueueSize int             // 背压时的积压队列容量
+	MaxFileSize            int64           // 单个文件最大大小
+	Timeout                time.Duration   // 🔥 HTTP 请求超时（用于计算写入超时）
+	Context                context.Context // 🔥 v2.4.2: HTTP 请求的 context（用于取消信号传递）
 
 	// 🔧 废弃但保留兼容
 	MaxFormDataSize    int64 // 废弃：统一限制，改用差异化限制
@@ -77,16 +104,20 @@ func DefaultFormDataStreamConfigWithBuffer(bufferSize int, maxBufferedSize, maxS
 		bufferSize = defaultFormDataBufferSize
 	}
 
+	chunkSize, backlogSize := defaultStreamQueueSizes()
+
 	return &FormDataStreamConfig{
 		// 🔥 新方案：差异化限制
 		MaxBufferedFormDataSize:  maxBufferedSize,  // 缓冲模式限制
 		MaxStreamingFormDataSize: maxStreamingSize, // 流式模式限制
 
 		// 其他配置
-		EnableChunkedUpload: true,
-		BufferSize:          bufferSize,
-		MaxFileSize:         maxFileSize,
-		Timeout:             timeout, // HTTP 请求超时
+		EnableChunkedUpload:    true,
+		BufferSize:             bufferSize,
+		StreamChunkQueueSize:   chunkSize,
+		StreamBacklogQueueSize: backlogSize,
+		MaxFileSize:            maxFileSize,
+		Timeout:                timeout, // HTTP 请求超时
 
 		// 🔧 废弃但保留兼容
 		MaxFormDataSize:    maxBufferedSize, // 向后兼容，使用缓冲限制
@@ -114,6 +145,15 @@ func NewStreamingFormData(config *FormDataStreamConfig) *StreamingFormData {
 	// 确保缓冲区大小有效，避免出现 0/负值导致的零长度读写
 	if config.BufferSize <= 0 {
 		config.BufferSize = defaultFormDataBufferSize
+	}
+	if config.StreamChunkQueueSize <= 0 || config.StreamBacklogQueueSize <= 0 {
+		chunkSize, backlogSize := defaultStreamQueueSizes()
+		if config.StreamChunkQueueSize <= 0 {
+			config.StreamChunkQueueSize = chunkSize
+		}
+		if config.StreamBacklogQueueSize <= 0 {
+			config.StreamBacklogQueueSize = backlogSize
+		}
 	}
 
 	return &StreamingFormData{

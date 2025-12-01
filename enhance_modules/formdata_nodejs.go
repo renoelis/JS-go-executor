@@ -64,6 +64,8 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 				MaxStreamingFormDataSize: baseCfg.MaxStreamingFormDataSize,
 				EnableChunkedUpload:      baseCfg.EnableChunkedUpload,
 				BufferSize:               baseCfg.BufferSize,
+				StreamChunkQueueSize:     baseCfg.StreamChunkQueueSize,
+				StreamBacklogQueueSize:   baseCfg.StreamBacklogQueueSize,
 				MaxFileSize:              baseCfg.MaxFileSize,
 				Timeout:                  baseCfg.Timeout,
 				Context:                  nil, // 🔥 关键：每个 FormData 独立的 context，默认 nil
@@ -1406,9 +1408,11 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 
 	// 绑定 FormData/请求的上下文与超时，避免 goroutine 常驻
 	var (
-		ctx       context.Context = context.Background()
-		timeout   time.Duration
-		ctxDoneCh <-chan struct{}
+		ctx              context.Context = context.Background()
+		timeout          time.Duration
+		ctxDoneCh        <-chan struct{}
+		chunkQueueSize   = 32
+		backlogQueueSize = 128
 	)
 	if streamingFormData != nil {
 		if cfg := streamingFormData.GetConfig(); cfg != nil {
@@ -1416,6 +1420,12 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 				ctx = cfg.Context
 			}
 			timeout = cfg.Timeout
+			if cfg.StreamChunkQueueSize > 0 {
+				chunkQueueSize = cfg.StreamChunkQueueSize
+			}
+			if cfg.StreamBacklogQueueSize > 0 {
+				backlogQueueSize = cfg.StreamBacklogQueueSize
+			}
 		}
 	}
 	// 超时下限保护：cfg.Timeout 可能为 0（自定义配置漏校验），统一回落到 30s
@@ -1434,8 +1444,8 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 	}
 
 	pr, pw := io.Pipe()
-	chunkCh := make(chan []byte, 32) // 小缓冲 + 背压
-	backlogCh := make(chan []byte, 128)
+	chunkCh := make(chan []byte, chunkQueueSize)     // 小缓冲 + 背压（可配置）
+	backlogCh := make(chan []byte, backlogQueueSize) // 背压积压队列（可配置）
 	closedCh := make(chan struct{})
 	var closeOnce sync.Once
 	var cleanupOnce sync.Once
@@ -1610,7 +1620,7 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 					pauseFn(streamObj)
 				}
 				select {
-				case backlogCh <- append([]byte(nil), data...):
+				case backlogCh <- data:
 					startBackpressureDrainer()
 				default:
 					signalClose(fmt.Errorf("readable stream backpressure overflow"))

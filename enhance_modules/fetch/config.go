@@ -237,6 +237,16 @@ func (c *FetchConfig) Validate() {
 	if c.FormDataConfig.Timeout <= 0 {
 		c.FormDataConfig.Timeout = c.RequestTimeout
 	}
+	// 确保 FormData 流式队列容量有效（兼容旧配置未设置新字段的情况）
+	if c.FormDataConfig.StreamChunkQueueSize <= 0 || c.FormDataConfig.StreamBacklogQueueSize <= 0 {
+		defaultCfg := formdata.DefaultFormDataStreamConfig()
+		if c.FormDataConfig.StreamChunkQueueSize <= 0 {
+			c.FormDataConfig.StreamChunkQueueSize = defaultCfg.StreamChunkQueueSize
+		}
+		if c.FormDataConfig.StreamBacklogQueueSize <= 0 {
+			c.FormDataConfig.StreamBacklogQueueSize = defaultCfg.StreamBacklogQueueSize
+		}
+	}
 
 	// 4. Transport 配置验证
 	if c.TransportConfig == nil {

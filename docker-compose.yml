@@ -155,6 +155,9 @@ services:
       - MAX_BUFFERED_FORMDATA_MB=10       # 缓冲上传限制(Web FormData + Blob、Node.js form-data + Buffer) - 默认1MB
       - MAX_STREAMING_FORMDATA_MB=50    # 流式上传限制(Node.js form-data + Stream) - 默认100MB
       - REQUEST_STREAM_BUFFER_LIMIT_MB=8 # ReadableStream 请求体本地缓冲上限（背压）默认 8MB
+      # form-data Readable 背压队列容量（可通过环境变量覆盖）
+      - FORM_DATA_STREAM_CHUNK_QUEUE_SIZE=${FORM_DATA_STREAM_CHUNK_QUEUE_SIZE:-32}
+      - FORM_DATA_STREAM_BACKLOG_QUEUE_SIZE=${FORM_DATA_STREAM_BACKLOG_QUEUE_SIZE:-128}
       
       # 其他配置
       - ENABLE_CHUNKED_UPLOAD=1          # 启用分块传输编码
