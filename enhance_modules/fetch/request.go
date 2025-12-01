@@ -705,69 +705,105 @@ func determineResponseTypeForNode(mode string) string {
 
 // ==================== Promise 轮询和错误处理 ====================
 
-// PollResult 使用定时轮询请求结果 (EventLoop 模式)
-// 🔥 通过 setTimeout 低频轮询，避免 setImmediate 紧密堆积导致 EventLoop 忙等
-func PollResult(runtime *goja.Runtime, req *FetchRequest, resolve, reject func(goja.Value), setImmediate goja.Value, recreateResponse func(*goja.Runtime, *ResponseData) goja.Value, cleanup func(error)) {
-	immediateFn, ok := goja.AssertFunction(setImmediate)
-	if !ok {
-		reject(CreateErrorObject(runtime, fmt.Errorf("setImmediate 不是一个函数")))
+// LoopSchedulerGlobalKey 存储 EventLoop 调度器的全局变量名（仅内部使用）
+const LoopSchedulerGlobalKey = "__go_fetch_loop_scheduler__"
+
+// LoopScheduler 抽象出 EventLoop 的 RunOnLoop 能力，供 fetch 完成时回调使用
+type LoopScheduler interface {
+	RunOnLoop(func(*goja.Runtime)) bool
+	AcquireKeepAlive() func()
+}
+
+// LoopSchedulerAdapter 适配器，封装 RunOnLoop 和 KeepAlive 能力
+type LoopSchedulerAdapter struct {
+	RunFunc       func(func(*goja.Runtime)) bool
+	KeepAliveFunc func() func()
+}
+
+func (a *LoopSchedulerAdapter) RunOnLoop(cb func(*goja.Runtime)) bool {
+	if a == nil || a.RunFunc == nil {
+		return false
+	}
+	return a.RunFunc(cb)
+}
+
+func (a *LoopSchedulerAdapter) AcquireKeepAlive() func() {
+	if a == nil || a.KeepAliveFunc == nil {
+		return nil
+	}
+	return a.KeepAliveFunc()
+}
+
+// NewLoopScheduler 创建一个 LoopSchedulerAdapter 实例
+func NewLoopScheduler(run func(func(*goja.Runtime)) bool, keepAlive func() func()) LoopScheduler {
+	return &LoopSchedulerAdapter{
+		RunFunc:       run,
+		KeepAliveFunc: keepAlive,
+	}
+}
+
+// PollResult 在 EventLoop 模式下使用调度器事件驱动返回结果（不依赖 JS 定时器保活）
+func PollResult(runtime *goja.Runtime, req *FetchRequest, resolve, reject func(goja.Value), recreateResponse func(*goja.Runtime, *ResponseData) goja.Value, cleanup func(error)) {
+	scheduler := getLoopScheduler(runtime)
+	if scheduler == nil {
+		reject(CreateErrorObject(runtime, fmt.Errorf("fetch 调度器不可用")))
+		return
+	}
+	release := scheduler.AcquireKeepAlive()
+	if release == nil {
+		reject(CreateErrorObject(runtime, fmt.Errorf("fetch 保活不可用")))
 		return
 	}
 
-	timeoutVal := runtime.Get("setTimeout")
-	timeoutFn, hasTimeout := goja.AssertFunction(timeoutVal)
-
-	delayMs := int64(1) // 初始 1ms，后续指数退避降低调度频率
-
-	scheduleNext := func(check goja.Value) {
-		if hasTimeout {
-			// 使用 setTimeout(…, delayMs)，避免 setImmediate 的紧密自旋
-			_, _ = timeoutFn(goja.Undefined(), check, runtime.ToValue(delayMs))
-		} else {
-			// 兜底：依旧使用 setImmediate，但不再传递无效的 delay 参数
-			_, _ = immediateFn(goja.Undefined(), check)
-		}
-	}
-
-	// 创建轮询函数
-	var checkResult func(goja.FunctionCall) goja.Value
-	checkResult = func(call goja.FunctionCall) goja.Value {
-		select {
-		case result := <-req.resultCh:
-			// 有结果了
+	go func() {
+		result := <-req.resultCh
+		if !scheduler.RunOnLoop(func(rt *goja.Runtime) {
+			defer release()
+			handleFetchResult(rt, result, resolve, reject, recreateResponse, cleanup)
+		}) {
+			release()
 			if cleanup != nil {
 				cleanup(result.err)
 			}
-			if result.err != nil {
-				// 🔥 检查是否为 AbortError
-				if _, isAbortError := result.err.(*AbortError); isAbortError {
-					// 🔥 如果有自定义 abortReason，使用它；否则使用默认 AbortError
-					if result.abortReason != nil && !goja.IsUndefined(result.abortReason) {
-						reject(result.abortReason)
-					} else {
-						reject(CreateAbortErrorObject(runtime, result.err))
-					}
-				} else {
-					reject(CreateErrorObject(runtime, result.err))
-				}
-			} else {
-				resolve(recreateResponse(runtime, result.response))
-			}
-		default:
-			// 还没结果，继续轮询（指数退避上限 8ms，降低高并发下的回调排队）
-			if delayMs < 8 {
-				delayMs *= 2
-				if delayMs > 8 {
-					delayMs = 8
-				}
-			}
-			scheduleNext(runtime.ToValue(checkResult))
 		}
-		return goja.Undefined()
-	}
+	}()
+}
 
-	// 开始第一次轮询
-	scheduleNext(runtime.ToValue(checkResult))
+// handleFetchResult 统一处理 fetch 结果并执行 resolve/reject
+func handleFetchResult(runtime *goja.Runtime, result FetchResult, resolve, reject func(goja.Value), recreateResponse func(*goja.Runtime, *ResponseData) goja.Value, cleanup func(error)) {
+	if cleanup != nil {
+		cleanup(result.err)
+	}
+	if result.err != nil {
+		// 🔥 检查是否为 AbortError
+		if _, isAbortError := result.err.(*AbortError); isAbortError {
+			// 🔥 如果有自定义 abortReason，使用它；否则使用默认 AbortError
+			if result.abortReason != nil && !goja.IsUndefined(result.abortReason) {
+				reject(result.abortReason)
+			} else {
+				reject(CreateAbortErrorObject(runtime, result.err))
+			}
+		} else {
+			reject(CreateErrorObject(runtime, result.err))
+		}
+		return
+	}
+	resolve(recreateResponse(runtime, result.response))
+}
+
+// getLoopScheduler 从 Runtime 中获取可用的事件循环调度器
+func getLoopScheduler(runtime *goja.Runtime) LoopScheduler {
+	if runtime == nil {
+		return nil
+	}
+	schedulerVal := runtime.Get(LoopSchedulerGlobalKey)
+	if schedulerVal == nil || goja.IsUndefined(schedulerVal) || goja.IsNull(schedulerVal) {
+		return nil
+	}
+	if scheduler, ok := schedulerVal.Export().(LoopScheduler); ok {
+		return scheduler
+	}
+	return nil
 }
 
 // CreateErrorObject 创建标准的 JavaScript Error 对象

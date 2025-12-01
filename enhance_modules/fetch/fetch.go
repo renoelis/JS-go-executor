@@ -1890,13 +1890,11 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 		requestDispatched = true
 
 		// 8. 检查是否在 EventLoop 环境中
-		setImmediateFn := runtime.Get("setImmediate")
-
-		if setImmediateFn != nil && !goja.IsUndefined(setImmediateFn) {
-			// EventLoop 模式：使用轮询机制
+		if getLoopScheduler(runtime) != nil {
+			// EventLoop 模式：使用事件驱动 + keepalive
 			resolveFunc := func(value goja.Value) { resolve(value) }
 			rejectFunc := func(value goja.Value) { reject(value) }
-			PollResult(runtime, req, resolveFunc, rejectFunc, setImmediateFn, fe.recreateResponse, closeRegisteredStreamWriters)
+			PollResult(runtime, req, resolveFunc, rejectFunc, fe.recreateResponse, closeRegisteredStreamWriters)
 		} else {
 			// Runtime Pool 模式：同步等待
 			result := <-req.resultCh

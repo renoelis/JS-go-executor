@@ -180,6 +180,11 @@ func WithMaxStreamingSize(size int64) fetch.FetchConfigOption {
 	return fetch.WithMaxStreamingSize(size)
 }
 
+// WithRequestStreamBufferLimit 设置 ReadableStream 请求体的缓冲上限
+func WithRequestStreamBufferLimit(limit int64) fetch.FetchConfigOption {
+	return fetch.WithRequestStreamBufferLimit(limit)
+}
+
 // WithTransportConfig 设置 HTTP Transport 配置
 func WithTransportConfig(config *transport.HTTPTransportConfig) fetch.FetchConfigOption {
 	return fetch.WithTransportConfig(config)
