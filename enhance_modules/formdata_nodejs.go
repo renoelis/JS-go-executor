@@ -280,32 +280,6 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 
 		// getLength(callback) - 异步获取长度（通过 Promise）
 		formDataObj.Set("getLength", func(call goja.FunctionCall) goja.Value {
-			scheduleAsync := func(run func()) {
-				if siVal := runtime.GlobalObject().Get("setImmediate"); siVal != nil && !goja.IsUndefined(siVal) && !goja.IsNull(siVal) {
-					if si, ok := goja.AssertFunction(siVal); ok {
-						if _, err := si(goja.Undefined(), runtime.ToValue(func(goja.FunctionCall) goja.Value {
-							run()
-							return goja.Undefined()
-						})); err == nil {
-							return
-						}
-					}
-				}
-
-				if stVal := runtime.GlobalObject().Get("setTimeout"); stVal != nil && !goja.IsUndefined(stVal) && !goja.IsNull(stVal) {
-					if st, ok := goja.AssertFunction(stVal); ok {
-						if _, err := st(goja.Undefined(), runtime.ToValue(func(goja.FunctionCall) goja.Value {
-							run()
-							return goja.Undefined()
-						}), runtime.ToValue(0)); err == nil {
-							return
-						}
-					}
-				}
-
-				run()
-			}
-
 			// 未知长度的流需要按照 Node 行为返回错误
 			if streamingFormData.HasUnknownStreamLength() {
 				if len(call.Arguments) == 0 {
@@ -318,7 +292,7 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 				if !ok {
 					panic(runtime.NewTypeError("getLength 需要一个回调函数参数"))
 				}
-				scheduleAsync(func() {
+				scheduleAsync(runtime, func() {
 					callback(goja.Undefined(), runtime.NewGoError(fmt.Errorf("Unknown stream")))
 				})
 				return goja.Undefined()
@@ -342,7 +316,7 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 
 			// Node.js form-data 标准：callback(err, length) - 只有2个参数
 			// 🔥 修复：callback(thisObj, arg1, arg2...) - 第一个参数是 this
-			scheduleAsync(func() {
+			scheduleAsync(runtime, func() {
 				callback(goja.Undefined(), goja.Null(), runtime.ToValue(totalSize))
 			})
 
