@@ -2407,84 +2407,216 @@ func (nfm *NodeFormDataModule) createIncomingMessage(runtime *goja.Runtime, resp
 		})
 	}
 
-	var started bool
 	var ended bool
 	var destroyed bool
+	var paused bool
+	var reading bool
+	var streamPrepared bool
+	var streamUsable bool
 
-	startReading := func() {
-		if started || destroyed {
-			return
-		}
-		started = true
-
-		arrayBufferFn, ok := goja.AssertFunction(respObj.Get("arrayBuffer"))
-		if !ok {
-			errVal := normalizeRequestErrorValue(runtime, runtime.NewTypeError("response.arrayBuffer 不可用"), "ECONNRESET")
-			emitter.emit("error", errVal)
-			if onError != nil {
-				onError(errVal)
+	var bufferFromThis goja.Value
+	var bufferFromCallable goja.Callable
+	getBufferFrom := func(val goja.Value) (goja.Value, error) {
+		if bufferFromCallable == nil {
+			bufferCtor := runtime.Get("Buffer")
+			if bufferCtor == nil || goja.IsUndefined(bufferCtor) || goja.IsNull(bufferCtor) {
+				return nil, fmt.Errorf("Buffer 不可用")
 			}
-			return
+			bufferObj := bufferCtor.ToObject(runtime)
+			if bufferObj == nil {
+				return nil, fmt.Errorf("Buffer 不可用")
+			}
+			fn, ok := goja.AssertFunction(bufferObj.Get("from"))
+			if !ok {
+				return nil, fmt.Errorf("Buffer.from 不可用")
+			}
+			bufferFromCallable = fn
+			bufferFromThis = bufferObj
+		}
+		return bufferFromCallable(bufferFromThis, val)
+	}
+
+	var readerObj *goja.Object
+	var readFn goja.Callable
+
+	prepareStreamReader := func() bool {
+		if streamPrepared || destroyed {
+			return streamUsable
+		}
+		streamPrepared = true
+
+		bodyVal := respObj.Get("body")
+		if bodyVal == nil || goja.IsUndefined(bodyVal) || goja.IsNull(bodyVal) {
+			streamUsable = false
+			return false
 		}
 
-		promiseVal, err := arrayBufferFn(respObj)
+		bodyObj := bodyVal.ToObject(runtime)
+		if bodyObj == nil {
+			streamUsable = false
+			return false
+		}
+
+		getReaderVal := bodyObj.Get("getReader")
+		getReaderFn, ok := goja.AssertFunction(getReaderVal)
+		if !ok {
+			streamUsable = false
+			return false
+		}
+
+		readerVal, err := getReaderFn(bodyObj)
 		if err != nil {
 			errVal := normalizeRequestErrorValue(runtime, runtime.NewGoError(err), "ECONNRESET")
 			emitter.emit("error", errVal)
 			if onError != nil {
 				onError(errVal)
 			}
+			streamUsable = false
+			return false
+		}
+
+		readerObj = readerVal.ToObject(runtime)
+		if readerObj == nil {
+			errVal := normalizeRequestErrorValue(runtime, runtime.NewTypeError("ReadableStream reader 无效"), "ECONNRESET")
+			emitter.emit("error", errVal)
+			if onError != nil {
+				onError(errVal)
+			}
+			streamUsable = false
+			return false
+		}
+
+		readVal := readerObj.Get("read")
+		readFn, ok = goja.AssertFunction(readVal)
+		if !ok {
+			errVal := normalizeRequestErrorValue(runtime, runtime.NewTypeError("ReadableStream.read 不可用"), "ECONNRESET")
+			emitter.emit("error", errVal)
+			if onError != nil {
+				onError(errVal)
+			}
+			streamUsable = false
+			return false
+		}
+
+		streamUsable = true
+		return true
+	}
+
+	emitError := func(errVal goja.Value) {
+		emitter.emit("error", errVal)
+		if onError != nil {
+			onError(errVal)
+		}
+		if !ended {
+			ended = true
+			emitter.emit("close")
+		}
+	}
+
+	var pump func()
+	pump = func() {
+		if destroyed || ended || paused || reading {
+			return
+		}
+		if !prepareStreamReader() {
+			return
+		}
+		reading = true
+
+		promiseVal, err := readFn(readerObj)
+		if err != nil {
+			reading = false
+			errVal := normalizeRequestErrorValue(runtime, runtime.NewGoError(err), "ECONNRESET")
+			emitError(errVal)
 			return
 		}
 
 		promiseObj := promiseVal.ToObject(runtime)
 		if promiseObj == nil {
-			errVal := normalizeRequestErrorValue(runtime, runtime.NewTypeError("无效的响应 Promise"), "ECONNRESET")
-			emitter.emit("error", errVal)
-			if onError != nil {
-				onError(errVal)
-			}
+			reading = false
+			errVal := normalizeRequestErrorValue(runtime, runtime.NewTypeError("无效的 reader Promise"), "ECONNRESET")
+			emitError(errVal)
 			return
 		}
 
 		if thenFn, ok := goja.AssertFunction(promiseObj.Get("then")); ok {
 			thenFn(promiseObj, runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+				reading = false
 				if destroyed {
 					return goja.Undefined()
 				}
-				bufVal, bufErr := arrayBufferToBuffer(runtime, call.Argument(0))
-				if bufErr != nil {
-					errVal := normalizeRequestErrorValue(runtime, runtime.NewGoError(bufErr), "ECONNRESET")
-					emitter.emit("error", errVal)
-					if onError != nil {
-						onError(errVal)
+				resultObj := call.Argument(0).ToObject(runtime)
+				if resultObj == nil {
+					return goja.Undefined()
+				}
+
+				doneVal := resultObj.Get("done")
+				if doneVal != nil && doneVal.ToBoolean() {
+					if !ended {
+						ended = true
+						emitter.emit("end")
+						emitter.emit("close")
 					}
 					return goja.Undefined()
 				}
 
+				valueVal := resultObj.Get("value")
+				if valueVal == nil || goja.IsUndefined(valueVal) || goja.IsNull(valueVal) {
+					if !ended {
+						ended = true
+						emitter.emit("end")
+						emitter.emit("close")
+					}
+					return goja.Undefined()
+				}
+
+				bufVal, bufErr := getBufferFrom(valueVal)
+				if bufErr != nil {
+					errVal := normalizeRequestErrorValue(runtime, runtime.NewGoError(bufErr), "ECONNRESET")
+					emitError(errVal)
+					return goja.Undefined()
+				}
+
 				emitter.emit("data", bufVal)
-				if !ended {
-					ended = true
-					emitter.emit("end")
-					emitter.emit("close")
+
+				if !paused && !destroyed && !ended {
+					scheduleAsync(runtime, pump)
 				}
 				return goja.Undefined()
 			}))
+		} else {
+			reading = false
 		}
 
 		if catchFn, ok := goja.AssertFunction(promiseObj.Get("catch")); ok {
 			catchFn(promiseObj, runtime.ToValue(func(call goja.FunctionCall) goja.Value {
+				reading = false
+				if destroyed {
+					return goja.Undefined()
+				}
 				errVal := normalizeRequestErrorValue(runtime, call.Argument(0), "ECONNRESET")
-				emitter.emit("error", errVal)
-				if onError != nil {
-					onError(errVal)
-				}
-				if !ended {
-					ended = true
-					emitter.emit("close")
-				}
+				emitError(errVal)
 				return goja.Undefined()
 			}))
+		}
+	}
+
+	startReading := func() {
+		if destroyed || ended {
+			return
+		}
+
+		if prepareStreamReader() {
+			if streamUsable {
+				paused = false
+				pump()
+				return
+			}
+			if !ended {
+				ended = true
+				emitter.emit("end")
+				emitter.emit("close")
+			}
 		}
 	}
 
@@ -2511,7 +2643,13 @@ func (nfm *NodeFormDataModule) createIncomingMessage(runtime *goja.Runtime, resp
 	})
 
 	incoming.Set("resume", func(call goja.FunctionCall) goja.Value {
+		paused = false
 		startReading()
+		return incoming
+	})
+
+	incoming.Set("pause", func(call goja.FunctionCall) goja.Value {
+		paused = true
 		return incoming
 	})
 
