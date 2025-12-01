@@ -327,12 +327,12 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 				delete(e.runtimeHealth, runtime)
 				e.healthMutex.Unlock()
 
-				// 移除 fetch 关联的 runtime prototype 映射，防止泄漏
+				// 移除 fetch 关联的 runtime 状态，防止泄漏
 				fetch.ClearRuntimePrototypes(runtime)
-
-				// 🔥 P1.2: Runtime 销毁时清理 Fetch 连接池，防止空闲连接累积
 				if fetchModule, ok := e.moduleRegistry.GetModule("fetch"); ok {
 					if fe, ok := fetchModule.(*fetch.FetchEnhancer); ok && fe != nil {
+						fe.ClearRuntimeContext(runtime)
+						// 🔥 P1.2: Runtime 销毁时清理 Fetch 连接池，防止空闲连接累积
 						fe.CleanupIdleConnections()
 					}
 				}
@@ -455,6 +455,14 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 	// 🔥 使用传入的 context，而不是 context.Background()
 	execCtx, cancel := context.WithTimeout(ctx, e.executionTimeout)
 	defer cancel()
+
+	// 🔥 将上层 context 传递给 fetch 模块，确保 HTTP 请求可随调用方取消/超时
+	if fetchModule, ok := e.moduleRegistry.GetModule("fetch"); ok {
+		if fe, ok := fetchModule.(*fetch.FetchEnhancer); ok && fe != nil {
+			fe.SetRuntimeContext(runtime, execCtx)
+			defer fe.ClearRuntimeContext(runtime)
+		}
+	}
 
 	runtime.Set("input", input)
 	runtime.Set("__executionId", executionId)
@@ -684,6 +692,14 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 
 		loop.Run(func(runtime *goja.Runtime) {
 			vm = runtime
+
+			// 🔥 关联上层 context，确保 fetch 的 HTTP 请求与调用方超时/取消联动
+			if fetchModule, ok := e.moduleRegistry.GetModule("fetch"); ok {
+				if fe, ok := fetchModule.(*fetch.FetchEnhancer); ok && fe != nil {
+					fe.SetRuntimeContext(vm, execCtx)
+					defer fe.ClearRuntimeContext(vm)
+				}
+			}
 
 			defer func() {
 				if r := recover(); r != nil {

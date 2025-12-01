@@ -77,6 +77,7 @@ func ExecuteRequestAsync(
 	client *http.Client,
 	req *FetchRequest,
 	createBodyWrapper func(body io.ReadCloser, contentLength int64, timeout time.Duration, cancel context.CancelFunc) io.ReadCloser,
+	parentCtx context.Context,
 ) {
 	// 🔥 在函数顶部声明 context 相关变量，便于在 defer 中安全访问
 	var (
@@ -182,7 +183,11 @@ func ExecuteRequestAsync(
 	// 为什么不能在请求完成后立即 cancel：
 	//   - resp.Body 底层仍依赖 request context（特别是 HTTP/2）
 	//   - 过早 cancel 会导致 body 读取失败（context canceled 错误）
-	reqCtx, reqCancel = context.WithTimeout(context.Background(), config.RequestTimeout)
+	baseCtx := parentCtx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	reqCtx, reqCancel = context.WithTimeout(baseCtx, config.RequestTimeout)
 
 	// 🔥 v2.4.2: 为上传 FormData 创建独立的 context
 	// 注意：这是上传阶段的 context，与下载响应的 context 独立
@@ -190,7 +195,7 @@ func ExecuteRequestAsync(
 	if _, ok := req.options["__formDataBody"]; ok {
 		if streamingFormData, ok := req.options["__streamingFormData"].(*formdata.StreamingFormData); ok {
 			// 为 FormData 上传创建独立的 context（带超时）
-			uploadCtx, uploadCancel = context.WithTimeout(context.Background(), config.RequestTimeout)
+			uploadCtx, uploadCancel = context.WithTimeout(baseCtx, config.RequestTimeout)
 			// 🔥 注意：uploadCancel 会在请求完成或失败时调用
 
 			// 立即注入到 FormData 配置

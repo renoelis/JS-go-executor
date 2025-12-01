@@ -271,6 +271,9 @@ type FetchEnhancer struct {
 	requestStreamMu      sync.Mutex
 	requestStreamWriters map[string]*requestStreamWriter
 	requestStreamSeq     uint64
+
+	runtimeCtxMu sync.RWMutex
+	runtimeCtx   map[*goja.Runtime]context.Context
 }
 
 // ==================== 构造器 ====================
@@ -311,6 +314,7 @@ func NewFetchEnhancerWithConfig(config *FetchConfig) *FetchEnhancer {
 		client:               client,
 		bodyHandler:          bodyHandler,
 		requestStreamWriters: make(map[string]*requestStreamWriter),
+		runtimeCtx:           make(map[*goja.Runtime]context.Context),
 	}
 }
 
@@ -348,6 +352,41 @@ func (fe *FetchEnhancer) Close() error {
 		}
 	}
 	return nil
+}
+
+// SetRuntimeContext 为指定 runtime 关联上层 context（用于请求取消/超时联动）
+func (fe *FetchEnhancer) SetRuntimeContext(runtime *goja.Runtime, ctx context.Context) {
+	if fe == nil || runtime == nil {
+		return
+	}
+	fe.runtimeCtxMu.Lock()
+	if ctx != nil {
+		fe.runtimeCtx[runtime] = ctx
+	} else {
+		delete(fe.runtimeCtx, runtime)
+	}
+	fe.runtimeCtxMu.Unlock()
+}
+
+// ClearRuntimeContext 移除 runtime 对应的上层 context 关联
+func (fe *FetchEnhancer) ClearRuntimeContext(runtime *goja.Runtime) {
+	if fe == nil || runtime == nil {
+		return
+	}
+	fe.runtimeCtxMu.Lock()
+	delete(fe.runtimeCtx, runtime)
+	fe.runtimeCtxMu.Unlock()
+}
+
+// getRuntimeContext 读取与 runtime 关联的上层 context（可能为空）
+func (fe *FetchEnhancer) getRuntimeContext(runtime *goja.Runtime) context.Context {
+	if fe == nil || runtime == nil {
+		return nil
+	}
+	fe.runtimeCtxMu.RLock()
+	ctx := fe.runtimeCtx[runtime]
+	fe.runtimeCtxMu.RUnlock()
+	return ctx
 }
 
 // CleanupIdleConnections 主动清理底层 HTTP Client 的空闲连接
@@ -1907,7 +1946,7 @@ func (fe *FetchEnhancer) createFetchFunction(runtime *goja.Runtime) func(goja.Fu
 		}
 
 		// 7. 异步执行请求（不阻塞 EventLoop）
-		go ExecuteRequestAsync(fe.config, fe.client, req, fe.createBodyWrapper)
+		go ExecuteRequestAsync(fe.config, fe.client, req, fe.createBodyWrapper, fe.getRuntimeContext(runtime))
 
 		// 🔥 如果 body 是 ReadableStream，监听 abort 事件并兜底关闭 writer
 		if len(registeredStreamWriterIDs) > 0 {
