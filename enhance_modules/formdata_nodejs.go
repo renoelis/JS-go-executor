@@ -582,15 +582,12 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 
 			// auth: 自动生成 Basic Authorization 头（与 Node http.request 保持一致）
 			if target.auth != "" {
-				if headers == nil {
-					headers = map[string]string{}
-				}
-				if _, ok := headers["authorization"]; !ok {
+				if !hasHeader(headers, "authorization") {
 					authStr := target.auth
 					if !strings.Contains(authStr, ":") {
 						authStr += ":"
 					}
-					headers["authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(authStr))
+					headers = appendHeaderEntry(headers, "authorization", []string{"Basic " + base64.StdEncoding.EncodeToString([]byte(authStr))})
 				}
 			}
 
@@ -599,11 +596,7 @@ func (nfm *NodeFormDataModule) createFormDataConstructor(runtime *goja.Runtime) 
 			options.Set("method", strings.ToUpper(target.method))
 			options.Set("body", formDataObj)
 
-			headersObj := runtime.NewObject()
-			for k, v := range headers {
-				headersObj.Set(k, v)
-			}
-			options.Set("headers", headersObj)
+			options.Set("headers", headerEntriesToPairs(runtime, headers))
 
 			// AbortController 支持，供 abort/destroy 使用
 			var abortController *goja.Object
@@ -1915,13 +1908,19 @@ type submitTarget struct {
 	rawQuery string
 	auth     string
 	method   string
-	headers  map[string]string
+	headers  []headerEntry
+}
+
+type headerEntry struct {
+	OriginalName string
+	LowerName    string
+	Values       []string
 }
 
 func parseSubmitTarget(runtime *goja.Runtime, val goja.Value) (submitTarget, error) {
 	target := submitTarget{
 		path:    "/",
-		headers: map[string]string{},
+		headers: []headerEntry{},
 	}
 
 	if goja.IsUndefined(val) || goja.IsNull(val) {
@@ -2019,19 +2018,157 @@ func parseSubmitTarget(runtime *goja.Runtime, val goja.Value) (submitTarget, err
 	return target, nil
 }
 
-func convertHeadersValue(runtime *goja.Runtime, val goja.Value) map[string]string {
-	headers := map[string]string{}
+func headerValuesFromValue(runtime *goja.Runtime, val goja.Value) []string {
+	if val == nil || goja.IsUndefined(val) || goja.IsNull(val) {
+		return []string{fmt.Sprintf("%v", val)}
+	}
+
+	if obj, ok := val.(*goja.Object); ok && obj != nil {
+		if obj.ClassName() == "Array" {
+			lengthVal := obj.Get("length")
+			length := int(lengthVal.ToInteger())
+			values := make([]string, 0, length)
+			for i := 0; i < length; i++ {
+				itemVal := obj.Get(fmt.Sprintf("%d", i))
+				values = append(values, fmt.Sprintf("%v", itemVal.Export()))
+			}
+			return values
+		}
+	}
+
+	switch exported := val.Export().(type) {
+	case []string:
+		return append([]string(nil), exported...)
+	case []interface{}:
+		values := make([]string, 0, len(exported))
+		for _, v := range exported {
+			values = append(values, fmt.Sprintf("%v", v))
+		}
+		return values
+	}
+
+	return []string{val.String()}
+}
+
+func appendHeaderEntry(entries []headerEntry, name string, values []string) []headerEntry {
+	if len(values) == 0 {
+		values = []string{""}
+	}
+	lower := strings.ToLower(name)
+	for i := range entries {
+		if entries[i].LowerName == lower {
+			entries[i].Values = append(entries[i].Values, values...)
+			return entries
+		}
+	}
+	entries = append(entries, headerEntry{
+		OriginalName: name,
+		LowerName:    lower,
+		Values:       append([]string(nil), values...),
+	})
+	return entries
+}
+
+func convertHeadersValue(runtime *goja.Runtime, val goja.Value) []headerEntry {
+	entries := []headerEntry{}
 	if runtime == nil || val == nil || goja.IsUndefined(val) || goja.IsNull(val) {
-		return headers
+		return entries
 	}
-	obj := val.ToObject(runtime)
-	if obj == nil {
-		return headers
+	if obj := val.ToObject(runtime); obj != nil {
+		for _, key := range obj.Keys() {
+			values := headerValuesFromValue(runtime, obj.Get(key))
+			entries = appendHeaderEntry(entries, key, values)
+		}
+		return entries
 	}
-	for _, key := range obj.Keys() {
-		headers[strings.ToLower(key)] = fmt.Sprintf("%v", obj.Get(key))
+
+	switch exported := val.Export().(type) {
+	case map[string]string:
+		for k, v := range exported {
+			entries = appendHeaderEntry(entries, k, []string{v})
+		}
+	case map[string][]string:
+		for k, vals := range exported {
+			entries = appendHeaderEntry(entries, k, vals)
+		}
+	case map[string]interface{}:
+		for k, v := range exported {
+			entries = appendHeaderEntry(entries, k, []string{fmt.Sprintf("%v", v)})
+		}
 	}
-	return headers
+
+	return entries
+}
+
+func headerEntriesToObject(runtime *goja.Runtime, entries []headerEntry) *goja.Object {
+	obj := runtime.NewObject()
+	for _, h := range entries {
+		name := h.LowerName
+		if name == "" {
+			name = strings.ToLower(h.OriginalName)
+		}
+		if name == "" {
+			continue
+		}
+		var val goja.Value
+		switch len(h.Values) {
+		case 0:
+			val = runtime.ToValue("")
+		case 1:
+			val = runtime.ToValue(h.Values[0])
+		default:
+			arr := runtime.NewArray()
+			for i, v := range h.Values {
+				arr.Set(fmt.Sprintf("%d", i), v)
+			}
+			val = arr
+		}
+		obj.Set(name, val)
+	}
+	return obj
+}
+
+func headerEntriesToPairs(runtime *goja.Runtime, entries []headerEntry) *goja.Object {
+	arr := runtime.NewArray()
+	idx := int64(0)
+	for _, h := range entries {
+		name := h.OriginalName
+		if name == "" {
+			name = h.LowerName
+		}
+		if name == "" {
+			continue
+		}
+		if len(h.Values) == 0 {
+			pair := runtime.NewArray()
+			pair.Set("0", name)
+			pair.Set("1", "")
+			arr.Set(fmt.Sprintf("%d", idx), pair)
+			idx++
+			continue
+		}
+		for _, v := range h.Values {
+			pair := runtime.NewArray()
+			pair.Set("0", name)
+			pair.Set("1", v)
+			arr.Set(fmt.Sprintf("%d", idx), pair)
+			idx++
+		}
+	}
+	return arr
+}
+
+func hasHeader(entries []headerEntry, name string) bool {
+	if len(entries) == 0 {
+		return false
+	}
+	lower := strings.ToLower(name)
+	for _, h := range entries {
+		if h.LowerName == lower {
+			return true
+		}
+	}
+	return false
 }
 
 func buildURLFromTarget(target submitTarget) (string, error) {
@@ -2069,7 +2206,7 @@ func buildURLFromTarget(target submitTarget) (string, error) {
 	return fmt.Sprintf("%s://%s%s", protocol, host, path), nil
 }
 
-func (nfm *NodeFormDataModule) collectSubmitHeaders(runtime *goja.Runtime, formDataObj *goja.Object, extra map[string]string) (map[string]string, error) {
+func (nfm *NodeFormDataModule) collectSubmitHeaders(runtime *goja.Runtime, formDataObj *goja.Object, extra []headerEntry) ([]headerEntry, error) {
 	if runtime == nil || formDataObj == nil {
 		return nil, fmt.Errorf("runtime or formDataObj is nil")
 	}
@@ -2082,11 +2219,7 @@ func (nfm *NodeFormDataModule) collectSubmitHeaders(runtime *goja.Runtime, formD
 
 	var arg []goja.Value
 	if len(extra) > 0 {
-		headersObj := runtime.NewObject()
-		for k, v := range extra {
-			headersObj.Set(k, v)
-		}
-		arg = append(arg, headersObj)
+		arg = append(arg, headerEntriesToObject(runtime, extra))
 	}
 
 	headersVal, err := getHeadersFn(formDataObj, arg...)
