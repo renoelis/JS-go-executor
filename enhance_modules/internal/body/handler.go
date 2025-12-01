@@ -214,6 +214,15 @@ func (h *BodyTypeHandler) isTypedArray(obj *goja.Object) bool {
 
 // isArrayBuffer 检查对象是否是 ArrayBuffer
 func (h *BodyTypeHandler) isArrayBuffer(obj *goja.Object) bool {
+	if obj == nil {
+		return false
+	}
+
+	// 优先通过 goja 的底层类型判断，避免被包装后的 constructor.name 影响
+	if _, ok := obj.Export().(goja.ArrayBuffer); ok {
+		return true
+	}
+
 	if constructor := obj.Get("constructor"); !goja.IsUndefined(constructor) {
 		if constructorObj, ok := constructor.(*goja.Object); ok {
 			if nameVal := constructorObj.Get("name"); !goja.IsUndefined(nameVal) {

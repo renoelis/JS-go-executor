@@ -710,24 +710,31 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 			e.interceptObjectFreezeForBuffer(vm)
 
 			// 🔥 使用模块注册器统一设置所有模块
-			if err := e.moduleRegistry.SetupAll(vm); err != nil {
-				utils.Error("EventLoop 中模块设置失败", zap.Error(err))
-				finalError = &model.ExecutionError{
-					Type:    "SetupError",
-					Message: fmt.Sprintf("模块设置失败: %v", err),
+				if err := e.moduleRegistry.SetupAll(vm); err != nil {
+					utils.Error("EventLoop 中模块设置失败", zap.Error(err))
+					finalError = &model.ExecutionError{
+						Type:    "SetupError",
+						Message: fmt.Sprintf("模块设置失败: %v", err),
 				}
 				return // 立即返回，不继续执行
 			}
 
-			e.registerBase64Functions(vm)
-			e.registerTextEncoders(vm) // ✅ 注册 TextEncoder/TextDecoder
-			e.setupGlobalObjectsForEventLoop(vm)
+				e.registerBase64Functions(vm)
+				e.registerTextEncoders(vm) // ✅ 注册 TextEncoder/TextDecoder
+				e.setupGlobalObjectsForEventLoop(vm)
 
-			// 提供不保活事件循环的定时器（等价 Node 的 timer.unref）
-			vm.Set("setTimeoutUnref", func(call goja.FunctionCall) goja.Value {
-				if len(call.Arguments) == 0 {
-					return goja.Undefined()
+				// 🔥 与同步路径保持一致：在禁用 Reflect/Proxy 之前注册 JS 内存限制器，拦截大分配
+				if e.jsMemoryLimiter != nil && e.jsMemoryLimiter.IsEnabled() {
+					if err := e.jsMemoryLimiter.RegisterLimiter(vm); err != nil {
+						utils.Warn("EventLoop 内存限制器注册失败（非致命）", zap.Error(err))
+					}
 				}
+
+				// 提供不保活事件循环的定时器（等价 Node 的 timer.unref）
+				vm.Set("setTimeoutUnref", func(call goja.FunctionCall) goja.Value {
+					if len(call.Arguments) == 0 {
+						return goja.Undefined()
+					}
 				fn, ok := goja.AssertFunction(call.Argument(0))
 				if !ok {
 					return goja.Undefined()
