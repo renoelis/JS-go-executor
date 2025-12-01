@@ -988,7 +988,14 @@ func (sfd *StreamingFormData) ShouldUseStreaming() bool {
 	if sfd == nil || sfd.config == nil {
 		return false
 	}
-	return sfd.totalSize >= sfd.config.StreamingThreshold
+
+	// 存在流式 entry 或未知长度的流，直接启用流式模式
+	if sfd.HasStreamingEntries() || sfd.HasUnknownStreamLength() {
+		return true
+	}
+
+	// 其余场景按精确长度与阈值判断
+	return sfd.GetTotalSize() >= sfd.config.StreamingThreshold
 }
 
 // randomBoundary 生成随机边界字符串

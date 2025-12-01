@@ -1196,13 +1196,6 @@ func (nfm *NodeFormDataModule) appendField(streamingFormData *formdata.Streaming
 
 	// 添加条目
 	streamingFormData.AppendEntry(entry)
-
-	// 更新总大小估算
-	estimatedValueLen := int64(len(value))
-	if hasKnownLength {
-		estimatedValueLen = knownLength
-	}
-	streamingFormData.AddToTotalSize(int64(len(name)+len(contentType)+100) + estimatedValueLen) // 100 字节为 header 开销
 }
 
 // normalizeFilename 模拟 Node.js form-data 中的 path.basename 行为，只保留 "/" 之后的部分
@@ -1246,12 +1239,6 @@ func (nfm *NodeFormDataModule) appendRawEntry(streamingFormData *formdata.Stream
 	}
 
 	streamingFormData.AppendEntry(entry)
-	// 估算长度：与 appendField 相同的简单估算，便于后续 getLength 计算
-	estimatedValueLen := int64(0)
-	if hasKnownLength {
-		estimatedValueLen = knownLength
-	}
-	streamingFormData.AddToTotalSize(int64(len(name)+len(filename)+len(contentType)+100) + estimatedValueLen)
 }
 
 // appendFile 添加文件字段到 StreamingFormData
@@ -1273,13 +1260,6 @@ func (nfm *NodeFormDataModule) appendFile(streamingFormData *formdata.StreamingF
 
 	// 添加条目
 	streamingFormData.AppendEntry(entry)
-
-	// 更新总大小估算
-	estimatedValueLen := int64(len(data))
-	if hasKnownLength {
-		estimatedValueLen = knownLength
-	}
-	streamingFormData.AddToTotalSize(int64(len(name)+len(filename)+len(contentType)+200) + estimatedValueLen) // 200 字节为 header 开销
 }
 
 // appendBufferRef 添加 BufferRef，保持与原始 Buffer 的引用关系
@@ -1300,13 +1280,6 @@ func (nfm *NodeFormDataModule) appendBufferRef(streamingFormData *formdata.Strea
 	}
 
 	streamingFormData.AppendEntry(entry)
-
-	// 使用逻辑长度预估，保持与 Buffer 实际长度一致
-	estimatedValueLen := bufferRef.Length()
-	if hasKnownLength {
-		estimatedValueLen = knownLength
-	}
-	streamingFormData.AddToTotalSize(int64(len(name)+len(filename)+len(contentType)) + estimatedValueLen + 200)
 }
 
 // handleReadableStream 处理 ReadableStream 对象（axios stream）
@@ -1378,14 +1351,7 @@ func (nfm *NodeFormDataModule) appendStreamFile(streamingFormData *formdata.Stre
 	streamingFormData.AppendEntry(entry)
 
 	// 🔥 注意:流式数据的大小未知，不更新 totalSize
-	// 这样会自动触发流式处理模式
-	estimated := int64(len(name) + len(filename) + len(contentType) + 200) // header 预估
-	if hasKnownLength {
-		estimated += knownLength
-	} else {
-		estimated += int64(1024 * 1024) // 默认预估 1MB
-	}
-	streamingFormData.AddToTotalSize(estimated) // 预估长度用于模式检测
+	// 总长度由 GetTotalSize 统一精算
 }
 
 // appendUnknownStream 添加 Node.js Readable 占位，needsLength 决定是否视作未知长度流
@@ -1406,17 +1372,6 @@ func (nfm *NodeFormDataModule) appendUnknownStream(streamingFormData *formdata.S
 	}
 
 	streamingFormData.AppendEntry(entry)
-
-	estimated := int64(len(name) + len(filename) + len(contentType) + 200)
-	switch {
-	case hasKnownLength:
-		estimated += knownLength
-	case needsLength:
-		estimated += int64(1024 * 1024) // 默认 1MB 预估值，触发未知流分支
-	default:
-		// 与 Node 行为一致：非典型 Stream 对象按 0 字节处理
-	}
-	streamingFormData.AddToTotalSize(estimated)
 }
 
 // convertNodeReadableStream 将 Node.js Readable 对象转换为 io.ReadCloser，保持数据流式写入并绑定取消信号
