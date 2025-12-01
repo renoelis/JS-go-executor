@@ -225,6 +225,12 @@ var (
 	requestStreamHelperProgram       *goja.Program
 	requestStreamHelperOnce          sync.Once
 	requestStreamHelperProgramErr    error
+	blobFactoryProgram               *goja.Program
+	blobFactoryProgramOnce           sync.Once
+	blobFactoryProgramErr            error
+	fileFactoryProgram               *goja.Program
+	fileFactoryProgramOnce           sync.Once
+	fileFactoryProgramErr            error
 )
 
 // ==================== FetchEnhancer ====================
@@ -1161,15 +1167,7 @@ func (fe *FetchEnhancer) createFileFromBytes(runtime *goja.Runtime, data []byte,
 	return result.ToObject(runtime), nil
 }
 
-func ensureBlobFactory(runtime *goja.Runtime) (goja.Callable, error) {
-	existing := runtime.Get("__createBlobFromBytes")
-	if existing != nil && !goja.IsUndefined(existing) && !goja.IsNull(existing) {
-		if callable, ok := goja.AssertFunction(existing); ok {
-			return callable, nil
-		}
-	}
-
-	script := `(function(global){
+const blobFactoryScript = `(function(global){
   function createBlobFromBytes(buffer, type) {
     if (type === undefined) {
       return new Blob([buffer]);
@@ -1182,7 +1180,26 @@ func ensureBlobFactory(runtime *goja.Runtime) (goja.Callable, error) {
     writable: true
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);`
-	if _, err := runtime.RunString(script); err != nil {
+
+func ensureBlobFactory(runtime *goja.Runtime) (goja.Callable, error) {
+	existing := runtime.Get("__createBlobFromBytes")
+	if existing != nil && !goja.IsUndefined(existing) && !goja.IsNull(existing) {
+		if callable, ok := goja.AssertFunction(existing); ok {
+			return callable, nil
+		}
+	}
+
+	blobFactoryProgramOnce.Do(func() {
+		blobFactoryProgram, blobFactoryProgramErr = goja.Compile(
+			"blob_factory.js",
+			blobFactoryScript,
+			false,
+		)
+	})
+	if blobFactoryProgramErr != nil {
+		return nil, blobFactoryProgramErr
+	}
+	if _, err := runtime.RunProgram(blobFactoryProgram); err != nil {
 		return nil, err
 	}
 
@@ -1193,15 +1210,7 @@ func ensureBlobFactory(runtime *goja.Runtime) (goja.Callable, error) {
 	return nil, fmt.Errorf("__createBlobFromBytes is not callable")
 }
 
-func ensureFileFactory(runtime *goja.Runtime) (goja.Callable, error) {
-	existing := runtime.Get("__createFileFromBytes")
-	if existing != nil && !goja.IsUndefined(existing) && !goja.IsNull(existing) {
-		if callable, ok := goja.AssertFunction(existing); ok {
-			return callable, nil
-		}
-	}
-
-	script := `(function(global){
+const fileFactoryScript = `(function(global){
   if (typeof global.__createFileFromBytes === 'function') {
     return;
   }
@@ -1220,7 +1229,26 @@ func ensureFileFactory(runtime *goja.Runtime) (goja.Callable, error) {
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);`
 
-	if _, err := runtime.RunString(script); err != nil {
+func ensureFileFactory(runtime *goja.Runtime) (goja.Callable, error) {
+	existing := runtime.Get("__createFileFromBytes")
+	if existing != nil && !goja.IsUndefined(existing) && !goja.IsNull(existing) {
+		if callable, ok := goja.AssertFunction(existing); ok {
+			return callable, nil
+		}
+	}
+
+	fileFactoryProgramOnce.Do(func() {
+		fileFactoryProgram, fileFactoryProgramErr = goja.Compile(
+			"file_factory.js",
+			fileFactoryScript,
+			false,
+		)
+	})
+	if fileFactoryProgramErr != nil {
+		return nil, fileFactoryProgramErr
+	}
+
+	if _, err := runtime.RunProgram(fileFactoryProgram); err != nil {
 		return nil, err
 	}
 
