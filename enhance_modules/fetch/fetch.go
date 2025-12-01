@@ -3654,18 +3654,32 @@ type requestStreamWriter struct {
 	id     string
 	writer *io.PipeWriter
 
-	mu     sync.Mutex
-	closed bool
+	mu        sync.Mutex
+	closed    bool
+	err       error
+	queue     [][]byte
+	cond      *sync.Cond
+	closeOnce sync.Once
 }
 
 func (w *requestStreamWriter) write(data []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed {
+		if w.err != nil {
+			return w.err
+		}
 		return io.ErrClosedPipe
 	}
-	_, err := w.writer.Write(data)
-	return err
+
+	if w.cond == nil {
+		w.cond = sync.NewCond(&w.mu)
+	}
+
+	// 将数据入队，由专用 goroutine 顺序写入 PipeWriter，避免阻塞 goja 线程
+	w.queue = append(w.queue, data)
+	w.cond.Signal()
+	return nil
 }
 
 func (w *requestStreamWriter) closeWithError(err error) {
@@ -3675,12 +3689,58 @@ func (w *requestStreamWriter) closeWithError(err error) {
 		return
 	}
 	w.closed = true
+	if err != nil {
+		w.err = err
+		// 错误场景直接丢弃待写入队列，避免继续写入阻塞
+		w.queue = nil
+	}
+	if w.cond != nil {
+		w.cond.Broadcast()
+	}
 	writer := w.writer
 	w.mu.Unlock()
 
-	if writer != nil {
-		_ = writer.CloseWithError(err)
+	// 仅错误路径立即关闭，正常完成由写协程在队列清空后关闭
+	if err != nil {
+		w.closeOnce.Do(func() {
+			if writer != nil {
+				_ = writer.CloseWithError(err)
+			}
+		})
 	}
+}
+
+func (w *requestStreamWriter) start() {
+	go func() {
+		for {
+			w.mu.Lock()
+			for !w.closed && len(w.queue) == 0 {
+				w.cond.Wait()
+			}
+
+			if len(w.queue) == 0 && w.closed {
+				w.mu.Unlock()
+				break
+			}
+
+			// 取出队首数据后立即解锁，避免阻塞写入路径
+			data := w.queue[0]
+			w.queue = w.queue[1:]
+			w.mu.Unlock()
+
+			if _, err := w.writer.Write(data); err != nil {
+				w.closeWithError(err)
+				return
+			}
+		}
+
+		// 优雅关闭：队列耗尽后再关闭 PipeWriter（无错误时写入方返回 EOF）
+		w.closeOnce.Do(func() {
+			if w.writer != nil {
+				_ = w.writer.CloseWithError(w.err)
+			}
+		})
+	}()
 }
 
 func (fe *FetchEnhancer) registerRequestStreamWriter(pw *io.PipeWriter) string {
@@ -3688,10 +3748,13 @@ func (fe *FetchEnhancer) registerRequestStreamWriter(pw *io.PipeWriter) string {
 	defer fe.requestStreamMu.Unlock()
 	fe.requestStreamSeq++
 	id := fmt.Sprintf("rsw_%d", fe.requestStreamSeq)
-	fe.requestStreamWriters[id] = &requestStreamWriter{
+	writer := &requestStreamWriter{
 		id:     id,
 		writer: pw,
 	}
+	writer.cond = sync.NewCond(&writer.mu)
+	writer.start()
+	fe.requestStreamWriters[id] = writer
 	return id
 }
 
