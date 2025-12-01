@@ -1442,7 +1442,9 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 	chunkCh := make(chan []byte, 16) // 小缓冲 + 背压，避免 per-chunk goroutine
 	closedCh := make(chan struct{})
 	var closeOnce sync.Once
+	var cleanupOnce sync.Once
 	var closeErr error
+	var dataHandlerVal, endHandlerVal, errorHandlerVal goja.Value
 
 	// 统一关闭管道和信号
 	signalClose := func(err error) {
@@ -1450,6 +1452,29 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 			if err != nil && closeErr == nil {
 				closeErr = err
 			}
+			// 先解绑监听，避免复用流时残留闭包
+			cleanupOnce.Do(func() {
+				removeListener := func(event string, handler goja.Value) {
+					if handler == nil || goja.IsUndefined(handler) || goja.IsNull(handler) {
+						return
+					}
+					if offVal := streamObj.Get("off"); offVal != nil && !goja.IsUndefined(offVal) && !goja.IsNull(offVal) {
+						if offFn, ok := goja.AssertFunction(offVal); ok {
+							offFn(streamObj, runtime.ToValue(event), handler)
+							return
+						}
+					}
+					if rmVal := streamObj.Get("removeListener"); rmVal != nil && !goja.IsUndefined(rmVal) && !goja.IsNull(rmVal) {
+						if rmFn, ok := goja.AssertFunction(rmVal); ok {
+							rmFn(streamObj, runtime.ToValue(event), handler)
+						}
+					}
+				}
+				removeListener("data", dataHandlerVal)
+				removeListener("end", endHandlerVal)
+				removeListener("close", endHandlerVal)
+				removeListener("error", errorHandlerVal)
+			})
 			close(closedCh)
 			close(chunkCh)
 			if timer != nil {
@@ -1538,13 +1563,18 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 		return goja.Undefined()
 	}
 
-	if _, err := onFn(streamObj, runtime.ToValue("data"), runtime.ToValue(dataHandler)); err != nil {
+	// 保存 handler 引用以便解绑
+	dataHandlerVal = runtime.ToValue(dataHandler)
+	endHandlerVal = runtime.ToValue(endHandler)
+	errorHandlerVal = runtime.ToValue(errorHandler)
+
+	if _, err := onFn(streamObj, runtime.ToValue("data"), dataHandlerVal); err != nil {
 		signalClose(err)
 		return nil, err
 	}
-	onFn(streamObj, runtime.ToValue("end"), runtime.ToValue(endHandler))
-	onFn(streamObj, runtime.ToValue("close"), runtime.ToValue(endHandler))
-	onFn(streamObj, runtime.ToValue("error"), runtime.ToValue(errorHandler))
+	onFn(streamObj, runtime.ToValue("end"), endHandlerVal)
+	onFn(streamObj, runtime.ToValue("close"), endHandlerVal)
+	onFn(streamObj, runtime.ToValue("error"), errorHandlerVal)
 
 	// 确保流进入 flowing 模式
 	if resumeVal := streamObj.Get("resume"); resumeVal != nil && !goja.IsUndefined(resumeVal) && !goja.IsNull(resumeVal) {
