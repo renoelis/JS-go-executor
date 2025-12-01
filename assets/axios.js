@@ -136,8 +136,149 @@
         result[key] = params2[key];
       }
     }
-    
+
     return result;
+  }
+
+  /**
+   * 为 ReadableStream 附加 Node.js 风格的事件 API（on/once/off）
+   * 便于在 axios responseType: 'stream' 时保持与 Node 行为一致
+   */
+  function ensureNodeStreamAPI(stream) {
+    if (!stream || typeof stream !== 'object') return stream;
+    if (typeof stream.on === 'function' && typeof stream.once === 'function') {
+      return stream;
+    }
+    if (typeof stream.getReader !== 'function') {
+      return stream;
+    }
+
+    var listeners = {
+      data: [],
+      end: [],
+      error: [],
+      close: []
+    };
+    var reading = false;
+    var ended = false;
+
+    function emit(type, arg) {
+      var arr = listeners[type];
+      if (!arr || arr.length === 0) return;
+      var remain = [];
+      for (var i = 0; i < arr.length; i++) {
+        var item = arr[i];
+        if (!item || typeof item.fn !== 'function') continue;
+        try {
+          item.fn(arg);
+        } catch (e) {
+          if (typeof setTimeout === 'function') {
+            setTimeout(function(err) { throw err; }, 0, e);
+          }
+        }
+        if (!item.once) {
+          remain.push(item);
+        }
+      }
+      listeners[type] = remain;
+    }
+
+    function startReading() {
+      if (reading) return;
+      reading = true;
+      var reader;
+      try {
+        reader = stream.getReader();
+      } catch (err) {
+        emit('error', err);
+        return;
+      }
+
+      var pump = function() {
+        reader.read().then(function(result) {
+          if (result && result.done) {
+            if (!ended) {
+              ended = true;
+              emit('end');
+              emit('close');
+            }
+            return;
+          }
+
+          var chunk = result ? result.value : undefined;
+          if (typeof Buffer !== 'undefined' && chunk != null && !Buffer.isBuffer(chunk)) {
+            try {
+              chunk = Buffer.from(chunk);
+            } catch (e) {}
+          }
+          emit('data', chunk);
+          pump();
+        }).catch(function(err) {
+          emit('error', err);
+        });
+      };
+
+      pump();
+    }
+
+    function addListener(type, fn, once) {
+      if (!fn || typeof fn !== 'function') {
+        return stream;
+      }
+      if (!listeners[type]) {
+        listeners[type] = [];
+      }
+      listeners[type].push({ fn: fn, once: !!once });
+      if (!reading && (type === 'data' || type === 'end' || type === 'error' || type === 'close')) {
+        startReading();
+      }
+      return stream;
+    }
+
+    function removeListener(type, fn) {
+      if (!listeners[type] || listeners[type].length === 0) {
+        return stream;
+      }
+      if (!fn) {
+        listeners[type] = [];
+        return stream;
+      }
+      var next = [];
+      for (var i = 0; i < listeners[type].length; i++) {
+        var item = listeners[type][i];
+        if (item && item.fn !== fn) {
+          next.push(item);
+        }
+      }
+      listeners[type] = next;
+      return stream;
+    }
+
+    stream.on = function(type, fn) {
+      return addListener(type, fn, false);
+    };
+    stream.once = function(type, fn) {
+      return addListener(type, fn, true);
+    };
+    stream.addListener = stream.on;
+    stream.off = function(type, fn) {
+      return removeListener(type, fn);
+    };
+    stream.removeListener = stream.off;
+    stream.removeAllListeners = function(type) {
+      if (!type) {
+        for (var key in listeners) {
+          if (Object.prototype.hasOwnProperty.call(listeners, key)) {
+            listeners[key] = [];
+          }
+        }
+      } else if (listeners[type]) {
+        listeners[type] = [];
+      }
+      return stream;
+    };
+
+    return stream;
   }
 
   /**
@@ -1160,7 +1301,7 @@
           if (method === 'HEAD' || method === 'OPTIONS') {
             dataPromise = Promise.resolve('');
           } else if (responseType === 'stream') {
-            dataPromise = Promise.resolve(response.body);
+            dataPromise = Promise.resolve(ensureNodeStreamAPI(response.body));
           } else if (responseType === 'json') {
             if (finalConfig && finalConfig.transformResponse) {
               dataPromise = response.text();
@@ -1554,8 +1695,8 @@
           // HEAD/OPTIONS 请求不尝试解析 body，直接返回空字符串
           dataPromise = Promise.resolve('');
         } else if (responseType === 'stream') {
-          // 🔥 流式响应：直接返回 response.body（ReadableStream）
-          dataPromise = Promise.resolve(response.body);
+          // 🔥 流式响应：直接返回 response.body（ReadableStream）并补齐 Node 事件 API
+          dataPromise = Promise.resolve(ensureNodeStreamAPI(response.body));
         } else if (responseType === 'json') {
           // 当存在自定义 transformResponse 时，与 axios 行为保持一致：
           // 先把原始文本交给 transformResponse，由调用方决定是否以及如何解析 JSON。

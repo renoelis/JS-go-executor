@@ -173,13 +173,23 @@ func (cl *CodeLexer) scanTemplateLiteral(start int) Token {
 				cl.pending = append(cl.pending, Token{Type: TokenString, Start: textStart, End: i})
 			}
 
+			// `${` 定界符属于模板字符串本身，按字符串处理为安全的空格
+			cl.pending = append(cl.pending, Token{Type: TokenString, Start: i, End: i + 2})
+
 			exprStart := i + 2
 			exprEnd := cl.scanTemplateExpressionEnd(exprStart)
 			if exprEnd < exprStart {
 				exprEnd = exprStart
 			}
-			if exprStart < exprEnd {
-				inner := NewCodeLexer(string(cl.code[exprStart:exprEnd]))
+
+			// 去掉末尾的 `}`，避免在 cleanedCode 中留下不成对的右括号
+			exprContentEnd := exprEnd - 1
+			if exprContentEnd < exprStart {
+				exprContentEnd = exprStart
+			}
+
+			if exprStart < exprContentEnd {
+				inner := NewCodeLexer(string(cl.code[exprStart:exprContentEnd]))
 				innerCode := inner.GetCode()
 				for {
 					t := inner.NextToken()
@@ -194,6 +204,11 @@ func (cl *CodeLexer) scanTemplateLiteral(start int) Token {
 					_ = innerCode
 					cl.pending = append(cl.pending, mapped)
 				}
+			}
+
+			// `}` 定界符同样作为字符串处理，保持长度一致并防止误判
+			if exprEnd > exprStart {
+				cl.pending = append(cl.pending, Token{Type: TokenString, Start: exprEnd - 1, End: exprEnd})
 			}
 
 			i = exprEnd

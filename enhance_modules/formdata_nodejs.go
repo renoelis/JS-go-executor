@@ -1219,7 +1219,18 @@ func (nfm *NodeFormDataModule) handleAppend(runtime *goja.Runtime, streamingForm
 	if value == nil || goja.IsUndefined(value) || goja.IsNull(value) {
 		strValue = ""
 	} else {
-		strValue = fmt.Sprintf("%v", exported)
+		// 避免 fmt.Sprintf("%v") 对复杂 goja.Object 递归展开导致栈溢出，优先用 JS toString
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					strValue = ""
+				}
+			}()
+			strValue = value.String()
+		}()
+		if strValue == "" && exported != nil {
+			strValue = fmt.Sprintf("%T", exported)
+		}
 	}
 
 	// 如果提供了 filename，即使值类型未知，也需要生成文件 part 以包含 filename
@@ -1353,14 +1364,27 @@ func (nfm *NodeFormDataModule) handleReadableStream(streamingFormData *formdata.
 	}
 
 	// 尝试导出为 Go 对象
-	exported := streamReaderVal.Export()
+	var exported interface{}
+	var exportErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// 避免 fmt 递归打印 goja 对象导致栈溢出，仅记录类型
+				exportErr = fmt.Errorf("导出 __streamReader 失败: %T", r)
+			}
+		}()
+		exported = streamReaderVal.Export()
+	}()
+	if exportErr != nil {
+		return exportErr
+	}
 	if exported == nil {
 		return fmt.Errorf("无法导出 StreamReader")
 	}
 
 	// 类型断言为 *fetch.StreamReader
 	streamReader, ok := exported.(*fetch.StreamReader)
-	if !ok {
+	if !ok || streamReader == nil {
 		return fmt.Errorf("__streamReader 不是有效的 StreamReader 类型")
 	}
 
