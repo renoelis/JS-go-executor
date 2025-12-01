@@ -29,10 +29,11 @@ func (e *AbortError) Error() string {
 	return e.message
 }
 
-// ensureASCIIHeaderValue 校验 header 值是否为 ASCII，违反时抛出 TypeError
+// ensureASCIIHeaderValue 校验 header 值字符合法性，与 Node/undici 对齐，违反时抛 TypeError
 func ensureASCIIHeaderValue(runtime *goja.Runtime, value string) {
 	for _, r := range value {
-		if r > 0xFF {
+		// 允许 obs-text (0x80-0xFF)，拒绝控制字符、DEL 和超出 0xFF 的码位
+		if r > 0xFF || (r <= 0x1F && r != '\t') || r == 0x7F {
 			panic(runtime.NewTypeError("Invalid character in header value"))
 		}
 	}
