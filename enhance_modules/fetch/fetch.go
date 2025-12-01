@@ -3118,11 +3118,15 @@ func (fe *FetchEnhancer) extractFormDataInCurrentThread(runtime *goja.Runtime, f
 	// 🔥 判断使用缓冲模式还是流式模式
 	totalSize := streamingFormData.GetTotalSize()
 	boundary := streamingFormData.GetBoundary()
-	shouldStream := streamingFormData.ShouldUseStreaming() || totalSize > fe.config.FormDataConfig.MaxBufferedFormDataSize
+	maxBuffered := fe.config.FormDataConfig.MaxBufferedFormDataSize
+	shouldStream := streamingFormData.ShouldUseStreaming()
+	if fe.config.FormDataConfig.EnableChunkedUpload && maxBuffered > 0 && totalSize > maxBuffered {
+		shouldStream = true
+	}
 
 	// 🔥 如果总大小 <= 缓冲阈值，使用缓冲模式（返回 []byte）
 	// 注意：totalSize == 0 的情况（空表单）也应该缓冲
-	if !shouldStream && totalSize >= 0 && totalSize <= fe.config.FormDataConfig.MaxBufferedFormDataSize {
+	if !shouldStream && totalSize >= 0 && (maxBuffered == 0 || totalSize <= maxBuffered) {
 		// 缓冲模式：一次性读取到内存
 		reader, err := streamingFormData.CreateReader()
 		if err != nil {
@@ -3184,7 +3188,10 @@ func (fe *FetchEnhancer) convertNodeFormDataToBytes(runtime *goja.Runtime, formD
 	if goStreamingFD := formDataObj.Get("__getGoStreamingFormData"); !goja.IsUndefined(goStreamingFD) && goStreamingFD != nil {
 		if streamingFormData, ok := goStreamingFD.Export().(*formdata.StreamingFormData); ok && streamingFormData != nil {
 			totalSize := streamingFormData.GetTotalSize()
-			shouldStream := streamingFormData.ShouldUseStreaming() || (maxBuffered > 0 && totalSize > maxBuffered)
+			shouldStream := streamingFormData.ShouldUseStreaming()
+			if fe.config.FormDataConfig.EnableChunkedUpload && maxBuffered > 0 && totalSize > maxBuffered {
+				shouldStream = true
+			}
 			maxAllowed := chooseLimit(shouldStream)
 			if maxAllowed > 0 && totalSize > maxAllowed {
 				sizeMB := float64(totalSize) / 1024 / 1024

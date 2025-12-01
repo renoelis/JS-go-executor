@@ -989,13 +989,12 @@ func (sfd *StreamingFormData) ShouldUseStreaming() bool {
 		return false
 	}
 
-	// 存在流式 entry 或未知长度的流，直接启用流式模式
-	if sfd.HasStreamingEntries() || sfd.HasUnknownStreamLength() {
-		return true
+	mustStream := sfd.HasStreamingEntries() || sfd.HasUnknownStreamLength()
+	if !sfd.config.EnableChunkedUpload {
+		// 禁用分块时仅在必须流式（真实流或未知长度）才返回 true
+		return mustStream
 	}
-
-	// 其余场景按精确长度与阈值判断
-	return sfd.GetTotalSize() >= sfd.config.StreamingThreshold
+	return mustStream
 }
 
 // randomBoundary 生成随机边界字符串
