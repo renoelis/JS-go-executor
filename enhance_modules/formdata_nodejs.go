@@ -2319,6 +2319,32 @@ func (nfm *NodeFormDataModule) createIncomingMessage(runtime *goja.Runtime, resp
 	}
 	incoming.Set("rawHeaders", rawHeadersArr)
 
+	var cancelOnce sync.Once
+	cancelResponseBody := func(reason goja.Value) {
+		cancelOnce.Do(func() {
+			bodyVal := respObj.Get("body")
+			if bodyVal == nil || goja.IsUndefined(bodyVal) || goja.IsNull(bodyVal) {
+				return
+			}
+			bodyObj, ok := bodyVal.(*goja.Object)
+			if !ok || bodyObj == nil {
+				return
+			}
+			if cancelVal := bodyObj.Get("cancel"); cancelVal != nil && !goja.IsUndefined(cancelVal) && !goja.IsNull(cancelVal) {
+				if cancelFn, ok := goja.AssertFunction(cancelVal); ok {
+					if _, err := cancelFn(bodyObj, reason); err == nil {
+						return
+					}
+				}
+			}
+			if destroyVal := bodyObj.Get("destroy"); destroyVal != nil && !goja.IsUndefined(destroyVal) && !goja.IsNull(destroyVal) {
+				if destroyFn, ok := goja.AssertFunction(destroyVal); ok {
+					_, _ = destroyFn(bodyObj, reason)
+				}
+			}
+		})
+	}
+
 	var started bool
 	var ended bool
 	var destroyed bool
@@ -2432,8 +2458,13 @@ func (nfm *NodeFormDataModule) createIncomingMessage(runtime *goja.Runtime, resp
 			return incoming
 		}
 		destroyed = true
+		var reason goja.Value
 		if len(call.Arguments) > 0 && !goja.IsUndefined(call.Arguments[0]) && !goja.IsNull(call.Arguments[0]) {
-			errVal := normalizeRequestErrorValue(runtime, call.Arguments[0], "ECONNRESET")
+			reason = call.Arguments[0]
+		}
+		cancelResponseBody(reason)
+		if reason != nil {
+			errVal := normalizeRequestErrorValue(runtime, reason, "ECONNRESET")
 			emitter.emit("error", errVal)
 			if onError != nil {
 				onError(errVal)
