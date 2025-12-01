@@ -1002,7 +1002,9 @@ func (sfd *StreamingFormData) ShouldUseStreaming() bool {
 func randomBoundary() string {
 	// 生成 12 字节的随机数据（12 * 2 = 24 个十六进制字符）
 	b := make([]byte, 12)
-	_, _ = io.ReadFull(rand.Reader, b)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		panic(fmt.Errorf("formdata: failed to generate boundary: %w", err))
+	}
 
 	// 转换为十六进制字符串
 	hexStr := fmt.Sprintf("%x", b)

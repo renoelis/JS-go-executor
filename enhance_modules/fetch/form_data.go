@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 
@@ -13,7 +14,9 @@ import (
 // generateBoundary 生成随机边界字符串
 func generateBoundary() string {
 	b := make([]byte, 12)
-	rand.Read(b)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		panic(fmt.Errorf("fetch formdata: failed to generate boundary: %w", err))
+	}
 	return hex.EncodeToString(b)
 }
 
