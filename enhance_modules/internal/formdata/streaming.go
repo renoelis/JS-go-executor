@@ -690,7 +690,36 @@ func (sfd *StreamingFormData) copyStreaming(dst io.Writer, src io.Reader) (int64
 		maxSize = sfd.config.MaxBufferedFormDataSize
 	}
 
+	// 🔥 如果上层提供了 context，监听取消并尽量打断阻塞的 Reader
+	var watchedCtx context.Context
+	var closerOnce sync.Once
+	closeReader := func() {
+		if c, ok := src.(io.Closer); ok {
+			_ = c.Close()
+		}
+	}
+
 	for {
+		// 观察最新的 context（SetContext 可能在 CreateReader 之后才调用）
+		ctx := sfd.activeContext()
+		if ctx != nil && ctx != watchedCtx && ctx.Done() != nil {
+			watchedCtx = ctx
+			go func(cancelCtx context.Context) {
+				<-cancelCtx.Done()
+				closerOnce.Do(closeReader)
+			}(ctx)
+		}
+
+		// 读前检查取消
+		if ctx != nil && ctx.Done() != nil {
+			select {
+			case <-ctx.Done():
+				closerOnce.Do(closeReader)
+				return written, fmt.Errorf("写入已取消: %w", ctx.Err())
+			default:
+			}
+		}
+
 		nr, err := src.Read(buffer)
 		if nr > 0 {
 			// 🔥 关键：在写入前检查累计大小
@@ -718,6 +747,17 @@ func (sfd *StreamingFormData) copyStreaming(dst io.Writer, src io.Reader) (int64
 				return written, io.ErrShortWrite
 			}
 		}
+
+		// 写后再次检查取消，避免长时间阻塞的下一次 Read
+		if ctx != nil && ctx.Done() != nil {
+			select {
+			case <-ctx.Done():
+				closerOnce.Do(closeReader)
+				return written, fmt.Errorf("写入已取消: %w", ctx.Err())
+			default:
+			}
+		}
+
 		if err == io.EOF {
 			break
 		}
@@ -1044,4 +1084,12 @@ func (sfd *StreamingFormData) SetContext(ctx context.Context) {
 	if sfd != nil && sfd.config != nil {
 		sfd.config.Context = ctx
 	}
+}
+
+// activeContext 返回当前配置的上下文（可能为 nil）
+func (sfd *StreamingFormData) activeContext() context.Context {
+	if sfd == nil || sfd.config == nil {
+		return nil
+	}
+	return sfd.config.Context
 }
