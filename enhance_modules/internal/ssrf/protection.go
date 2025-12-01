@@ -29,6 +29,15 @@ func CreateProtectedDialContext(
 	dialTimeout time.Duration,
 	keepAlive time.Duration,
 ) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	// 防御性兜底：允许 nil 配置时退回默认（关闭防护、允许私网）
+	cfg := config
+	if cfg == nil {
+		cfg = &SSRFProtectionConfig{
+			Enabled:        false,
+			AllowPrivateIP: true,
+		}
+	}
+
 	// 创建标准 Dialer
 	standardDialer := &net.Dialer{
 		Timeout:   dialTimeout,
@@ -37,7 +46,7 @@ func CreateProtectedDialContext(
 
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		// 1. 如果未启用 SSRF 防护，直接使用标准 Dialer
-		if !config.Enabled {
+		if !cfg.Enabled {
 			return standardDialer.DialContext(ctx, network, addr)
 		}
 
@@ -51,7 +60,7 @@ func CreateProtectedDialContext(
 		ip := net.ParseIP(host)
 		if ip != nil {
 			// 直接是 IP，检查是否允许
-			if err := checkIPAllowed(ip, config.AllowPrivateIP); err != nil {
+			if err := checkIPAllowed(ip, cfg.AllowPrivateIP); err != nil {
 				utils.Warn("SSRF防护：禁止访问私有IP",
 					zap.String("ip", ip.String()),
 					zap.String("addr", addr),
@@ -71,7 +80,7 @@ func CreateProtectedDialContext(
 
 			// 5. 检查所有解析的 IP（防止 DNS 重绑定攻击）
 			for _, resolvedIP := range ips {
-				if err := checkIPAllowed(resolvedIP, config.AllowPrivateIP); err != nil {
+				if err := checkIPAllowed(resolvedIP, cfg.AllowPrivateIP); err != nil {
 					utils.Warn("SSRF防护：域名解析到私有IP",
 						zap.String("domain", host),
 						zap.String("resolved_ip", resolvedIP.String()),
