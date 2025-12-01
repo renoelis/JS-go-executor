@@ -1400,6 +1400,7 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 		return nil, fmt.Errorf("invalid readable stream")
 	}
 
+	dispatcher := newRuntimeDispatcher(runtime)
 	onVal := streamObj.Get("on")
 	onFn, ok := goja.AssertFunction(onVal)
 	if !ok {
@@ -1469,7 +1470,7 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 		if resumeFn == nil {
 			return
 		}
-		scheduleAsync(runtime, func() {
+		if !dispatcher.RunOnLoop(func(rt *goja.Runtime) {
 			select {
 			case <-closedCh:
 				return
@@ -1477,30 +1478,32 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 			}
 			defer func() { _ = recover() }()
 			resumeFn(streamObj)
-		})
+		}) {
+			// 没有调度器时避免跨 goroutine 直接调用 goja
+		}
 	}
 
 	// 统一关闭管道和信号
-	signalClose := func(err error) {
-		closeOnce.Do(func() {
-			if err != nil && closeErr == nil {
-				closeErr = err
+	requestCleanup := func(fromLoop bool) {
+		cleanupOnce.Do(func() {
+			run := dispatcher.RunOnLoop
+			if fromLoop {
+				run = dispatcher.RunOnLoopOrInline
 			}
-			// 先解绑监听，避免复用流时残留闭包
-			cleanupOnce.Do(func() {
+			if !run(func(rt *goja.Runtime) {
 				removeListener := func(event string, handler goja.Value) {
 					if handler == nil || goja.IsUndefined(handler) || goja.IsNull(handler) {
 						return
 					}
 					if offVal := streamObj.Get("off"); offVal != nil && !goja.IsUndefined(offVal) && !goja.IsNull(offVal) {
 						if offFn, ok := goja.AssertFunction(offVal); ok {
-							offFn(streamObj, runtime.ToValue(event), handler)
+							offFn(streamObj, rt.ToValue(event), handler)
 							return
 						}
 					}
 					if rmVal := streamObj.Get("removeListener"); rmVal != nil && !goja.IsUndefined(rmVal) && !goja.IsNull(rmVal) {
 						if rmFn, ok := goja.AssertFunction(rmVal); ok {
-							rmFn(streamObj, runtime.ToValue(event), handler)
+							rmFn(streamObj, rt.ToValue(event), handler)
 						}
 					}
 				}
@@ -1508,7 +1511,18 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 				removeListener("end", endHandlerVal)
 				removeListener("close", endHandlerVal)
 				removeListener("error", errorHandlerVal)
-			})
+			}) {
+				// 缺少调度器时跳过 JS 层解绑，避免跨线程访问 goja
+			}
+		})
+	}
+
+	signalClose := func(err error, fromLoop bool) {
+		closeOnce.Do(func() {
+			if err != nil && closeErr == nil {
+				closeErr = err
+			}
+			requestCleanup(fromLoop)
 			close(closedCh)
 			close(chunkCh)
 			if timer != nil {
@@ -1522,9 +1536,9 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 		select {
 		case <-closedCh:
 		case <-ctxDoneCh:
-			signalClose(fmt.Errorf("readable stream canceled: %v", ctx.Err()))
+			signalClose(fmt.Errorf("readable stream canceled: %v", ctx.Err()), false)
 		case <-timeoutCh:
-			signalClose(fmt.Errorf("readable stream timeout after %v", timeout))
+			signalClose(fmt.Errorf("readable stream timeout after %v", timeout), false)
 		}
 	}()
 
@@ -1535,7 +1549,7 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 				continue
 			}
 			if _, err := pw.Write(chunk); err != nil {
-				signalClose(err)
+				signalClose(err, false)
 				break
 			}
 		}
@@ -1555,10 +1569,10 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 					case <-closedCh:
 						return
 					case <-ctxDoneCh:
-						signalClose(fmt.Errorf("readable stream canceled: %v", ctx.Err()))
+						signalClose(fmt.Errorf("readable stream canceled: %v", ctx.Err()), false)
 						return
 					case <-timeoutCh:
-						signalClose(fmt.Errorf("readable stream timeout after %v", timeout))
+						signalClose(fmt.Errorf("readable stream timeout after %v", timeout), false)
 						return
 					case buf := <-backlogCh:
 						for {
@@ -1566,10 +1580,10 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 							case <-closedCh:
 								return
 							case <-ctxDoneCh:
-								signalClose(fmt.Errorf("readable stream canceled: %v", ctx.Err()))
+								signalClose(fmt.Errorf("readable stream canceled: %v", ctx.Err()), false)
 								return
 							case <-timeoutCh:
-								signalClose(fmt.Errorf("readable stream timeout after %v", timeout))
+								signalClose(fmt.Errorf("readable stream timeout after %v", timeout), false)
 								return
 							case chunkCh <- buf:
 								scheduleResume()
@@ -1585,17 +1599,17 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 
 	dataHandler := func(call goja.FunctionCall) goja.Value {
 		chunk := call.Argument(0)
-		if goja.IsUndefined(chunk) || goja.IsNull(chunk) {
-			return goja.Undefined()
-		}
-		data, err := exportNodeStreamChunk(runtime, chunk)
-		if err != nil {
-			signalClose(err)
-			return goja.Undefined()
-		}
-		if len(data) == 0 {
-			return goja.Undefined()
-		}
+			if goja.IsUndefined(chunk) || goja.IsNull(chunk) {
+				return goja.Undefined()
+			}
+			data, err := exportNodeStreamChunk(runtime, chunk)
+			if err != nil {
+				signalClose(err, true)
+				return goja.Undefined()
+			}
+			if len(data) == 0 {
+				return goja.Undefined()
+			}
 
 		func() {
 			defer func() {
@@ -1608,9 +1622,9 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 			case <-closedCh:
 				// 已关闭，直接丢弃
 			case <-ctxDoneCh:
-				signalClose(fmt.Errorf("readable stream canceled: %v", ctx.Err()))
+				signalClose(fmt.Errorf("readable stream canceled: %v", ctx.Err()), true)
 			case <-timeoutCh:
-				signalClose(fmt.Errorf("readable stream timeout after %v", timeout))
+				signalClose(fmt.Errorf("readable stream timeout after %v", timeout), true)
 			case chunkCh <- data:
 				// 正常写入
 			default:
@@ -1623,7 +1637,7 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 				case backlogCh <- data:
 					startBackpressureDrainer()
 				default:
-					signalClose(fmt.Errorf("readable stream backpressure overflow"))
+					signalClose(fmt.Errorf("readable stream backpressure overflow"), true)
 				}
 			}
 		}()
@@ -1631,7 +1645,7 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 	}
 
 	endHandler := func(goja.FunctionCall) goja.Value {
-		signalClose(nil)
+		signalClose(nil, true)
 		return goja.Undefined()
 	}
 
@@ -1642,7 +1656,7 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 		} else {
 			msg = "Unknown stream error"
 		}
-		signalClose(fmt.Errorf("%s", msg))
+		signalClose(fmt.Errorf("%s", msg), true)
 		return goja.Undefined()
 	}
 
@@ -1652,7 +1666,7 @@ func (nfm *NodeFormDataModule) convertNodeReadableStream(runtime *goja.Runtime, 
 	errorHandlerVal = runtime.ToValue(errorHandler)
 
 	if _, err := onFn(streamObj, runtime.ToValue("data"), dataHandlerVal); err != nil {
-		signalClose(err)
+		signalClose(err, true)
 		return nil, err
 	}
 	onFn(streamObj, runtime.ToValue("end"), endHandlerVal)
@@ -1888,6 +1902,53 @@ func scheduleAsync(runtime *goja.Runtime, fn func()) {
 	}
 
 	fn()
+}
+
+type runtimeDispatcher struct {
+	runtime   *goja.Runtime
+	scheduler fetch.LoopScheduler
+}
+
+func newRuntimeDispatcher(runtime *goja.Runtime) *runtimeDispatcher {
+	if runtime == nil {
+		return &runtimeDispatcher{}
+	}
+
+	var scheduler fetch.LoopScheduler
+	if schedulerVal := runtime.Get(fetch.LoopSchedulerGlobalKey); schedulerVal != nil && !goja.IsUndefined(schedulerVal) && !goja.IsNull(schedulerVal) {
+		if s, ok := schedulerVal.Export().(fetch.LoopScheduler); ok {
+			scheduler = s
+		}
+	}
+
+	return &runtimeDispatcher{
+		runtime:   runtime,
+		scheduler: scheduler,
+	}
+}
+
+// RunOnLoop 将回调调度到事件循环线程，失败时返回 false（不在 goroutine 中直接调用 goja）
+func (d *runtimeDispatcher) RunOnLoop(fn func(*goja.Runtime)) bool {
+	if d == nil || fn == nil || d.runtime == nil || d.scheduler == nil {
+		return false
+	}
+	return d.scheduler.RunOnLoop(func(rt *goja.Runtime) {
+		fn(rt)
+	})
+}
+
+// RunOnLoopOrInline 允许在当前（已处于 goja 线程）直接执行，或调度到事件循环
+func (d *runtimeDispatcher) RunOnLoopOrInline(fn func(*goja.Runtime)) bool {
+	if d == nil || fn == nil || d.runtime == nil {
+		return false
+	}
+	if d.scheduler != nil && d.scheduler.RunOnLoop(func(rt *goja.Runtime) {
+		fn(rt)
+	}) {
+		return true
+	}
+	fn(d.runtime)
+	return true
 }
 
 type jsEventEmitter struct {
