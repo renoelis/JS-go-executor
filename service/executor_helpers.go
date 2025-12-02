@@ -10,6 +10,7 @@ import (
 	"math"
 	"regexp"
 	goruntime "runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -464,7 +465,8 @@ func (e *JSExecutor) executeWithRuntimePool(ctx context.Context, code string, in
 		}
 	}
 
-	runtime.Set("input", input)
+	orderedInput := buildOrderedInputValue(runtime, input)
+	runtime.Set("input", orderedInput)
 	runtime.Set("__executionId", executionId)
 	runtime.Set("__startTime", time.Now().UnixNano()/1e6)
 
@@ -639,6 +641,75 @@ func (e *JSExecutor) cleanupRuntime(runtime *goja.Runtime) {
 	runtime.Set("__blobRegistry__", goja.Undefined())
 }
 
+// buildOrderedInputValue 构建有序的 input 对象：
+// - 外层顺序固定为 query -> header -> body -> 其他（按键排序）
+// - map 内部键按字典序排序，数组保持原顺序
+// 这样在 Goja 中的属性枚举顺序稳定，方便脚本使用和调试
+func buildOrderedInputValue(runtime *goja.Runtime, input map[string]interface{}) goja.Value {
+	if input == nil {
+		return runtime.NewObject()
+	}
+
+	obj := runtime.NewObject()
+	processed := make(map[string]struct{}, len(input))
+
+	// 按固定顺序写入常用字段
+	for _, key := range []string{"query", "header", "body"} {
+		if val, ok := input[key]; ok {
+			obj.Set(key, buildOrderedValue(runtime, val))
+			processed[key] = struct{}{}
+		}
+	}
+
+	// 其他字段按键排序，保证稳定输出顺序
+	if len(processed) != len(input) {
+		remaining := make([]string, 0, len(input)-len(processed))
+		for k := range input {
+			if _, ok := processed[k]; !ok {
+				remaining = append(remaining, k)
+			}
+		}
+		sort.Strings(remaining)
+		for _, k := range remaining {
+			obj.Set(k, buildOrderedValue(runtime, input[k]))
+		}
+	}
+
+	return obj
+}
+
+// buildOrderedValue 递归构建有序值，确保对象字段按字典序插入
+func buildOrderedValue(runtime *goja.Runtime, val interface{}) goja.Value {
+	switch v := val.(type) {
+	case map[string]interface{}:
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+
+		obj := runtime.NewObject()
+		for _, k := range keys {
+			obj.Set(k, buildOrderedValue(runtime, v[k]))
+		}
+		return obj
+	case []interface{}:
+		arr := runtime.NewArray(len(v))
+		for i, item := range v {
+			arr.Set(strconv.FormatInt(int64(i), 10), buildOrderedValue(runtime, item))
+		}
+		return arr
+	case []string:
+		arr := runtime.NewArray(len(v))
+		for i, item := range v {
+			arr.Set(strconv.FormatInt(int64(i), 10), runtime.ToValue(item))
+		}
+		return arr
+	default:
+		return runtime.ToValue(val)
+	}
+}
+
 // executeWithEventLoop 使用EventLoop执行代码（异步代码）
 //
 // 🔥 Context 使用说明：
@@ -810,7 +881,8 @@ func (e *JSExecutor) executeWithEventLoop(ctx context.Context, code string, inpu
 			// 🔒 禁用 constructor 访问（简化版，支持 EventLoop）
 			e.disableConstructorAccess(vm)
 
-			vm.Set("input", input)
+			orderedInput := buildOrderedInputValue(vm, input)
+			vm.Set("input", orderedInput)
 			vm.Set("__executionId", executionId)
 			vm.Set("__startTime", time.Now().UnixNano()/1e6)
 			vm.Set("__finalResult", goja.Undefined())
