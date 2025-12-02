@@ -471,6 +471,10 @@ func (c *ScriptController) ExecuteScript(ctx *gin.Context) {
 	if len(script.ParsedIPWhitelist) == 0 {
 		script.ParsedIPWhitelist = utils.ParseIPWhitelist(script.IPWhitelist)
 	}
+	if len(script.IPWhitelist) > 0 && len(script.ParsedIPWhitelist) == 0 {
+		utils.RespondError(ctx, http.StatusForbidden, utils.ErrorTypeAuthorization, "IP白名单配置无效", nil)
+		return
+	}
 	if len(script.ParsedIPWhitelist) > 0 && !utils.MatchIPWithParsedRules(ctx.ClientIP(), script.ParsedIPWhitelist) {
 		utils.RespondError(ctx, http.StatusForbidden, utils.ErrorTypeAuthorization, "IP不在白名单", nil)
 		return

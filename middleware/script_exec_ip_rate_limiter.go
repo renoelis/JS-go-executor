@@ -16,8 +16,8 @@ import (
 // ScriptExecIPRateLimiter 无Token脚本执行IP限流（Redis分布式）
 type ScriptExecIPRateLimiter struct {
 	redis  *redis.Client
-	rate   int
-	burst  int
+	rate   int // tokens per second
+	burst  int // max bucket size
 	prefix string
 
 	script *redis.Script
@@ -39,18 +39,43 @@ func NewScriptExecIPRateLimiter(redisClient *redis.Client, cfg *config.Config) *
 		rate:   rate,
 		burst:  burst,
 		prefix: cfg.Script.ScriptCachePrefix,
+		// 基于令牌桶的分布式限流，支持平滑速率和突发
 		script: redis.NewScript(`
 local key = KEYS[1]
-local ttl = tonumber(ARGV[1])
-local limit = tonumber(ARGV[2])
-local current = redis.call('INCR', key)
-if current == 1 then
-  redis.call('EXPIRE', key, ttl)
+local rate = tonumber(ARGV[1])      -- tokens per second
+local burst = tonumber(ARGV[2])     -- bucket capacity
+local now = redis.call('TIME')
+local now_ms = now[1] * 1000 + math.floor(now[2] / 1000)
+
+-- 读取现有桶
+local data = redis.call('HMGET', key, 'tokens', 'ts')
+local tokens = tonumber(data[1])
+local ts = tonumber(data[2])
+
+if tokens == nil or ts == nil then
+  tokens = burst
+  ts = now_ms
+else
+  if now_ms > ts then
+    local delta = now_ms - ts
+    local refill = delta * rate / 1000.0
+    tokens = math.min(burst, tokens + refill)
+    ts = now_ms
+  end
 end
-if current > limit then
-  return 0
+
+local allowed = 0
+if tokens >= 1 then
+  tokens = tokens - 1
+  allowed = 1
 end
-return 1
+
+redis.call('HMSET', key, 'tokens', tokens, 'ts', ts)
+-- TTL 设为满桶时间，防止冷门key长时间存在
+local ttl_ms = math.max(1000, math.floor((burst / rate) * 1000))
+redis.call('PEXPIRE', key, ttl_ms)
+
+return {allowed, tokens}
 `),
 	}
 }
@@ -61,13 +86,25 @@ func (l *ScriptExecIPRateLimiter) Allow(ctx context.Context, ip string) bool {
 		return true
 	}
 	key := fmt.Sprintf("%sscript_exec_ip:%s", l.prefix, ip)
-	// 使用1秒窗口的突发限流
-	res, err := l.script.Run(ctx, l.redis, []string{key}, 1, l.burst).Int()
+	// 令牌桶限流：rate 为持续速率，burst 为桶容量
+	res, err := l.script.Run(ctx, l.redis, []string{key}, l.rate, l.burst).Slice()
 	if err != nil {
 		utils.Warn("脚本执行IP限流降级", zap.Error(err))
 		return true
 	}
-	return res == 1
+	if len(res) == 0 {
+		return true
+	}
+	allowed, ok := res[0].(int64)
+	if !ok {
+		// Lua整数默认是 int64，兜底兼容 float64
+		if f, fok := res[0].(float64); fok {
+			allowed = int64(f)
+		} else {
+			return true
+		}
+	}
+	return allowed == 1
 }
 
 // ScriptExecIPRateLimiterMiddleware 创建Gin中间件

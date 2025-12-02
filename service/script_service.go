@@ -92,6 +92,11 @@ func (s *ScriptService) CreateScript(ctx context.Context, tokenInfo *model.Token
 		}
 	}
 
+	parsedWhitelist, normalizedWhitelist, err := utils.ValidateIPWhitelist(ipWhitelist)
+	if err != nil {
+		return nil, fmt.Errorf("IP白名单无效: %w", err)
+	}
+
 	codeHash := sha256.Sum256(codeBytes)
 	script := &model.CodeScript{
 		ID:                utils.GenerateBase62UUID(),
@@ -103,8 +108,8 @@ func (s *ScriptService) CreateScript(ctx context.Context, tokenInfo *model.Token
 		CodeHash:          hex.EncodeToString(codeHash[:]),
 		CodeLength:        len(codeBytes),
 		Version:           1,
-		IPWhitelist:       model.JSONStringArray(ipWhitelist),
-		ParsedIPWhitelist: utils.ParseIPWhitelist(ipWhitelist),
+		IPWhitelist:       model.JSONStringArray(normalizedWhitelist),
+		ParsedIPWhitelist: parsedWhitelist,
 	}
 
 	// 🔁 同一Token内按代码哈希查重，避免重复上传
@@ -246,8 +251,14 @@ func (s *ScriptService) UpdateScript(ctx context.Context, tokenInfo *model.Token
 		targetDesc = script.Description
 	}
 
+	var parsedIPWhitelist []utils.ParsedIPRule
 	if ipWhitelistUpdate != nil {
-		script.IPWhitelist = model.JSONStringArray(*ipWhitelistUpdate)
+		var normalizedWhitelist []string
+		parsedIPWhitelist, normalizedWhitelist, err = utils.ValidateIPWhitelist(*ipWhitelistUpdate)
+		if err != nil {
+			return nil, fmt.Errorf("IP白名单无效: %w", err)
+		}
+		script.IPWhitelist = model.JSONStringArray(normalizedWhitelist)
 	}
 
 	prevVersion := script.Version
@@ -285,7 +296,7 @@ func (s *ScriptService) UpdateScript(ctx context.Context, tokenInfo *model.Token
 	}
 
 	if ipWhitelistUpdate != nil {
-		script.ParsedIPWhitelist = utils.ParseIPWhitelist(*ipWhitelistUpdate)
+		script.ParsedIPWhitelist = parsedIPWhitelist
 	} else {
 		script.ParsedIPWhitelist = utils.ParseIPWhitelist(script.IPWhitelist)
 	}

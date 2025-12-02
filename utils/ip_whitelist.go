@@ -1,7 +1,9 @@
 package utils
 
 import (
+	"fmt"
 	"net"
+	"strings"
 )
 
 // ParsedIPRule 预解析后的IP规则
@@ -19,6 +21,10 @@ func ParseIPWhitelist(rules []string) []ParsedIPRule {
 
 	parsed := make([]ParsedIPRule, 0, len(rules))
 	for _, rule := range rules {
+		rule = strings.TrimSpace(rule)
+		if rule == "" {
+			continue
+		}
 		if _, ipNet, err := net.ParseCIDR(rule); err == nil {
 			parsed = append(parsed, ParsedIPRule{IsRange: true, IPNet: ipNet})
 			continue
@@ -53,4 +59,40 @@ func MatchIPWithParsedRules(clientIPStr string, rules []ParsedIPRule) bool {
 		}
 	}
 	return false
+}
+
+// ValidateIPWhitelist 校验并规范化白名单，返回合法规则和规范化后的列表
+func ValidateIPWhitelist(rules []string) ([]ParsedIPRule, []string, error) {
+	if len(rules) == 0 {
+		return nil, nil, nil
+	}
+
+	parsed := make([]ParsedIPRule, 0, len(rules))
+	normalized := make([]string, 0, len(rules))
+	invalid := make([]string, 0)
+
+	for _, raw := range rules {
+		rule := strings.TrimSpace(raw)
+		if rule == "" {
+			invalid = append(invalid, raw)
+			continue
+		}
+		if _, ipNet, err := net.ParseCIDR(rule); err == nil {
+			parsed = append(parsed, ParsedIPRule{IsRange: true, IPNet: ipNet})
+			normalized = append(normalized, rule)
+			continue
+		}
+		if ip := net.ParseIP(rule); ip != nil {
+			parsed = append(parsed, ParsedIPRule{IsRange: false, IP: ip})
+			normalized = append(normalized, rule)
+			continue
+		}
+		invalid = append(invalid, raw)
+	}
+
+	if len(invalid) > 0 {
+		return nil, nil, fmt.Errorf("IP白名单包含无效条目: %s", strings.Join(invalid, ", "))
+	}
+
+	return parsed, normalized, nil
 }
