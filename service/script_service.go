@@ -107,6 +107,11 @@ func (s *ScriptService) CreateScript(ctx context.Context, tokenInfo *model.Token
 		ParsedIPWhitelist: utils.ParseIPWhitelist(ipWhitelist),
 	}
 
+	// 🔁 同一Token内按代码哈希查重，避免重复上传
+	if existing, err := s.repo.GetScriptByHash(ctx, script.Token, script.CodeHash); err == nil && existing != nil && existing.ID != "" {
+		return nil, fmt.Errorf("该代码已存在，script_id=%s", existing.ID)
+	}
+
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return nil, err
