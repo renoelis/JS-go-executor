@@ -133,9 +133,20 @@ func main() {
 	// 执行器服务
 	executor := service.NewJSExecutor(cfg)
 
+	// 脚本服务（需早于清理服务初始化，便于复用缓存清理逻辑）
+	scriptService := service.NewScriptService(db, redisClient, cfg, scriptRepo, tokenRepo, executor)
+
 	// 🆕 统计服务
 	statsService := service.NewStatsService(db)
 	scriptStatsService := service.NewScriptStatsService(db, cfg)
+	scriptCleanupService := service.NewScriptCleanupService(db, cfg, scriptService)
+	scriptMaintenanceService := service.NewScriptMaintenanceService(
+		scriptCleanupService,
+		scriptStatsService,
+		cfg.Script.CleanupInterval,
+		cfg.Script.CleanupTimeout,
+		cfg.Script.CleanupEnabled,
+	)
 
 	// 🔐 Token查询验证码相关服务
 	sessionService := service.NewPageSessionService(
@@ -163,8 +174,6 @@ func main() {
 		cfg.TokenVerify.RateLimitIP,
 	)
 
-	scriptService := service.NewScriptService(db, redisClient, cfg, scriptRepo, tokenRepo, executor)
-
 	// 无Token脚本执行IP限流
 	scriptExecLimiter := middleware.NewScriptExecIPRateLimiter(redisClient, cfg)
 
@@ -176,7 +185,7 @@ func main() {
 	executorController := controller.NewExecutorController(executor, cfg, tokenService, statsService, quotaService, sessionService)
 	tokenController := controller.NewTokenController(tokenService, rateLimiterService, cacheWritePool, adminToken, quotaService, quotaCleanupService, sessionService, verifyService)
 	statsController := controller.NewStatsController(statsService)
-	scriptController := controller.NewScriptController(scriptService, tokenService, rateLimiterService, quotaService, scriptStatsService, executor, cfg)
+	scriptController := controller.NewScriptController(scriptService, tokenService, rateLimiterService, quotaService, scriptStatsService, executor, cfg, scriptMaintenanceService)
 
 	// ==================== 设置路由 ====================
 	ginRouter, routerResources := router.SetupRouter(
@@ -280,6 +289,13 @@ func main() {
 		utils.Info("步骤9: 关闭配额清理服务")
 		if quotaCleanupService != nil {
 			quotaCleanupService.Stop()
+			_ = utils.Sync()
+		}
+
+		// 10. 关闭脚本维护服务
+		utils.Info("步骤10: 关闭脚本维护服务")
+		if scriptMaintenanceService != nil {
+			scriptMaintenanceService.Stop()
 			_ = utils.Sync()
 		}
 

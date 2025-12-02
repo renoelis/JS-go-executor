@@ -120,14 +120,17 @@ services:
       - EXECUTION_TIMEOUT_MS=300000       # 🔧 开发环境30秒超时
 
       # ==================== SCRIPT脚本管理配置 ====================
-      - MAX_SCRIPT_VERSIONS=5
-      - SCRIPT_CACHE_TTL=3600
-      - "SCRIPT_CACHE_PREFIX=script:dev:"
-      - SCRIPT_EXEC_IP_RATE_LIMIT=200
-      - SCRIPT_EXEC_IP_RATE_LIMIT_BURST=400
-      - TOKEN_EXPIRED_SCRIPT_RETENTION_DAYS=180
-      - STATS_ORPHAN_RETENTION_DAYS=90
-      - STATS_MAX_RETENTION_DAYS=180
+      - MAX_SCRIPT_VERSIONS=5                 # 每个脚本最多保留版本数
+      - SCRIPT_CACHE_TTL=3600                 # 脚本缓存TTL（秒）
+      - "SCRIPT_CACHE_PREFIX=script:dev:"     # 脚本缓存键前缀
+      - SCRIPT_EXEC_IP_RATE_LIMIT=200         # 无Token执行接口IP限流（QPS）
+      - SCRIPT_EXEC_IP_RATE_LIMIT_BURST=400   # 无Token执行接口突发限流
+      - TOKEN_EXPIRED_SCRIPT_RETENTION_DAYS=180 # 失效/禁用Token脚本保留天数
+      - STATS_ORPHAN_RETENTION_DAYS=90        # 孤儿统计保留天数
+      - STATS_MAX_RETENTION_DAYS=180          # 统计最大保留天数
+      - SCRIPT_CLEANUP_ENABLED=true           # 是否启用脚本/统计自动清理
+      - SCRIPT_CLEANUP_INTERVAL_HOURS=24      # 自动清理间隔（小时）
+      - SCRIPT_CLEANUP_TIMEOUT_SEC=120        # 单次清理超时（秒）
 
       # ==================== 🛡️ SSRF 防护配置（开发环境）====================
       # 开发环境默认：禁用 SSRF 防护（允许访问内网服务）

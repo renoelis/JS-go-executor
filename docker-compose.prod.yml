@@ -127,6 +127,19 @@ services:
       - MAX_INPUT_SIZE=${MAX_INPUT_SIZE}           # Input大小限制(字节) - 1MB
       - MAX_RESULT_SIZE=${MAX_RESULT_SIZE}          # 结果大小限制(字节) - 5MB
       - EXECUTION_TIMEOUT_MS=${EXECUTION_TIMEOUT_MS}       # 🔧 执行超时(毫秒) - 1分钟（固定）
+
+      # ==================== SCRIPT脚本管理配置 ====================
+      - MAX_SCRIPT_VERSIONS=${MAX_SCRIPT_VERSIONS}                     # 每个脚本最多保留版本数
+      - SCRIPT_CACHE_TTL=${SCRIPT_CACHE_TTL}                           # 脚本缓存TTL（秒）
+      - SCRIPT_CACHE_PREFIX=${SCRIPT_CACHE_PREFIX}                     # 脚本缓存键前缀
+      - SCRIPT_EXEC_IP_RATE_LIMIT=${SCRIPT_EXEC_IP_RATE_LIMIT}         # 无Token执行接口IP限流（QPS）
+      - SCRIPT_EXEC_IP_RATE_LIMIT_BURST=${SCRIPT_EXEC_IP_RATE_LIMIT_BURST} # 无Token执行接口突发限流
+      - TOKEN_EXPIRED_SCRIPT_RETENTION_DAYS=${TOKEN_EXPIRED_SCRIPT_RETENTION_DAYS} # 失效/禁用Token脚本保留天数
+      - STATS_ORPHAN_RETENTION_DAYS=${STATS_ORPHAN_RETENTION_DAYS}     # 孤儿统计保留天数
+      - STATS_MAX_RETENTION_DAYS=${STATS_MAX_RETENTION_DAYS}           # 统计最大保留天数
+      - SCRIPT_CLEANUP_ENABLED=${SCRIPT_CLEANUP_ENABLED:-true}         # 是否启用脚本/统计自动清理
+      - SCRIPT_CLEANUP_INTERVAL_HOURS=${SCRIPT_CLEANUP_INTERVAL_HOURS:-24} # 自动清理间隔（小时）
+      - SCRIPT_CLEANUP_TIMEOUT_SEC=${SCRIPT_CLEANUP_TIMEOUT_SEC:-120}  # 单次清理超时（秒）
       
       # ==================== 🔥 并发控制超时配置 ====================
       # 说明：控制系统繁忙时的等待行为

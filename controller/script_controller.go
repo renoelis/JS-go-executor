@@ -29,6 +29,7 @@ type ScriptController struct {
 	rateLimiterService *service.RateLimiterService
 	quotaService       *service.QuotaService
 	statsService       *service.ScriptStatsService
+	maintenanceService *service.ScriptMaintenanceService
 	executor           *service.JSExecutor
 	cfg                *config.Config
 }
@@ -42,6 +43,7 @@ func NewScriptController(
 	statsService *service.ScriptStatsService,
 	executor *service.JSExecutor,
 	cfg *config.Config,
+	maintenanceService *service.ScriptMaintenanceService,
 ) *ScriptController {
 	return &ScriptController{
 		scriptService:      scriptService,
@@ -49,6 +51,7 @@ func NewScriptController(
 		rateLimiterService: rateLimiterService,
 		quotaService:       quotaService,
 		statsService:       statsService,
+		maintenanceService: maintenanceService,
 		executor:           executor,
 		cfg:                cfg,
 	}
@@ -442,6 +445,41 @@ func (c *ScriptController) GetScriptExecutionStats(ctx *gin.Context) {
 	utils.RespondSuccess(ctx, stats, "")
 }
 
+// GetScriptCleanupStats 查询脚本/统计清理服务状态（管理员）
+func (c *ScriptController) GetScriptCleanupStats(ctx *gin.Context) {
+	if c.maintenanceService == nil {
+		utils.RespondError(ctx, http.StatusServiceUnavailable, utils.ErrorTypeInternal, "脚本清理服务未就绪", nil)
+		return
+	}
+
+	stats := c.maintenanceService.Stats()
+	if stats == nil {
+		utils.RespondError(ctx, http.StatusServiceUnavailable, utils.ErrorTypeInternal, "脚本清理状态不可用", nil)
+		return
+	}
+	utils.RespondSuccess(ctx, stats, "")
+}
+
+// TriggerScriptCleanup 手动触发脚本/统计清理（管理员）
+func (c *ScriptController) TriggerScriptCleanup(ctx *gin.Context) {
+	if c.maintenanceService == nil {
+		utils.RespondError(ctx, http.StatusServiceUnavailable, utils.ErrorTypeInternal, "脚本清理服务未就绪", nil)
+		return
+	}
+
+	result := c.maintenanceService.TriggerCleanup(ctx.Request.Context())
+	if result.SkipReason == "running" {
+		utils.RespondError(ctx, http.StatusConflict, utils.ErrorTypeBadRequest, "已有清理任务在运行，请稍后再试", nil)
+		return
+	}
+	if result.Error != "" {
+		utils.RespondError(ctx, http.StatusInternalServerError, utils.ErrorTypeInternal, result.Error, nil)
+		return
+	}
+
+	utils.RespondSuccess(ctx, result, "脚本/统计清理完成")
+}
+
 // ExecuteScript 执行存储脚本（无Token认证）
 func (c *ScriptController) ExecuteScript(ctx *gin.Context) {
 	startTime := time.Now()
@@ -510,29 +548,40 @@ func (c *ScriptController) ExecuteScript(ctx *gin.Context) {
 		}
 	}
 
-	var input map[string]interface{}
-	if ctx.Request.Method == http.MethodGet {
-		query := make(map[string]interface{})
-		for k, v := range ctx.Request.URL.Query() {
-			if len(v) == 1 {
-				query[k] = v[0]
-			} else {
-				query[k] = v
-			}
-		}
-		input = query
-	} else {
-		// POST/其他方法：必须是合法的 JSON；空体允许执行但输入为空对象
-		if ctx.Request.ContentLength == 0 {
-			input = make(map[string]interface{})
+	queryData := make(map[string]interface{})
+	for k, v := range ctx.Request.URL.Query() {
+		if len(v) == 1 {
+			queryData[k] = v[0]
 		} else {
-			body := make(map[string]interface{})
-			if err := ctx.ShouldBindJSON(&body); err != nil {
-				utils.RespondError(ctx, http.StatusBadRequest, utils.ErrorTypeValidation, fmt.Sprintf("请求体格式错误: %v", err), nil)
-				return
-			}
-			input = body
+			queryData[k] = v
 		}
+	}
+
+	headerData := make(map[string]interface{})
+	for k, v := range ctx.Request.Header {
+		if len(v) == 1 {
+			headerData[k] = v[0]
+		} else {
+			headerData[k] = v
+		}
+	}
+
+	// 兼容多种请求体形态：对象/数组/标量；GET 也支持读取 body
+	var bodyData interface{} = map[string]interface{}{}
+	if ctx.Request.ContentLength > 0 {
+		var parsed interface{}
+		if err := ctx.ShouldBindJSON(&parsed); err != nil {
+			utils.RespondError(ctx, http.StatusBadRequest, utils.ErrorTypeValidation, fmt.Sprintf("请求体格式错误: %v", err), nil)
+			return
+		}
+		bodyData = parsed
+	}
+
+	// 新规范：仅返回 query/header/body 三个字段，不再平铺
+	input := map[string]interface{}{
+		"query":  queryData,
+		"header": headerData,
+		"body":   bodyData,
 	}
 
 	codeBytes, err := base64.StdEncoding.DecodeString(script.CodeBase64)

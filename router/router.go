@@ -276,6 +276,12 @@ func SetupRouter(
 				adminGroup.GET("/stats/modules/:module_name", statsController.GetModuleDetailStats)
 				adminGroup.GET("/stats/users", statsController.GetUserActivityStats)
 			}
+
+			// 脚本/统计清理接口
+			if scriptController != nil {
+				adminGroup.GET("/scripts/cleanup/stats", scriptController.GetScriptCleanupStats)
+				adminGroup.POST("/scripts/cleanup/trigger", scriptController.TriggerScriptCleanup)
+			}
 		}
 	}
 

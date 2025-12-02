@@ -240,14 +240,17 @@ type TokenVerifyConfig struct {
 
 // ScriptConfig 脚本管理配置
 type ScriptConfig struct {
-	MaxScriptVersions               int    // 每个脚本最多保留版本数
-	ScriptCacheTTL                  int    // Redis缓存时间（秒）
-	ScriptCachePrefix               string // Redis缓存键前缀
-	ScriptExecIPRateLimit           int    // 无Token执行接口的IP限流
-	ScriptExecIPRateLimitBurst      int    // 无Token执行接口的IP突发限流
-	TokenExpiredScriptRetentionDays int    // Token失效脚本保留天数
-	StatsOrphanRetentionDays        int    // 孤儿统计保留天数
-	StatsMaxRetentionDays           int    // 统计最大保留天数
+	MaxScriptVersions               int           // 每个脚本最多保留版本数
+	ScriptCacheTTL                  int           // Redis缓存时间（秒）
+	ScriptCachePrefix               string        // Redis缓存键前缀
+	ScriptExecIPRateLimit           int           // 无Token执行接口的IP限流
+	ScriptExecIPRateLimitBurst      int           // 无Token执行接口的IP突发限流
+	TokenExpiredScriptRetentionDays int           // Token失效脚本保留天数
+	StatsOrphanRetentionDays        int           // 孤儿统计保留天数
+	StatsMaxRetentionDays           int           // 统计最大保留天数
+	CleanupEnabled                  bool          // 是否启用脚本/统计自动清理
+	CleanupInterval                 time.Duration // 清理间隔
+	CleanupTimeout                  time.Duration // 单次清理超时时间
 }
 
 // calculateMaxConcurrent 基于系统内存智能计算并发限制
@@ -648,6 +651,9 @@ func LoadConfig() *Config {
 		TokenExpiredScriptRetentionDays: getEnvInt("TOKEN_EXPIRED_SCRIPT_RETENTION_DAYS", 180),
 		StatsOrphanRetentionDays:        getEnvInt("STATS_ORPHAN_RETENTION_DAYS", 90),
 		StatsMaxRetentionDays:           getEnvInt("STATS_MAX_RETENTION_DAYS", 180),
+		CleanupEnabled:                  getEnvBool("SCRIPT_CLEANUP_ENABLED", true),
+		CleanupInterval:                 time.Duration(getEnvInt("SCRIPT_CLEANUP_INTERVAL_HOURS", 24)) * time.Hour,
+		CleanupTimeout:                  time.Duration(getEnvInt("SCRIPT_CLEANUP_TIMEOUT_SEC", 120)) * time.Second,
 	}
 
 	// 🔒 加载和验证认证配置

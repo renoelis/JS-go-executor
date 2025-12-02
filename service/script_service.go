@@ -41,6 +41,12 @@ type ScriptService struct {
 	safeDecrScript *redis.Script
 }
 
+// codeScriptCache 用于在缓存中携带 Token（CodeScript.Token 的 json:"-" 无法直接序列化）
+type codeScriptCache struct {
+	model.CodeScript
+	TokenForCache string `json:"token"`
+}
+
 // NewScriptService 创建脚本服务
 func NewScriptService(db *sqlx.DB, redisClient *redis.Client, cfg *config.Config, repo *repository.ScriptRepository, tokenRepo *repository.TokenRepository, executor *JSExecutor) *ScriptService {
 	return &ScriptService{
@@ -274,6 +280,15 @@ func (s *ScriptService) UpdateScript(ctx context.Context, tokenInfo *model.Token
 		script.IPWhitelist = model.JSONStringArray(normalizedWhitelist)
 	}
 
+	// 🔁 同一Token内按代码哈希查重，避免更新到已存在的脚本代码
+	if codeChanged {
+		if existing, err := s.repo.GetScriptByHashTx(ctx, tx, script.Token, targetHash); err == nil && existing != nil && existing.ID != "" && existing.ID != script.ID {
+			return nil, fmt.Errorf("该代码已存在，script_id=%s", existing.ID)
+		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+	}
+
 	prevVersion := script.Version
 	if codeChanged {
 		script.Version = script.Version + 1
@@ -284,6 +299,13 @@ func (s *ScriptService) UpdateScript(ctx context.Context, tokenInfo *model.Token
 	script.Description = targetDesc
 
 	if err := s.repo.UpdateScriptTx(ctx, tx, script); err != nil {
+		// 唯一约束兜底：并发情况下将数据库错误转为友好提示
+		if mysqlErr, ok := err.(*mysql.MySQLError); ok && mysqlErr.Number == 1062 {
+			if existing, lookupErr := s.repo.GetScriptByHashTx(ctx, tx, script.Token, targetHash); lookupErr == nil && existing != nil && existing.ID != "" && existing.ID != script.ID {
+				return nil, fmt.Errorf("该代码已存在，script_id=%s", existing.ID)
+			}
+			return nil, fmt.Errorf("该代码已存在")
+		}
 		return nil, err
 	}
 
@@ -373,13 +395,14 @@ func (s *ScriptService) DeleteScript(ctx context.Context, tokenInfo *model.Token
 
 // GetScriptWithCache 获取脚本（含缓存）
 func (s *ScriptService) GetScriptWithCache(ctx context.Context, scriptID string) (*model.CodeScript, error) {
-	var script model.CodeScript
+	var cached codeScriptCache
 	cacheKey := s.cfg.Script.ScriptCachePrefix + scriptID
 	if s.redis != nil {
 		if data, err := s.redis.Get(ctx, cacheKey).Bytes(); err == nil {
-			if json.Unmarshal(data, &script) == nil && script.CodeBase64 != "" && script.Token != "" {
-				script.ParsedIPWhitelist = utils.ParseIPWhitelist(script.IPWhitelist)
-				return &script, nil
+			if json.Unmarshal(data, &cached) == nil && cached.CodeBase64 != "" && cached.TokenForCache != "" {
+				cached.CodeScript.Token = cached.TokenForCache
+				cached.CodeScript.ParsedIPWhitelist = utils.ParseIPWhitelist(cached.IPWhitelist)
+				return &cached.CodeScript, nil
 			}
 		}
 	}
@@ -391,7 +414,11 @@ func (s *ScriptService) GetScriptWithCache(ctx context.Context, scriptID string)
 	result.ParsedIPWhitelist = utils.ParseIPWhitelist(result.IPWhitelist)
 
 	if s.redis != nil {
-		if data, err := json.Marshal(result); err == nil {
+		cachePayload := codeScriptCache{
+			CodeScript:    *result,
+			TokenForCache: result.Token,
+		}
+		if data, err := json.Marshal(cachePayload); err == nil {
 			ttl := time.Duration(s.cfg.Script.ScriptCacheTTL) * time.Second
 			s.redis.Set(ctx, cacheKey, data, ttl)
 		}
@@ -534,7 +561,11 @@ func (s *ScriptService) updateCacheAfterCreate(ctx context.Context, script *mode
 	}
 	ttl := time.Duration(s.cfg.Script.ScriptCacheTTL) * time.Second
 	cacheKey := s.cfg.Script.ScriptCachePrefix + script.ID
-	data, err := json.Marshal(script)
+	cachePayload := codeScriptCache{
+		CodeScript:    *script,
+		TokenForCache: script.Token,
+	}
+	data, err := json.Marshal(cachePayload)
 	if err != nil {
 		utils.Warn("脚本缓存序列化失败", zap.Error(err))
 		return
@@ -612,5 +643,39 @@ func (s *ScriptService) rebuildScriptCount(ctx context.Context, token string) {
 	ttl := time.Duration(s.cfg.Script.ScriptCacheTTL) * time.Second
 	if err := s.redis.Set(ctx, s.cfg.Script.ScriptCachePrefix+"count:"+token, dbCount, ttl).Err(); err != nil {
 		utils.Warn("脚本计数缓存重建失败", zap.Error(err))
+	}
+}
+
+// ClearCachesAfterBulkDelete 批量删除脚本后清理缓存并重建计数
+func (s *ScriptService) ClearCachesAfterBulkDelete(ctx context.Context, tokenScripts map[string][]string) {
+	if s == nil || s.redis == nil || len(tokenScripts) == 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	for token, scriptIDs := range tokenScripts {
+		if len(scriptIDs) == 0 {
+			continue
+		}
+
+		pipe := s.redis.Pipeline()
+		for _, scriptID := range scriptIDs {
+			pipe.Del(ctx, s.cfg.Script.ScriptCachePrefix+scriptID)
+			pipe.SRem(ctx, s.cfg.Script.ScriptCachePrefix+"token:"+token, scriptID)
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			utils.Warn("批量删除脚本缓存失败",
+				zap.String("token", utils.MaskToken(token)),
+				zap.Int("script_count", len(scriptIDs)),
+				zap.Error(err))
+		}
+
+		for _, scriptID := range scriptIDs {
+			s.deleteVersionCaches(ctx, scriptID)
+		}
+
+		s.rebuildScriptCount(ctx, token)
 	}
 }
