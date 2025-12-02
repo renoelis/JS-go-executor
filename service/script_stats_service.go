@@ -201,10 +201,10 @@ func (s *ScriptStatsService) GetOverallStats(ctx context.Context, token string, 
 	if err := s.db.GetContext(ctx, &agg, `
 		SELECT 
 			COUNT(*) AS total,
-			SUM(CASE WHEN ses.execution_status = 'success' THEN 1 ELSE 0 END) AS success,
-			SUM(CASE WHEN ses.execution_status = 'failed' THEN 1 ELSE 0 END) AS failed,
-			AVG(ses.execution_time_ms) AS avg_time,
-			MAX(ses.execution_time_ms) AS max_time
+			COALESCE(SUM(CASE WHEN ses.execution_status = 'success' THEN 1 ELSE 0 END), 0) AS success,
+			COALESCE(SUM(CASE WHEN ses.execution_status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
+			COALESCE(AVG(ses.execution_time_ms), 0) AS avg_time,
+			COALESCE(MAX(ses.execution_time_ms), 0) AS max_time
 		FROM script_execution_stats ses
 		JOIN code_scripts cs ON ses.script_id = cs.id
 		WHERE cs.token = ? AND ses.execution_date BETWEEN ? AND ?
@@ -328,10 +328,10 @@ func (s *ScriptStatsService) GetGlobalStats(ctx context.Context, startDate, endD
 	if err := s.db.GetContext(ctx, &agg, `
 		SELECT 
 			COUNT(*) AS total,
-			SUM(CASE WHEN execution_status = 'success' THEN 1 ELSE 0 END) AS success,
-			SUM(CASE WHEN execution_status = 'failed' THEN 1 ELSE 0 END) AS failed,
-			AVG(execution_time_ms) AS avg_time,
-			MAX(execution_time_ms) AS max_time
+			COALESCE(SUM(CASE WHEN execution_status = 'success' THEN 1 ELSE 0 END), 0) AS success,
+			COALESCE(SUM(CASE WHEN execution_status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
+			COALESCE(AVG(execution_time_ms), 0) AS avg_time,
+			COALESCE(MAX(execution_time_ms), 0) AS max_time
 		FROM script_execution_stats
 		WHERE execution_date BETWEEN ? AND ?
 	`, period.StartDate, period.EndDate); err != nil {
@@ -468,10 +468,10 @@ func (s *ScriptStatsService) GetScriptStats(ctx context.Context, token, scriptID
 	if err := s.db.GetContext(ctx, &summary, `
 		SELECT 
 			COUNT(*) AS total_executions,
-			SUM(CASE WHEN execution_status = 'success' THEN 1 ELSE 0 END) AS success_count,
-			SUM(CASE WHEN execution_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
-			AVG(execution_time_ms) AS avg_execution_time_ms,
-			MAX(execution_time_ms) AS max_execution_time_ms
+			COALESCE(SUM(CASE WHEN execution_status = 'success' THEN 1 ELSE 0 END), 0) AS success_count,
+			COALESCE(SUM(CASE WHEN execution_status = 'failed' THEN 1 ELSE 0 END), 0) AS failed_count,
+			COALESCE(AVG(execution_time_ms), 0) AS avg_execution_time_ms,
+			COALESCE(MAX(execution_time_ms), 0) AS max_execution_time_ms
 		FROM script_execution_stats
 		WHERE script_id = ? AND execution_date BETWEEN ? AND ?
 	`, scriptID, period.StartDate, period.EndDate); err != nil {

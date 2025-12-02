@@ -114,7 +114,7 @@ services:
       - ALLOW_CONSOLE=true               # 🔧 开发环境允许console
       
       # 执行限制
-      - MAX_CODE_LENGTH=655350            # 64KB
+      - MAX_CODE_LENGTH=65535            # 64KB
       - MAX_INPUT_SIZE=2097152           # 2MB
       - MAX_RESULT_SIZE=2000000         # 5MB
       - EXECUTION_TIMEOUT_MS=300000       # 🔧 开发环境30秒超时
