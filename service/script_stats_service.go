@@ -86,6 +86,9 @@ func (s *ScriptStatsService) RecordExecution(ctx context.Context, scriptID, toke
 	}
 
 	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
 		execTime := utils.Now()
 		_, err := s.db.ExecContext(ctx, `
 			INSERT INTO script_execution_stats (

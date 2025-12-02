@@ -522,8 +522,15 @@ func (c *ScriptController) ExecuteScript(ctx *gin.Context) {
 		}
 		input = query
 	} else {
-		body := make(map[string]interface{})
-		if err := ctx.ShouldBindJSON(&body); err == nil {
+		// POST/其他方法：必须是合法的 JSON；空体允许执行但输入为空对象
+		if ctx.Request.ContentLength == 0 {
+			input = make(map[string]interface{})
+		} else {
+			body := make(map[string]interface{})
+			if err := ctx.ShouldBindJSON(&body); err != nil {
+				utils.RespondError(ctx, http.StatusBadRequest, utils.ErrorTypeValidation, fmt.Sprintf("请求体格式错误: %v", err), nil)
+				return
+			}
 			input = body
 		}
 	}

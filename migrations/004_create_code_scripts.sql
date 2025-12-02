@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS `code_scripts` (
     `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY `idx_token` (`token`),
     KEY `idx_ws_id_email` (`ws_id`, `email`),
-    KEY `idx_code_hash` (`code_hash`)
+    UNIQUE KEY `uk_token_codehash` (`token`, `code_hash`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='代码脚本主表';
 
 -- 2. 脚本版本历史表
@@ -72,7 +72,7 @@ BEGIN
         AND TABLE_NAME = 'access_tokens' 
         AND COLUMN_NAME = 'current_scripts'
     ) THEN
-        ALTER TABLE `access_tokens` ADD COLUMN `current_scripts` INT DEFAULT 0 COMMENT '当前脚本数量';
+        ALTER TABLE `access_tokens` ADD COLUMN `current_scripts` INT NOT NULL DEFAULT 0 COMMENT '当前脚本数量';
     END IF;
     
     -- 添加索引（如果不存在）

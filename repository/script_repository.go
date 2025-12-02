@@ -75,6 +75,21 @@ func (r *ScriptRepository) GetScriptByHash(ctx context.Context, token, codeHash 
 	return &script, nil
 }
 
+// GetScriptByHashTx 按Token+代码哈希查重（事务内）
+func (r *ScriptRepository) GetScriptByHashTx(ctx context.Context, tx *sqlx.Tx, token, codeHash string) (*model.CodeScript, error) {
+	var script model.CodeScript
+	err := tx.GetContext(ctx, &script, `
+		SELECT id, token, ws_id, email, description, code_base64, code_hash, code_length, version, ip_whitelist, created_at, updated_at
+		FROM code_scripts
+		WHERE token = ? AND code_hash = ?
+		LIMIT 1
+	`, token, codeHash)
+	if err != nil {
+		return nil, err
+	}
+	return &script, nil
+}
+
 // GetScriptForUpdate 锁定脚本记录
 func (r *ScriptRepository) GetScriptForUpdate(ctx context.Context, tx *sqlx.Tx, scriptID string) (*model.CodeScript, error) {
 	var script model.CodeScript

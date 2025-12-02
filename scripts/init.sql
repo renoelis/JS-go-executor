@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS `access_tokens` (
   `rate_limit_burst` INT DEFAULT NULL COMMENT '每秒请求限制数（突发限制），NULL表示不限制',
   `rate_limit_window_seconds` INT DEFAULT 60 COMMENT '限流时间窗口(秒)，默认60秒',
   `max_scripts` INT DEFAULT 50 COMMENT '最大脚本数量限制',
-  `current_scripts` INT DEFAULT 0 COMMENT '当前脚本数量',
+  `current_scripts` INT NOT NULL DEFAULT 0 COMMENT '当前脚本数量',
   -- 🔥 配额相关字段
   `quota_type` ENUM('time', 'count', 'hybrid') DEFAULT 'time' COMMENT '配额类型: time=仅时间限制, count=仅次数限制, hybrid=时间+次数双重限制',
   `total_quota` INT DEFAULT NULL COMMENT '总配额次数（仅count/hybrid有效，NULL表示不限次数）',
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS `code_scripts` (
     `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY `idx_token` (`token`),
     KEY `idx_ws_id_email` (`ws_id`, `email`),
-    KEY `idx_code_hash` (`code_hash`)
+    UNIQUE KEY `uk_token_codehash` (`token`, `code_hash`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='代码脚本主表';
 
 -- 脚本版本历史表

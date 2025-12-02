@@ -16,6 +16,7 @@ import (
 	"flow-codeblock-go/repository"
 	"flow-codeblock-go/utils"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -128,6 +129,11 @@ func (s *ScriptService) CreateScript(ctx context.Context, tokenInfo *model.Token
 		return nil, err
 	}
 
+	// 事务内再查一次，避免并发窗口产生重复脚本
+	if existing, err := s.repo.GetScriptByHashTx(ctx, tx, script.Token, script.CodeHash); err == nil && existing != nil && existing.ID != "" {
+		return nil, fmt.Errorf("该代码已存在，script_id=%s", existing.ID)
+	}
+
 	maxScripts := s.getMaxScripts(lockedToken)
 	currentScripts := 0
 	if lockedToken.CurrentScripts != nil {
@@ -138,6 +144,13 @@ func (s *ScriptService) CreateScript(ctx context.Context, tokenInfo *model.Token
 	}
 
 	if err := s.repo.CreateScriptTx(ctx, tx, script); err != nil {
+		// 唯一约束兜底：并发情况下将数据库错误转为友好提示
+		if mysqlErr, ok := err.(*mysql.MySQLError); ok && mysqlErr.Number == 1062 {
+			if existing, lookupErr := s.repo.GetScriptByHash(ctx, script.Token, script.CodeHash); lookupErr == nil && existing != nil && existing.ID != "" {
+				return nil, fmt.Errorf("该代码已存在，script_id=%s", existing.ID)
+			}
+			return nil, fmt.Errorf("该代码已存在")
+		}
 		return nil, err
 	}
 
@@ -155,7 +168,7 @@ func (s *ScriptService) CreateScript(ctx context.Context, tokenInfo *model.Token
 
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE access_tokens 
-		SET current_scripts = current_scripts + 1 
+		SET current_scripts = COALESCE(current_scripts, 0) + 1 
 		WHERE access_token = ?
 	`, tokenInfo.AccessToken); err != nil {
 		return nil, err
@@ -340,7 +353,7 @@ func (s *ScriptService) DeleteScript(ctx context.Context, tokenInfo *model.Token
 
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE access_tokens 
-		SET current_scripts = GREATEST(current_scripts - 1, 0)
+		SET current_scripts = GREATEST(COALESCE(current_scripts, 0) - 1, 0)
 		WHERE access_token = ?
 	`, lockedToken.AccessToken); err != nil {
 		return err
@@ -527,6 +540,9 @@ func (s *ScriptService) updateCacheAfterCreate(ctx context.Context, script *mode
 		return
 	}
 	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
 		pipe := s.redis.Pipeline()
 		pipe.Set(ctx, cacheKey, data, ttl)
 		pipe.SAdd(ctx, s.cfg.Script.ScriptCachePrefix+"token:"+script.Token, script.ID)
