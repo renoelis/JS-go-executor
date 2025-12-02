@@ -1,6 +1,7 @@
 package enhance_modules
 
 import (
+	"flow-codeblock-go/enhance_modules/internal/streams"
 	"flow-codeblock-go/utils"
 	"fmt"
 	"sync"
@@ -32,6 +33,12 @@ type StreamEnhancer struct {
 	compileOnce     sync.Once     // 确保只编译一次
 	compileErr      error         // 编译错误缓存
 }
+
+var (
+	readableWebInteropProgram     *goja.Program
+	readableWebInteropProgramOnce sync.Once
+	readableWebInteropProgramErr  error
+)
 
 // NewStreamEnhancer 创建新的 stream 增强器
 func NewStreamEnhancer(embeddedCode string) *StreamEnhancer {
@@ -89,6 +96,8 @@ func (se *StreamEnhancer) RegisterStreamModule(registry *require.Registry) {
 			panic(runtime.NewGoError(fmt.Errorf("加载 stream.bundle.js 后未找到 __stream_bundle__ 对象")))
 		}
 
+		patchReadableWebInterop(runtime, streamVal)
+
 		// Node 风格：默认导出应为 Stream 构造函数，兼容旧行为保留属性拷贝
 		exportVal := streamVal
 		streamObj := streamVal.ToObject(runtime)
@@ -144,7 +153,193 @@ func (se *StreamEnhancer) Register(registry *require.Registry) error {
 
 // Setup 在 Runtime 上设置模块环境
 func (se *StreamEnhancer) Setup(runtime *goja.Runtime) error {
-	// Stream 不需要额外的 Runtime 设置
-	// 用户通过 require('stream') 使用
+	if err := streams.EnsureReadableStream(runtime); err != nil {
+		return fmt.Errorf("初始化 ReadableStream 失败: %w", err)
+	}
 	return nil
+}
+
+const readableWebInteropPatchJS = `
+(function () {
+  var Readable = typeof __flow_stream_readable_ctor__ !== 'undefined' ? __flow_stream_readable_ctor__ : undefined;
+  __flow_stream_readable_ctor__ = undefined;
+  if (!Readable || typeof Readable !== 'function') {
+    return;
+  }
+
+  var RS = typeof ReadableStream === 'function' ? ReadableStream : undefined;
+  var textEncoder = typeof TextEncoder === 'function' ? new TextEncoder() : null;
+
+  function toUint8(chunk) {
+    if (chunk == null) {
+      return chunk;
+    }
+    if (typeof chunk === 'string') {
+      if (textEncoder) {
+        return textEncoder.encode(chunk);
+      }
+      return chunk;
+    }
+    if (chunk instanceof ArrayBuffer) {
+      return new Uint8Array(chunk);
+    }
+    return chunk;
+  }
+
+  Readable.toWeb = function (nodeStream) {
+    if (!RS) {
+      throw new TypeError('ReadableStream is not available');
+    }
+    if (!nodeStream || typeof nodeStream.on !== 'function') {
+      throw new TypeError('The "stream" argument must be a readable stream.');
+    }
+    var closed = false;
+
+    function removeAll(onData, onEnd, onError, onClose) {
+      var remove = nodeStream.removeListener || nodeStream.off;
+      if (typeof remove === 'function') {
+        try { remove.call(nodeStream, 'data', onData); } catch (e) {}
+        try { remove.call(nodeStream, 'end', onEnd); } catch (e) {}
+        try { remove.call(nodeStream, 'error', onError); } catch (e) {}
+        try { remove.call(nodeStream, 'close', onClose); } catch (e) {}
+      }
+    }
+
+    return new RS({
+      start: function (controller) {
+        function cleanup() {
+          if (closed) return;
+          closed = true;
+          removeAll(onData, onEnd, onError, onClose);
+        }
+        function onData(chunk) {
+          try {
+            controller.enqueue(toUint8(chunk));
+          } catch (err) {
+            onError(err);
+          }
+        }
+        function onEnd() {
+          cleanup();
+          try { controller.close(); } catch (e) {}
+        }
+        function onClose() {
+          cleanup();
+        }
+        function onError(err) {
+          cleanup();
+          try { controller.error(err); } catch (e) {}
+        }
+
+        var add = nodeStream.on || nodeStream.addListener;
+        var once = nodeStream.once || nodeStream.on;
+
+        if (typeof add === 'function') {
+          add.call(nodeStream, 'data', onData);
+        }
+        if (typeof once === 'function') {
+          once.call(nodeStream, 'end', onEnd);
+          once.call(nodeStream, 'close', onClose);
+          once.call(nodeStream, 'error', onError);
+        } else if (typeof add === 'function') {
+          add.call(nodeStream, 'end', onEnd);
+          add.call(nodeStream, 'close', onClose);
+          add.call(nodeStream, 'error', onError);
+        }
+      },
+      cancel: function (reason) {
+        closed = true;
+        if (nodeStream && typeof nodeStream.destroy === 'function') {
+          try { nodeStream.destroy(reason); } catch (e) {}
+        } else if (nodeStream && typeof nodeStream.close === 'function') {
+          try { nodeStream.close(); } catch (e) {}
+        }
+      }
+    });
+  };
+
+  Readable.fromWeb = function (webStream, options) {
+    if (!webStream || typeof webStream.getReader !== 'function') {
+      throw new TypeError('The "stream" argument must be a ReadableStream.');
+    }
+    var reader = webStream.getReader();
+    var aborted = options && options.signal && options.signal.aborted;
+
+    if (options && options.signal && typeof options.signal.addEventListener === 'function') {
+      options.signal.addEventListener('abort', function () {
+        aborted = true;
+        if (typeof webStream.cancel === 'function') {
+          try { webStream.cancel(options.signal.reason); } catch (e) {}
+        }
+      }, { once: true });
+    }
+
+    var iterable = {};
+    iterable[Symbol.asyncIterator] = function () {
+      var done = false;
+      return {
+        next: function () {
+          if (done) {
+            return Promise.resolve({ done: true, value: undefined });
+          }
+          return reader.read().then(function (res) {
+            if (res && res.done) {
+              done = true;
+              return { done: true, value: undefined };
+            }
+            return { done: false, value: res ? res.value : undefined };
+          });
+        },
+        return: function () {
+          done = true;
+          try {
+            if (reader && typeof reader.releaseLock === 'function') {
+              reader.releaseLock();
+            }
+          } catch (e) {}
+          if (aborted && typeof webStream.cancel === 'function') {
+            try { webStream.cancel(options.signal.reason); } catch (e) {}
+          }
+          return Promise.resolve({ done: true });
+        }
+      };
+    };
+
+    return Readable.from(iterable, options);
+  };
+})();
+`
+
+func patchReadableWebInterop(runtime *goja.Runtime, streamVal goja.Value) {
+	if runtime == nil || streamVal == nil || goja.IsUndefined(streamVal) || goja.IsNull(streamVal) {
+		return
+	}
+
+	readableWebInteropProgramOnce.Do(func() {
+		readableWebInteropProgram, readableWebInteropProgramErr = goja.Compile(
+			"readable_web_interop_patch.js",
+			readableWebInteropPatchJS,
+			false,
+		)
+	})
+	if readableWebInteropProgramErr != nil {
+		panic(runtime.NewGoError(fmt.Errorf("编译 Readable toWeb/fromWeb 补丁失败: %w", readableWebInteropProgramErr)))
+	}
+
+	streamObj := streamVal.ToObject(runtime)
+	if streamObj == nil {
+		return
+	}
+
+	readableVal := streamObj.Get("Readable")
+	if readableVal == nil || goja.IsUndefined(readableVal) || goja.IsNull(readableVal) {
+		return
+	}
+
+	runtime.Set("__flow_stream_readable_ctor__", readableVal)
+	defer runtime.Set("__flow_stream_readable_ctor__", goja.Undefined())
+
+	if _, err := runtime.RunProgram(readableWebInteropProgram); err != nil {
+		panic(runtime.NewGoError(fmt.Errorf("补丁 Readable toWeb/fromWeb 失败: %w", err)))
+	}
 }
