@@ -578,6 +578,8 @@ func (s *ScriptService) updateCacheAfterCreate(ctx context.Context, script *mode
 	}
 	ttl := time.Duration(s.cfg.Script.ScriptCacheTTL) * time.Second
 	cacheKey := s.cfg.Script.ScriptCachePrefix + script.ID
+	tokenKey := s.cfg.Script.ScriptCachePrefix + "token:" + script.Token
+	countKey := s.cfg.Script.ScriptCachePrefix + "count:" + script.Token
 	cachePayload := codeScriptCache{
 		CodeScript:    *script,
 		TokenForCache: script.Token,
@@ -587,20 +589,24 @@ func (s *ScriptService) updateCacheAfterCreate(ctx context.Context, script *mode
 		utils.Warn("脚本缓存序列化失败", zap.Error(err))
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+	cacheCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
-		pipe := s.redis.Pipeline()
-		pipe.Set(ctx, cacheKey, data, ttl)
-		pipe.SAdd(ctx, s.cfg.Script.ScriptCachePrefix+"token:"+script.Token, script.ID)
-		pipe.Expire(ctx, s.cfg.Script.ScriptCachePrefix+"token:"+script.Token, ttl)
-		pipe.Incr(ctx, s.cfg.Script.ScriptCachePrefix+"count:"+script.Token)
-		pipe.Expire(ctx, s.cfg.Script.ScriptCachePrefix+"count:"+script.Token, ttl)
-		if _, err := pipe.Exec(ctx); err != nil {
-			utils.Warn("脚本缓存写入失败", zap.Error(err))
-		}
-	}()
+	pipe := s.redis.TxPipeline()
+	pipe.Set(cacheCtx, cacheKey, data, ttl)
+	pipe.SAdd(cacheCtx, tokenKey, script.ID)
+	pipe.Expire(cacheCtx, tokenKey, ttl)
+	pipe.Incr(cacheCtx, countKey)
+	pipe.Expire(cacheCtx, countKey, ttl)
+	if _, err := pipe.Exec(cacheCtx); err != nil {
+		utils.Warn("脚本缓存写入失败，触发重建", zap.Error(err))
+		// 防止部分写入：剔除当前脚本 ID 的集合项，清理脚本缓存，计数走重建
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = s.redis.SRem(cleanupCtx, tokenKey, script.ID).Err()
+		_ = s.redis.Del(cleanupCtx, cacheKey).Err()
+		cleanupCancel()
+		go s.rebuildScriptCount(context.Background(), script.Token)
+	}
 }
 
 func (s *ScriptService) clearCacheAfterUpdate(ctx context.Context, scriptID, token string) {
@@ -652,6 +658,12 @@ func (s *ScriptService) rebuildScriptCount(ctx context.Context, token string) {
 	if s.redis == nil {
 		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
 	var dbCount int
 	if err := s.db.GetContext(ctx, &dbCount, `SELECT COUNT(*) FROM code_scripts WHERE token = ?`, token); err != nil {
 		utils.Warn("重建脚本计数失败", zap.Error(err))
