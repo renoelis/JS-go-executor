@@ -77,7 +77,11 @@ type TokenInfo struct {
 	TotalQuota     *int          `db:"total_quota" json:"total_quota"`         // 总配额
 	RemainingQuota *int          `db:"remaining_quota" json:"remaining_quota"` // 剩余配额
 	QuotaSyncedAt  *ShanghaiTime `db:"quota_synced_at" json:"quota_synced_at"` // 配额同步时间
-	UpdatedAt      ShanghaiTime  `db:"updated_at" json:"updated_at"`
+
+	// 🆕 脚本管理配额
+	MaxScripts     *int         `db:"max_scripts" json:"max_scripts,omitempty"`
+	CurrentScripts *int         `db:"current_scripts" json:"current_scripts,omitempty"`
+	UpdatedAt      ShanghaiTime `db:"updated_at" json:"updated_at"`
 }
 
 // IsExpired 检查Token是否过期
@@ -169,6 +173,8 @@ type CreateTokenRequest struct {
 	// 🔥 配额相关字段
 	QuotaType  string `json:"quota_type" binding:"omitempty,oneof=time count hybrid"` // 配额类型
 	TotalQuota *int   `json:"total_quota"`                                            // 总配额次数
+	// 🆕 脚本配额
+	MaxScripts *int `json:"max_scripts" binding:"omitempty,min=1"` // 最大脚本数量
 }
 
 // UpdateTokenRequest 更新Token请求
@@ -183,6 +189,8 @@ type UpdateTokenRequest struct {
 	QuotaAmount    *int   `json:"quota_amount"`                                            // 配额数量
 	// 🔥 新增：支持修改配额类型
 	QuotaType string `json:"quota_type" binding:"omitempty,oneof=time count hybrid"` // time=仅时间, count=仅次数, hybrid=双重限制
+	// 🆕 脚本配额
+	MaxScripts *int `json:"max_scripts" binding:"omitempty,min=1"`
 }
 
 // TokenQueryRequest Token查询请求

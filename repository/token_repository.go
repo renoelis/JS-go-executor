@@ -113,13 +113,19 @@ func (r *TokenRepository) Create(ctx context.Context, req *model.CreateTokenRequ
 		quotaType = req.QuotaType
 	}
 
+	maxScripts := 50
+	if req.MaxScripts != nil && *req.MaxScripts > 0 {
+		maxScripts = *req.MaxScripts
+	}
+
 	// 🔥 插入数据库（增加配额字段）
 	query := `
 		INSERT INTO access_tokens (
 			ws_id, email, access_token, expires_at, operation_type,
 			quota_type, total_quota, remaining_quota,
-			rate_limit_per_minute, rate_limit_burst, rate_limit_window_seconds
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			rate_limit_per_minute, rate_limit_burst, rate_limit_window_seconds,
+			max_scripts, current_scripts
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	result, err := r.db.ExecContext(ctx, query,
@@ -128,12 +134,14 @@ func (r *TokenRepository) Create(ctx context.Context, req *model.CreateTokenRequ
 		accessToken,
 		expiresAt,
 		req.Operation,
-		quotaType,         // 🔥 新增
-		req.TotalQuota,    // 🔥 新增
-		req.TotalQuota,    // 🔥 新增（初始 remaining = total）
+		quotaType,      // 🔥 新增
+		req.TotalQuota, // 🔥 新增
+		req.TotalQuota, // 🔥 新增（初始 remaining = total）
 		req.RateLimitPerMinute,
 		req.RateLimitBurst,
 		windowSeconds,
+		maxScripts,
+		0, // current_scripts 初始为0
 	)
 	if err != nil {
 		utils.Error("创建Token失败", zap.Error(err))
@@ -167,6 +175,19 @@ func (r *TokenRepository) GetByToken(ctx context.Context, token string) (*model.
 		return nil, fmt.Errorf("查询Token失败: %w", err)
 	}
 
+	return &tokenInfo, nil
+}
+
+// GetTokenIncludingInactive 查询Token（包含禁用/过期态，供脚本执行校验使用）
+func (r *TokenRepository) GetTokenIncludingInactive(ctx context.Context, token string) (*model.TokenInfo, error) {
+	var tokenInfo model.TokenInfo
+	err := r.db.GetContext(ctx, &tokenInfo, `SELECT * FROM access_tokens WHERE access_token = ?`, token)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("查询Token失败: %w", err)
+	}
 	return &tokenInfo, nil
 }
 
@@ -234,6 +255,20 @@ func (r *TokenRepository) Update(ctx context.Context, token string, req *model.U
 		return nil, fmt.Errorf("Token不存在")
 	}
 
+	maxScripts := 50
+	if existingToken.MaxScripts != nil && *existingToken.MaxScripts > 0 {
+		maxScripts = *existingToken.MaxScripts
+	}
+	if req.MaxScripts != nil {
+		maxScripts = *req.MaxScripts
+	}
+	if maxScripts <= 0 {
+		return nil, fmt.Errorf("max_scripts必须为正整数")
+	}
+	if existingToken.CurrentScripts != nil && *existingToken.CurrentScripts > maxScripts {
+		return nil, fmt.Errorf("max_scripts不能小于当前已用脚本数(%d)", *existingToken.CurrentScripts)
+	}
+
 	// 计算过期时间
 	expiresAt, err := r.CalculateExpiresAt(req.Operation, nil, req.SpecificDate)
 	if err != nil {
@@ -243,14 +278,14 @@ func (r *TokenRepository) Update(ctx context.Context, token string, req *model.U
 	// 🔥 根据是否提供quota_type来决定SQL语句
 	var query string
 	var args []interface{}
-	
+
 	if req.QuotaType != "" {
 		// 如果提供了quota_type，则更新配额类型
 		query = `
 			UPDATE access_tokens 
 			SET expires_at = ?, operation_type = ?,
 				rate_limit_per_minute = ?, rate_limit_burst = ?, rate_limit_window_seconds = ?,
-				quota_type = ?
+				quota_type = ?, max_scripts = ?
 			WHERE access_token = ? AND is_active = 1
 		`
 		args = []interface{}{
@@ -260,6 +295,7 @@ func (r *TokenRepository) Update(ctx context.Context, token string, req *model.U
 			req.RateLimitBurst,
 			req.RateLimitWindowSeconds,
 			req.QuotaType,
+			maxScripts,
 			token,
 		}
 	} else {
@@ -267,7 +303,8 @@ func (r *TokenRepository) Update(ctx context.Context, token string, req *model.U
 		query = `
 			UPDATE access_tokens 
 			SET expires_at = ?, operation_type = ?,
-				rate_limit_per_minute = ?, rate_limit_burst = ?, rate_limit_window_seconds = ?
+				rate_limit_per_minute = ?, rate_limit_burst = ?, rate_limit_window_seconds = ?,
+				max_scripts = ?
 			WHERE access_token = ? AND is_active = 1
 		`
 		args = []interface{}{
@@ -276,6 +313,7 @@ func (r *TokenRepository) Update(ctx context.Context, token string, req *model.U
 			req.RateLimitPerMinute,
 			req.RateLimitBurst,
 			req.RateLimitWindowSeconds,
+			maxScripts,
 			token,
 		}
 	}
@@ -331,7 +369,7 @@ func (r *TokenRepository) SyncQuotaFromRedis(ctx context.Context, token string, 
 func (r *TokenRepository) GetQuotaFromDB(ctx context.Context, token string) (*int, error) {
 	var quota *int
 	query := `SELECT remaining_quota FROM access_tokens WHERE access_token = ? AND is_active = 1`
-	
+
 	err := r.db.GetContext(ctx, &quota, query, token)
 	if err != nil {
 		// 🔥 使用errors.Is替代字符串比较（修复中等问题3）
@@ -356,7 +394,7 @@ func (r *TokenRepository) UpdateQuota(ctx context.Context, token string, operati
 
 	var newRemainingQuota int
 	var newTotalQuota int
-	
+
 	switch operation {
 	case "add":
 		// 增加配额：同时增加 remaining 和 total
@@ -372,8 +410,8 @@ func (r *TokenRepository) UpdateQuota(ctx context.Context, token string, operati
 			currentTotal = *tokenInfo.TotalQuota
 		}
 		newRemainingQuota = currentRemaining + *amount
-		newTotalQuota = currentTotal + *amount  // 🔥 同时增加总配额
-		
+		newTotalQuota = currentTotal + *amount // 🔥 同时增加总配额
+
 	case "set":
 		// 设置为指定值（只设置 remaining，不改变 total）
 		if amount == nil || *amount < 0 {
@@ -384,7 +422,7 @@ func (r *TokenRepository) UpdateQuota(ctx context.Context, token string, operati
 		if tokenInfo.TotalQuota != nil {
 			newTotalQuota = *tokenInfo.TotalQuota
 		}
-		
+
 	case "reset":
 		// 重置配额支持两种模式：
 		// 1. 不提供amount：重置remaining为当前的total（原有逻辑）
@@ -404,7 +442,7 @@ func (r *TokenRepository) UpdateQuota(ctx context.Context, token string, operati
 			newRemainingQuota = *tokenInfo.TotalQuota
 			newTotalQuota = *tokenInfo.TotalQuota
 		}
-		
+
 	default:
 		return nil, fmt.Errorf("无效的配额操作: %s", operation)
 	}
@@ -437,23 +475,23 @@ func (r *TokenRepository) DecrementQuotaAtomic(ctx context.Context, token string
 		  AND is_active = 1 
 		  AND remaining_quota > 0
 	`
-	
+
 	result, err := r.db.ExecContext(ctx, query, token)
 	if err != nil {
 		return 0, 0, fmt.Errorf("扣减配额失败: %w", err)
 	}
-	
+
 	// 检查是否更新成功
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return 0, 0, fmt.Errorf("获取影响行数失败: %w", err)
 	}
-	
+
 	if rowsAffected == 0 {
 		// 没有更新任何行，说明配额不足或Token不存在
 		return 0, 0, fmt.Errorf("配额不足或Token不存在")
 	}
-	
+
 	// 查询扣减后的配额
 	var quotaAfter int
 	selectQuery := `
@@ -465,10 +503,10 @@ func (r *TokenRepository) DecrementQuotaAtomic(ctx context.Context, token string
 	if err != nil {
 		return 0, 0, fmt.Errorf("查询扣减后配额失败: %w", err)
 	}
-	
+
 	// 扣减前配额 = 扣减后配额 + 1
 	quotaBefore := quotaAfter + 1
-	
+
 	return quotaBefore, quotaAfter, nil
 }
 
@@ -504,21 +542,21 @@ func (r *TokenRepository) BatchInsertQuotaLogs(ctx context.Context, logs []*mode
 
 	// 🔥 分批插入，每次最多500条（修复问题4）
 	const maxBatchSize = 500
-	
+
 	for i := 0; i < len(logs); i += maxBatchSize {
 		end := i + maxBatchSize
 		if end > len(logs) {
 			end = len(logs)
 		}
 		batch := logs[i:end]
-		
+
 		// 🔥 使用事务包装批量插入，提高性能（修复问题1.2）
 		tx, err := r.db.BeginTxx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("开始事务失败: %w", err)
 		}
 		defer tx.Rollback() // 自动回滚未提交的事务
-		
+
 		// 🔥 使用strings.Builder优化SQL拼接（修复严重问题2）
 		var queryBuilder strings.Builder
 		queryBuilder.WriteString(`
@@ -526,10 +564,10 @@ func (r *TokenRepository) BatchInsertQuotaLogs(ctx context.Context, logs []*mode
 				token, ws_id, email, quota_before, quota_after, quota_change,
 				action, request_id, execution_success, execution_error_type, execution_error_message
 			) VALUES `)
-		
+
 		// 预分配values容量，避免多次扩容
 		values := make([]interface{}, 0, len(batch)*11)
-		
+
 		for j, log := range batch {
 			if j > 0 {
 				queryBuilder.WriteString(",")
@@ -555,13 +593,13 @@ func (r *TokenRepository) BatchInsertQuotaLogs(ctx context.Context, logs []*mode
 		if err != nil {
 			return fmt.Errorf("批量插入第%d-%d条日志失败: %w", i+1, end, err)
 		}
-		
+
 		// 提交事务
 		if err = tx.Commit(); err != nil {
 			return fmt.Errorf("提交事务失败: %w", err)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -581,7 +619,7 @@ func (r *TokenRepository) GetQuotaLogs(ctx context.Context, req *model.QuotaLogs
 	// 构建查询条件
 	where := "WHERE token = ?"
 	args := []interface{}{req.Token}
-	
+
 	// 🔥 验证并标准化日期格式（修复问题6）
 	if req.StartDate != "" {
 		startTime, err := time.Parse("2006-01-02", req.StartDate)
@@ -617,7 +655,7 @@ func (r *TokenRepository) GetQuotaLogs(ctx context.Context, req *model.QuotaLogs
 		LIMIT ? OFFSET ?
 	`, where)
 	args = append(args, pageSize, offset)
-	
+
 	err = r.db.SelectContext(ctx, &logs, query, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("查询日志列表失败: %w", err)

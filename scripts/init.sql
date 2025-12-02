@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS `access_tokens` (
   `rate_limit_per_minute` INT DEFAULT NULL COMMENT '每分钟请求限制数，NULL表示不限制',
   `rate_limit_burst` INT DEFAULT NULL COMMENT '每秒请求限制数（突发限制），NULL表示不限制',
   `rate_limit_window_seconds` INT DEFAULT 60 COMMENT '限流时间窗口(秒)，默认60秒',
+  `max_scripts` INT DEFAULT 50 COMMENT '最大脚本数量限制',
+  `current_scripts` INT DEFAULT 0 COMMENT '当前脚本数量',
   -- 🔥 配额相关字段
   `quota_type` ENUM('time', 'count', 'hybrid') DEFAULT 'time' COMMENT '配额类型: time=仅时间限制, count=仅次数限制, hybrid=时间+次数双重限制',
   `total_quota` INT DEFAULT NULL COMMENT '总配额次数（仅count/hybrid有效，NULL表示不限次数）',
@@ -38,6 +40,7 @@ CREATE TABLE IF NOT EXISTS `access_tokens` (
   KEY `idx_rate_limit` (`rate_limit_per_minute`),
   KEY `idx_quota_type` (`quota_type`),
   KEY `idx_remaining_quota` (`remaining_quota`),
+  KEY `idx_token_scripts` (`access_token`, `current_scripts`),
   -- 🔥 性能优化复合索引（代码审查修复 - 问题7）
   KEY `idx_quota_check` (`is_active`, `quota_type`, `remaining_quota`) COMMENT '配额检查复合索引',
   KEY `idx_ws_email` (`ws_id`, `email`) COMMENT 'ws_id和email复合索引'
@@ -67,6 +70,57 @@ CREATE TABLE IF NOT EXISTS `token_rate_limit_history` (
 SELECT '✅ 表结构创建完成，开始验证...' AS status;
 SHOW CREATE TABLE `access_tokens`;
 SHOW CREATE TABLE `token_rate_limit_history`;
+
+-- ==================== 脚本管理相关表 ====================
+-- 脚本主表
+CREATE TABLE IF NOT EXISTS `code_scripts` (
+    `id` VARCHAR(22) PRIMARY KEY COMMENT 'Base62 UUID（22位，含校验位）',
+    `token` VARCHAR(255) NOT NULL COMMENT '绑定的访问Token',
+    `ws_id` VARCHAR(255) NOT NULL COMMENT '工作空间ID',
+    `email` VARCHAR(255) NOT NULL COMMENT '用户邮箱',
+    `description` TEXT COMMENT '脚本描述',
+    `code_base64` LONGTEXT NOT NULL COMMENT 'Base64编码的代码',
+    `code_hash` VARCHAR(64) COMMENT '代码SHA256哈希值（对解码后源码）',
+    `code_length` INT COMMENT '代码长度（字节）',
+    `version` INT DEFAULT 1 COMMENT '当前版本号',
+    `ip_whitelist` JSON COMMENT '可选IP白名单（数组）',
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY `idx_token` (`token`),
+    KEY `idx_ws_id_email` (`ws_id`, `email`),
+    KEY `idx_code_hash` (`code_hash`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='代码脚本主表';
+
+-- 脚本版本历史表
+CREATE TABLE IF NOT EXISTS `code_script_versions` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `script_id` VARCHAR(22) NOT NULL COMMENT '脚本ID',
+    `version` INT NOT NULL COMMENT '版本号',
+    `code_base64` LONGTEXT NOT NULL COMMENT 'Base64编码的代码',
+    `code_hash` VARCHAR(64) COMMENT '代码SHA256哈希值（对解码后源码）',
+    `code_length` INT COMMENT '代码长度（字节）',
+    `description` TEXT COMMENT '版本描述',
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY `uk_script_version` (`script_id`, `version`),
+    KEY `idx_script_id` (`script_id`),
+    CONSTRAINT `fk_script_id` FOREIGN KEY (`script_id`)
+        REFERENCES `code_scripts`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='脚本版本历史表';
+
+-- 脚本执行统计表
+CREATE TABLE IF NOT EXISTS `script_execution_stats` (
+    `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
+    `script_id` VARCHAR(22) NOT NULL COMMENT '脚本ID',
+    `token` VARCHAR(255) NOT NULL COMMENT '绑定的Token',
+    `execution_status` ENUM('success', 'failed') NOT NULL COMMENT '执行状态',
+    `execution_time_ms` INT NOT NULL COMMENT '执行耗时(毫秒)',
+    `execution_date` DATE NOT NULL COMMENT '执行日期',
+    `execution_time` DATETIME NOT NULL COMMENT '执行时间',
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY `idx_script_date` (`script_id`, `execution_date`),
+    KEY `idx_token_date` (`token`, `execution_date`),
+    KEY `idx_execution_date` (`execution_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='脚本执行统计表';
 
 -- ==================== 插入测试数据（用于验证数据库连接和表结构） ====================
 SELECT '📝 开始插入测试数据...' AS status;

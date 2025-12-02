@@ -119,13 +119,23 @@ services:
       - MAX_RESULT_SIZE=2000000         # 5MB
       - EXECUTION_TIMEOUT_MS=300000       # 🔧 开发环境30秒超时
 
+      # ==================== SCRIPT脚本管理配置 ====================
+      - MAX_SCRIPT_VERSIONS=5
+      - SCRIPT_CACHE_TTL=3600
+      - "SCRIPT_CACHE_PREFIX=script:dev:"
+      - SCRIPT_EXEC_IP_RATE_LIMIT=200
+      - SCRIPT_EXEC_IP_RATE_LIMIT_BURST=400
+      - TOKEN_EXPIRED_SCRIPT_RETENTION_DAYS=180
+      - STATS_ORPHAN_RETENTION_DAYS=90
+      - STATS_MAX_RETENTION_DAYS=180
+
       # ==================== 🛡️ SSRF 防护配置（开发环境）====================
       # 开发环境默认：禁用 SSRF 防护（允许访问内网服务）
       # 原因：本地开发需要访问数据库、微服务等内网资源
       - ENABLE_SSRF_PROTECTION=${ENABLE_SSRF_PROTECTION:-false}   # 开发环境默认禁用
       - ALLOW_PRIVATE_IP=${ALLOW_PRIVATE_IP:-true}                # 开发环境默认允许私有IP
 
-       # ==================== 🔥 并发控制超时配置 ====================
+      # ==================== 🔥 并发控制超时配置 ====================
       # 说明：控制系统繁忙时的等待行为
       - CONCURRENCY_WAIT_TIMEOUT_SEC=10  # 并发槽位等待超时(秒) - 默认 10 秒
       - RUNTIME_POOL_ACQUIRE_TIMEOUT_SEC=5  # Runtime 池获取超时(秒) - 默认 5 秒

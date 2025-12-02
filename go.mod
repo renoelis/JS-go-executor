@@ -5,6 +5,8 @@ go 1.25.0
 toolchain go1.25.3
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
+	github.com/alicebob/miniredis/v2 v2.30.3
 	github.com/btcsuite/btcd/btcec/v2 v2.3.6
 	github.com/cloudflare/circl v1.6.1
 	github.com/dop251/goja v0.0.0-20251103141225-af2ceb9156d7
@@ -24,8 +26,10 @@ require (
 )
 
 require (
+	github.com/alicebob/gopher-json v0.0.0-20200520072559-a9ecdc9d1d3a // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
+	github.com/yuin/gopher-lua v1.1.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 // indirect
 )
 

@@ -31,6 +31,7 @@ type Config struct {
 	XLSX         XLSXConfig         // 🔥 XLSX 模块配置
 	TestTool     TestToolConfig     // 🔧 测试工具页面配置
 	TokenVerify  TokenVerifyConfig  // 🔐 Token查询验证码配置
+	Script       ScriptConfig       // 🆕 脚本管理功能配置
 }
 
 // ServerConfig HTTP服务器配置
@@ -235,6 +236,18 @@ type TokenVerifyConfig struct {
 	// 频率限制配置
 	RateLimitEmail int // 每邮箱每小时最多请求次数（默认3次）
 	RateLimitIP    int // 每IP每小时最多请求次数（默认10次）
+}
+
+// ScriptConfig 脚本管理配置
+type ScriptConfig struct {
+	MaxScriptVersions               int    // 每个脚本最多保留版本数
+	ScriptCacheTTL                  int    // Redis缓存时间（秒）
+	ScriptCachePrefix               string // Redis缓存键前缀
+	ScriptExecIPRateLimit           int    // 无Token执行接口的IP限流
+	ScriptExecIPRateLimitBurst      int    // 无Token执行接口的IP突发限流
+	TokenExpiredScriptRetentionDays int    // Token失效脚本保留天数
+	StatsOrphanRetentionDays        int    // 孤儿统计保留天数
+	StatsMaxRetentionDays           int    // 统计最大保留天数
 }
 
 // calculateMaxConcurrent 基于系统内存智能计算并发限制
@@ -621,6 +634,22 @@ func LoadConfig() *Config {
 		RateLimitIP:    getEnvInt("TOKEN_VERIFY_RATE_LIMIT_IP", 10),   // IP频率限制，默认10次/小时
 	}
 
+	// 🆕 脚本管理配置
+	scriptPrefix := getEnvString("SCRIPT_CACHE_PREFIX", "script:")
+	if scriptPrefix == "" {
+		scriptPrefix = "script:"
+	}
+	cfg.Script = ScriptConfig{
+		MaxScriptVersions:               getEnvInt("MAX_SCRIPT_VERSIONS", 5),
+		ScriptCacheTTL:                  getEnvInt("SCRIPT_CACHE_TTL", 3600),
+		ScriptCachePrefix:               scriptPrefix,
+		ScriptExecIPRateLimit:           getEnvInt("SCRIPT_EXEC_IP_RATE_LIMIT", 200),
+		ScriptExecIPRateLimitBurst:      getEnvInt("SCRIPT_EXEC_IP_RATE_LIMIT_BURST", 400),
+		TokenExpiredScriptRetentionDays: getEnvInt("TOKEN_EXPIRED_SCRIPT_RETENTION_DAYS", 180),
+		StatsOrphanRetentionDays:        getEnvInt("STATS_ORPHAN_RETENTION_DAYS", 90),
+		StatsMaxRetentionDays:           getEnvInt("STATS_MAX_RETENTION_DAYS", 180),
+	}
+
 	// 🔒 加载和验证认证配置
 	adminToken := os.Getenv("ADMIN_TOKEN")
 
@@ -731,6 +760,17 @@ func (c *Config) Validate() error {
 	if c.Executor.MaxConcurrent < 1 {
 		return fmt.Errorf("MAX_CONCURRENT_EXECUTIONS 必须 >= 1，当前值: %d",
 			c.Executor.MaxConcurrent)
+	}
+
+	// 🆕 脚本管理配置校验
+	if c.Script.MaxScriptVersions < 1 {
+		return fmt.Errorf("MAX_SCRIPT_VERSIONS 必须 >= 1，当前值: %d", c.Script.MaxScriptVersions)
+	}
+	if c.Script.ScriptCacheTTL <= 0 {
+		return fmt.Errorf("SCRIPT_CACHE_TTL 必须 > 0，当前值: %d", c.Script.ScriptCacheTTL)
+	}
+	if c.Script.ScriptCachePrefix == "" {
+		return fmt.Errorf("SCRIPT_CACHE_PREFIX 不能为空")
 	}
 
 	// ✅ 所有验证通过

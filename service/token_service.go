@@ -292,6 +292,10 @@ func (s *TokenService) validateCreateRequest(req *model.CreateTokenRequest) erro
 		}
 	}
 
+	if req.MaxScripts != nil && *req.MaxScripts <= 0 {
+		return fmt.Errorf("max_scripts必须为正整数")
+	}
+
 	return nil
 }
 
@@ -311,7 +315,7 @@ func (s *TokenService) validateUpdateRequest(req *model.UpdateTokenRequest) erro
 		if req.QuotaOperation == "" {
 			return fmt.Errorf("更新quota_type为%s时，必须提供quota_operation", req.QuotaType)
 		}
-		
+
 		// 🔥 修复高优先级问题：根据不同的quota_operation进行不同的校验
 		switch req.QuotaOperation {
 		case "add", "set":
@@ -341,6 +345,10 @@ func (s *TokenService) validateUpdateRequest(req *model.UpdateTokenRequest) erro
 		}
 	}
 
+	if req.MaxScripts != nil && *req.MaxScripts <= 0 {
+		return fmt.Errorf("max_scripts必须为正整数")
+	}
+
 	return nil
 }
 
@@ -362,6 +370,24 @@ func (s *TokenService) PingDB(ctx context.Context) error {
 // PingRedis 检查Redis连接
 func (s *TokenService) PingRedis(ctx context.Context) error {
 	return s.cache.PingRedis(ctx)
+}
+
+// GetTokenForScript 获取脚本执行所需的Token信息（包含禁用/过期态）
+func (s *TokenService) GetTokenForScript(ctx context.Context, token string) (*model.TokenInfo, error) {
+	tokenInfo, err := s.repo.GetTokenIncludingInactive(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	if tokenInfo == nil {
+		return nil, ErrTokenNotFound
+	}
+	if !tokenInfo.IsActive {
+		return nil, ErrTokenDisabled
+	}
+	if tokenInfo.IsExpired() {
+		return nil, ErrTokenExpired
+	}
+	return tokenInfo, nil
 }
 
 // GetQuotaLogs 查询配额日志

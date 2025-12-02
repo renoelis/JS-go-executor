@@ -12,6 +12,7 @@ import (
 
 	"flow-codeblock-go/config"
 	"flow-codeblock-go/controller"
+	"flow-codeblock-go/middleware"
 	"flow-codeblock-go/repository"
 	"flow-codeblock-go/router"
 	"flow-codeblock-go/service"
@@ -59,6 +60,7 @@ func main() {
 
 	// ==================== 初始化Repository ====================
 	tokenRepo := repository.NewTokenRepository(db)
+	scriptRepo := repository.NewScriptRepository(db)
 
 	// ==================== 初始化Service ====================
 	// 🔥 缓存写入池（统一管理所有异步缓存写入）
@@ -133,6 +135,7 @@ func main() {
 
 	// 🆕 统计服务
 	statsService := service.NewStatsService(db)
+	scriptStatsService := service.NewScriptStatsService(db, cfg)
 
 	// 🔐 Token查询验证码相关服务
 	sessionService := service.NewPageSessionService(
@@ -160,6 +163,11 @@ func main() {
 		cfg.TokenVerify.RateLimitIP,
 	)
 
+	scriptService := service.NewScriptService(db, redisClient, cfg, scriptRepo, tokenRepo, executor)
+
+	// 无Token脚本执行IP限流
+	scriptExecLimiter := middleware.NewScriptExecIPRateLimiter(redisClient, cfg)
+
 	// ==================== 管理员Token ====================
 	// 🔒 从配置中获取已验证的管理员Token（验证逻辑在 config.LoadConfig 中）
 	adminToken := cfg.Auth.AdminToken
@@ -168,17 +176,20 @@ func main() {
 	executorController := controller.NewExecutorController(executor, cfg, tokenService, statsService, quotaService, sessionService)
 	tokenController := controller.NewTokenController(tokenService, rateLimiterService, cacheWritePool, adminToken, quotaService, quotaCleanupService, sessionService, verifyService)
 	statsController := controller.NewStatsController(statsService)
+	scriptController := controller.NewScriptController(scriptService, tokenService, rateLimiterService, quotaService, scriptStatsService, executor, cfg)
 
 	// ==================== 设置路由 ====================
 	ginRouter, routerResources := router.SetupRouter(
 		executorController,
 		tokenController,
 		statsController, // 🆕 统计控制器
+		scriptController,
 		tokenService,
 		rateLimiterService,
 		adminToken,
 		cfg,            // 🔥 传入配置（用于 IP 限流）
 		cacheWritePool, // 🔥 传入缓存写入池（用于监控）
+		scriptExecLimiter,
 	)
 
 	// ==================== 加载HTML模板 ====================

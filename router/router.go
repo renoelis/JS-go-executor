@@ -17,8 +17,9 @@ import (
 
 // RouterResources 路由资源（需要优雅关闭的组件）
 type RouterResources struct {
-	SmartIPLimiter  *middleware.SmartIPRateLimiter
-	GlobalIPLimiter *middleware.IPRateLimiter
+	SmartIPLimiter    *middleware.SmartIPRateLimiter
+	GlobalIPLimiter   *middleware.IPRateLimiter
+	ScriptExecLimiter *middleware.ScriptExecIPRateLimiter
 }
 
 // SetupRouter 设置路由
@@ -26,11 +27,13 @@ func SetupRouter(
 	executorController *controller.ExecutorController,
 	tokenController *controller.TokenController,
 	statsController *controller.StatsController, // 🆕 统计控制器
+	scriptController *controller.ScriptController,
 	tokenService *service.TokenService,
 	rateLimiterService *service.RateLimiterService,
 	adminToken string,
 	cfg *config.Config,
 	cacheWritePool *service.CacheWritePool, // 🔥 新增：缓存写入池
+	scriptExecLimiter *middleware.ScriptExecIPRateLimiter,
 ) (*gin.Engine, *RouterResources) {
 	// 设置Gin模式
 	if os.Getenv("GIN_MODE") == "" {
@@ -38,6 +41,12 @@ func SetupRouter(
 	}
 
 	router := gin.New()
+	router.SetTrustedProxies([]string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"127.0.0.1/8",
+	})
 
 	// 基础中间件
 	router.Use(gin.Logger())
@@ -69,6 +78,7 @@ func SetupRouter(
 			middleware.RateLimit(cfg.RateLimit.GlobalIPRate),
 			cfg.RateLimit.GlobalIPBurst,
 		),
+		ScriptExecLimiter: scriptExecLimiter,
 	}
 
 	utils.Info("限流器已初始化",
@@ -195,6 +205,35 @@ func SetupRouter(
 			middleware.RateLimiterMiddleware(rateLimiterService),
 			executorController.Execute,
 		)
+
+		// 脚本管理接口组（需Token认证 + 智能IP限流 + Token限流）
+		if scriptController != nil {
+			scriptGroup := flowGroup.Group("/scripts")
+			scriptGroup.Use(
+				middleware.SmartIPRateLimiterHandlerWithInstance(resources.SmartIPLimiter, cfg),
+				middleware.TokenAuthMiddleware(tokenService),
+				middleware.RateLimiterMiddleware(rateLimiterService),
+			)
+			{
+				scriptGroup.POST("", scriptController.UploadScript)
+				scriptGroup.PUT("/:scriptId", scriptController.UpdateScript)
+				scriptGroup.DELETE("/:scriptId", scriptController.DeleteScript)
+				scriptGroup.GET("", scriptController.ListScripts)
+				scriptGroup.GET("/stats", scriptController.GetScriptStatsSummary)
+				scriptGroup.GET("/:scriptId/stats", scriptController.GetScriptExecutionStats)
+				scriptGroup.GET("/:scriptId", scriptController.GetScript)
+			}
+
+			// 无Token脚本执行接口（使用脚本绑定的Token）
+			flowGroup.GET("/codeblock/:scriptId",
+				middleware.ScriptExecIPRateLimiterMiddleware(resources.ScriptExecLimiter, cfg),
+				scriptController.ExecuteScript,
+			)
+			flowGroup.POST("/codeblock/:scriptId",
+				middleware.ScriptExecIPRateLimiterMiddleware(resources.ScriptExecLimiter, cfg),
+				scriptController.ExecuteScript,
+			)
+		}
 
 		// 管理接口（需要管理员认证）
 		adminGroup := flowGroup.Group("")
