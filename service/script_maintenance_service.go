@@ -56,8 +56,9 @@ type ScriptMaintenanceService struct {
 	timeout        time.Duration
 	enabled        bool
 
-	stopChan chan struct{}
-	wg       sync.WaitGroup
+	stopChan          chan struct{}
+	manualTriggerChan chan struct{}
+	wg                sync.WaitGroup
 
 	mu         sync.RWMutex
 	running    bool
@@ -81,12 +82,13 @@ func NewScriptMaintenanceService(
 	}
 
 	service := &ScriptMaintenanceService{
-		cleanupService: cleanupService,
-		statsService:   statsService,
-		interval:       interval,
-		timeout:        timeout,
-		enabled:        enabled,
-		stopChan:       make(chan struct{}),
+		cleanupService:    cleanupService,
+		statsService:      statsService,
+		interval:          interval,
+		timeout:           timeout,
+		enabled:           enabled,
+		stopChan:          make(chan struct{}),
+		manualTriggerChan: make(chan struct{}, 1), // 单槽队列，避免重复堆积
 	}
 
 	// 如果依赖未就绪，仅支持后续手动触发（返回时不启动定时任务）
@@ -107,6 +109,9 @@ func NewScriptMaintenanceService(
 	} else {
 		utils.Info("脚本清理维护服务未启用自动调度（仍支持手动触发）")
 	}
+	// 手动触发独立 worker，串行处理队列任务
+	service.wg.Add(1)
+	go service.runManualWorker()
 
 	return service
 }
@@ -165,9 +170,37 @@ func (s *ScriptMaintenanceService) Stats() *ScriptMaintenanceStats {
 	}
 }
 
-// TriggerCleanup 手动触发一次清理
-func (s *ScriptMaintenanceService) TriggerCleanup(ctx context.Context) ScriptCleanupResult {
-	return s.runCleanup("manual", ctx)
+// TriggerCleanup 手动触发一次清理（异步提交，避免受HTTP生命周期影响）
+func (s *ScriptMaintenanceService) TriggerCleanup(_ context.Context) ScriptCleanupResult {
+	result := ScriptCleanupResult{
+		Trigger: "manual",
+	}
+
+	if s == nil || s.cleanupService == nil || s.statsService == nil {
+		result.Error = "脚本清理服务未初始化"
+		return result
+	}
+
+	// 若已有任务在运行，则直接返回冲突信息
+	s.mu.RLock()
+	running := s.running
+	s.mu.RUnlock()
+	if running {
+		result.Error = "已有清理任务在运行，跳过本次请求"
+		result.SkipReason = "running"
+		return result
+	}
+
+	// 将任务提交到单通道队列，避免并发重复启动
+	select {
+	case s.manualTriggerChan <- struct{}{}:
+		result.SkipReason = "queued" // 已排队，等待后台 worker 执行
+	default:
+		result.Error = "已有清理任务在排队，请稍后再试"
+		result.SkipReason = "queued"
+	}
+
+	return result
 }
 
 // runLoop 定时执行清理
@@ -194,6 +227,23 @@ func (s *ScriptMaintenanceService) runLoop() {
 				utils.Warn("定时脚本清理完成（有错误）", zap.String("error", result.Error))
 			}
 			s.scheduleNextRun(time.Now().Add(s.interval))
+		case <-s.stopChan:
+			return
+		}
+	}
+}
+
+// runManualWorker 串行消费手动触发的清理请求
+func (s *ScriptMaintenanceService) runManualWorker() {
+	defer s.wg.Done()
+
+	for {
+		select {
+		case <-s.manualTriggerChan:
+			result := s.runCleanup("manual", context.Background())
+			if result.Error != "" {
+				utils.Warn("手动脚本清理完成（有错误）", zap.String("error", result.Error))
+			}
 		case <-s.stopChan:
 			return
 		}
@@ -235,11 +285,8 @@ func (s *ScriptMaintenanceService) runCleanup(trigger string, parentCtx context.
 		s.mu.Unlock()
 	}()
 
-	ctx := parentCtx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	// 清理任务需与外部请求生命周期解耦，始终使用独立上下文
+	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
 
 	var errs []string

@@ -41,6 +41,13 @@ type ScriptService struct {
 	safeDecrScript *redis.Script
 }
 
+var (
+	// ErrScriptNotFound 用于标记脚本不存在的场景
+	ErrScriptNotFound = errors.New("script not found")
+	// ErrVersionNotFound 用于标记脚本版本不存在的场景
+	ErrVersionNotFound = errors.New("script version not found")
+)
+
 // codeScriptCache 用于在缓存中携带 Token（CodeScript.Token 的 json:"-" 无法直接序列化）
 type codeScriptCache struct {
 	model.CodeScript
@@ -122,6 +129,8 @@ func (s *ScriptService) CreateScript(ctx context.Context, tokenInfo *model.Token
 	// 🔁 同一Token内按代码哈希查重，避免重复上传
 	if existing, err := s.repo.GetScriptByHash(ctx, script.Token, script.CodeHash); err == nil && existing != nil && existing.ID != "" {
 		return nil, fmt.Errorf("该代码已存在，script_id=%s", existing.ID)
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
 	}
 
 	tx, err := s.db.BeginTxx(ctx, nil)
@@ -138,6 +147,8 @@ func (s *ScriptService) CreateScript(ctx context.Context, tokenInfo *model.Token
 	// 事务内再查一次，避免并发窗口产生重复脚本
 	if existing, err := s.repo.GetScriptByHashTx(ctx, tx, script.Token, script.CodeHash); err == nil && existing != nil && existing.ID != "" {
 		return nil, fmt.Errorf("该代码已存在，script_id=%s", existing.ID)
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
 	}
 
 	maxScripts := s.getMaxScripts(lockedToken)
@@ -409,6 +420,9 @@ func (s *ScriptService) GetScriptWithCache(ctx context.Context, scriptID string)
 
 	result, err := s.repo.GetScriptByID(ctx, scriptID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrScriptNotFound
+		}
 		return nil, err
 	}
 	result.ParsedIPWhitelist = utils.ParseIPWhitelist(result.IPWhitelist)
@@ -441,6 +455,9 @@ func (s *ScriptService) GetVersionWithCache(ctx context.Context, scriptID string
 
 	dbVersion, err := s.repo.GetVersion(ctx, scriptID, version)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrVersionNotFound
+		}
 		return nil, err
 	}
 

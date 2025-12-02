@@ -232,7 +232,12 @@ func (c *ScriptController) GetScript(ctx *gin.Context) {
 
 	script, err := c.scriptService.GetScriptWithCache(ctx.Request.Context(), scriptID)
 	if err != nil {
-		utils.RespondError(ctx, http.StatusNotFound, utils.ErrorTypeNotFound, "脚本不存在", nil)
+		if errors.Is(err, service.ErrScriptNotFound) {
+			utils.RespondError(ctx, http.StatusNotFound, utils.ErrorTypeNotFound, "脚本不存在", nil)
+		} else {
+			zap.L().Error("查询脚本失败", zap.Error(err), zap.String("script_id", scriptID))
+			utils.RespondError(ctx, http.StatusInternalServerError, utils.ErrorTypeInternal, "查询脚本失败", nil)
+		}
 		return
 	}
 	if script.Token != tokenInfo.AccessToken {
@@ -249,21 +254,29 @@ func (c *ScriptController) GetScript(ctx *gin.Context) {
 
 	availableVersions, err := c.scriptService.ListVersionNumbers(ctx.Request.Context(), scriptID)
 	if err != nil {
-		availableVersions = []int{}
+		zap.L().Error("查询脚本版本号失败", zap.Error(err), zap.String("script_id", scriptID))
+		utils.RespondError(ctx, http.StatusInternalServerError, utils.ErrorTypeInternal, "查询脚本版本列表失败", nil)
+		return
 	}
 
 	var versionList []model.CodeScriptVersion
 	if targetVersion > 0 {
 		v, err := c.scriptService.GetVersionWithCache(ctx.Request.Context(), scriptID, targetVersion)
 		if err != nil {
-			utils.RespondError(ctx, http.StatusNotFound, utils.ErrorTypeNotFound, err.Error(), nil)
+			if errors.Is(err, service.ErrVersionNotFound) {
+				utils.RespondError(ctx, http.StatusNotFound, utils.ErrorTypeNotFound, "脚本版本不存在", nil)
+			} else {
+				zap.L().Error("查询脚本版本失败", zap.Error(err), zap.String("script_id", scriptID), zap.Int("version", targetVersion))
+				utils.RespondError(ctx, http.StatusInternalServerError, utils.ErrorTypeInternal, "查询脚本版本失败", nil)
+			}
 			return
 		}
 		versionList = []model.CodeScriptVersion{*v}
 	} else {
 		versionList, err = c.scriptService.ListVersions(ctx.Request.Context(), scriptID, 0)
 		if err != nil {
-			utils.RespondError(ctx, http.StatusNotFound, utils.ErrorTypeNotFound, err.Error(), nil)
+			zap.L().Error("查询脚本版本列表失败", zap.Error(err), zap.String("script_id", scriptID))
+			utils.RespondError(ctx, http.StatusInternalServerError, utils.ErrorTypeInternal, "查询脚本版本列表失败", nil)
 			return
 		}
 	}
@@ -477,7 +490,11 @@ func (c *ScriptController) TriggerScriptCleanup(ctx *gin.Context) {
 		return
 	}
 
-	utils.RespondSuccess(ctx, result, "脚本/统计清理完成")
+	msg := "脚本/统计清理任务已排队，稍后可通过状态接口查看结果"
+	if result.SkipReason == "" {
+		msg = "脚本/统计清理完成"
+	}
+	utils.RespondSuccess(ctx, result, msg)
 }
 
 // ExecuteScript 执行存储脚本（无Token认证）
@@ -502,7 +519,12 @@ func (c *ScriptController) ExecuteScript(ctx *gin.Context) {
 
 	script, err := c.scriptService.GetScriptWithCache(ctx.Request.Context(), scriptID)
 	if err != nil {
-		utils.RespondError(ctx, http.StatusNotFound, utils.ErrorTypeNotFound, "脚本不存在", nil)
+		if errors.Is(err, service.ErrScriptNotFound) {
+			utils.RespondError(ctx, http.StatusNotFound, utils.ErrorTypeNotFound, "脚本不存在", nil)
+		} else {
+			zap.L().Error("查询脚本失败", zap.Error(err), zap.String("script_id", scriptID))
+			utils.RespondError(ctx, http.StatusInternalServerError, utils.ErrorTypeInternal, "查询脚本失败", nil)
+		}
 		return
 	}
 
