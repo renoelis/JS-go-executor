@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"math"
 	"time"
 
 	"flow-codeblock-go/config"
+	"flow-codeblock-go/model"
 	"flow-codeblock-go/utils"
 
 	"github.com/jmoiron/sqlx"
@@ -282,6 +285,167 @@ func (s *ScriptStatsService) GetOverallStats(ctx context.Context, token string, 
 	}, nil
 }
 
+// GetGlobalStats 获取全局脚本汇总统计（管理员）
+func (s *ScriptStatsService) GetGlobalStats(ctx context.Context, startDate, endDate time.Time, page, pageSize int) (*model.GlobalScriptStatsResponse, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("统计服务未初始化")
+	}
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 10
+	}
+	offset := (page - 1) * pageSize
+
+	period := model.GlobalPeriod{
+		StartDate: startDate.Format("2006-01-02"),
+		EndDate:   endDate.Format("2006-01-02"),
+	}
+
+	summary := model.GlobalScriptSummary{}
+	if err := s.db.GetContext(ctx, &summary.TotalScripts, `SELECT COUNT(*) FROM code_scripts`); err != nil {
+		return nil, err
+	}
+	if err := s.db.GetContext(ctx, &summary.TotalVersions, `SELECT COUNT(*) FROM code_script_versions`); err != nil {
+		return nil, err
+	}
+	if err := s.db.GetContext(ctx, &summary.ActiveScripts, `
+		SELECT COUNT(DISTINCT script_id)
+		FROM script_execution_stats
+		WHERE execution_date BETWEEN ? AND ?
+	`, period.StartDate, period.EndDate); err != nil {
+		return nil, err
+	}
+
+	var agg struct {
+		Total   int64   `db:"total"`
+		Success int64   `db:"success"`
+		Failed  int64   `db:"failed"`
+		Avg     float64 `db:"avg_time"`
+		Max     int64   `db:"max_time"`
+	}
+	if err := s.db.GetContext(ctx, &agg, `
+		SELECT 
+			COUNT(*) AS total,
+			SUM(CASE WHEN execution_status = 'success' THEN 1 ELSE 0 END) AS success,
+			SUM(CASE WHEN execution_status = 'failed' THEN 1 ELSE 0 END) AS failed,
+			AVG(execution_time_ms) AS avg_time,
+			MAX(execution_time_ms) AS max_time
+		FROM script_execution_stats
+		WHERE execution_date BETWEEN ? AND ?
+	`, period.StartDate, period.EndDate); err != nil {
+		return nil, err
+	}
+	summary.TotalExecutions = agg.Total
+	summary.SuccessCount = agg.Success
+	summary.FailedCount = agg.Failed
+	summary.AvgExecutionTimeMs = agg.Avg
+	summary.MaxExecutionTimeMs = agg.Max
+	summary.SuccessRate = formatRateString(agg.Success, agg.Total)
+
+	var totalCount int64
+	if err := s.db.GetContext(ctx, &totalCount, `
+		SELECT COUNT(*) FROM script_execution_stats WHERE execution_date BETWEEN ? AND ?
+	`, period.StartDate, period.EndDate); err != nil {
+		return nil, err
+	}
+	if totalCount > 0 {
+		offsetP99 := int(math.Ceil(float64(totalCount)*0.99)) - 1
+		if offsetP99 < 0 {
+			offsetP99 = 0
+		}
+
+		var p99 sql.NullInt64
+		if err := s.db.GetContext(ctx, &p99, `
+			SELECT execution_time_ms
+			FROM script_execution_stats
+			WHERE execution_date BETWEEN ? AND ?
+			ORDER BY execution_time_ms
+			LIMIT 1 OFFSET ?
+		`, period.StartDate, period.EndDate, offsetP99); err == nil && p99.Valid {
+			summary.P99ExecutionTimeMs = p99.Int64
+		}
+	}
+
+	var quota model.GlobalQuotaUsage
+	if err := s.db.GetContext(ctx, &quota, `
+		SELECT 
+			COALESCE(SUM(current_scripts), 0) AS used,
+			COALESCE(SUM(max_scripts), 0) AS max
+		FROM access_tokens
+	`); err == nil {
+		summary.QuotaUsage.Used = quota.Used
+		summary.QuotaUsage.Max = quota.Max
+	}
+	if summary.QuotaUsage.Used < summary.TotalScripts {
+		summary.QuotaUsage.Used = summary.TotalScripts
+	}
+	if summary.QuotaUsage.Max <= 0 {
+		summary.QuotaUsage.Max = int64(maxInt(50, int(summary.TotalScripts)))
+	}
+	summary.QuotaUsage.UsageRate = formatRateString(summary.QuotaUsage.Used, summary.QuotaUsage.Max)
+
+	topRows := []struct {
+		ScriptID     string         `db:"script_id"`
+		Description  sql.NullString `db:"description"`
+		Executions   int64          `db:"executions"`
+		SuccessCount int64          `db:"success_count"`
+		AvgTimeMs    float64        `db:"avg_time_ms"`
+	}{}
+	if err := s.db.SelectContext(ctx, &topRows, `
+		SELECT 
+			cs.id AS script_id,
+			cs.description AS description,
+			COUNT(*) AS executions,
+			SUM(CASE WHEN ses.execution_status = 'success' THEN 1 ELSE 0 END) AS success_count,
+			AVG(ses.execution_time_ms) AS avg_time_ms
+		FROM script_execution_stats ses
+		JOIN code_scripts cs ON ses.script_id = cs.id
+		WHERE ses.execution_date BETWEEN ? AND ?
+		GROUP BY cs.id, cs.description
+		ORDER BY executions DESC
+		LIMIT ? OFFSET ?
+	`, period.StartDate, period.EndDate, pageSize, offset); err != nil {
+		return nil, err
+	}
+
+	topScripts := make([]model.GlobalTopScriptItem, 0, len(topRows))
+	for i, row := range topRows {
+		desc := row.Description.String
+		topScripts = append(topScripts, model.GlobalTopScriptItem{
+			Rank:        offset + i + 1,
+			ScriptID:    row.ScriptID,
+			Description: desc,
+			Executions:  row.Executions,
+			SuccessRate: formatRateString(row.SuccessCount, row.Executions),
+			AvgTimeMs:   row.AvgTimeMs,
+		})
+	}
+
+	dailyTrend := []model.GlobalDailyTrendItem{}
+	if err := s.db.SelectContext(ctx, &dailyTrend, `
+		SELECT 
+			execution_date AS date,
+			COUNT(*) AS total,
+			SUM(CASE WHEN execution_status = 'success' THEN 1 ELSE 0 END) AS success,
+			SUM(CASE WHEN execution_status = 'failed' THEN 1 ELSE 0 END) AS failed
+		FROM script_execution_stats
+		WHERE execution_date BETWEEN ? AND ?
+		GROUP BY execution_date
+		ORDER BY execution_date
+	`, period.StartDate, period.EndDate); err != nil {
+		return nil, err
+	}
+
+	return &model.GlobalScriptStatsResponse{
+		Period:     period,
+		Summary:    summary,
+		TopScripts: topScripts,
+		DailyTrend: dailyTrend,
+	}, nil
+}
+
 // GetScriptStats 获取单个脚本统计
 func (s *ScriptStatsService) GetScriptStats(ctx context.Context, token, scriptID string, startDate, endDate time.Time) (*ScriptStatsOverview, error) {
 	if s == nil || s.db == nil {
@@ -350,4 +514,18 @@ func (s *ScriptStatsService) GetScriptStats(ctx context.Context, token, scriptID
 		Summary:    summary,
 		DailyTrend: trendRows,
 	}, nil
+}
+
+func formatRateString(numerator, denominator int64) string {
+	if denominator <= 0 {
+		return "0.0"
+	}
+	return fmt.Sprintf("%.1f", float64(numerator)*100/float64(denominator))
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

@@ -219,7 +219,6 @@ func SetupRouter(
 				scriptGroup.PUT("/:scriptId", scriptController.UpdateScript)
 				scriptGroup.DELETE("/:scriptId", scriptController.DeleteScript)
 				scriptGroup.GET("", scriptController.ListScripts)
-				scriptGroup.GET("/stats", scriptController.GetScriptStatsSummary)
 				scriptGroup.GET("/:scriptId/stats", scriptController.GetScriptExecutionStats)
 				scriptGroup.GET("/:scriptId", scriptController.GetScript)
 			}
@@ -275,6 +274,9 @@ func SetupRouter(
 				adminGroup.GET("/stats/modules", statsController.GetModuleStats)
 				adminGroup.GET("/stats/modules/:module_name", statsController.GetModuleDetailStats)
 				adminGroup.GET("/stats/users", statsController.GetUserActivityStats)
+			}
+			if scriptController != nil {
+				adminGroup.GET("/scripts/stats", scriptController.GetGlobalScriptStats)
 			}
 
 			// 脚本/统计清理接口

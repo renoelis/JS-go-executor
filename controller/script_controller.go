@@ -421,6 +421,37 @@ func (c *ScriptController) GetScriptStatsSummary(ctx *gin.Context) {
 	utils.RespondSuccess(ctx, stats, "")
 }
 
+// GetGlobalScriptStats 汇总统计（全局，管理员）
+func (c *ScriptController) GetGlobalScriptStats(ctx *gin.Context) {
+	if c.statsService == nil {
+		utils.RespondError(ctx, http.StatusServiceUnavailable, utils.ErrorTypeInternal, "统计服务未就绪", nil)
+		return
+	}
+
+	start, end, err := c.parseDateRange(ctx)
+	if err != nil {
+		utils.RespondError(ctx, http.StatusBadRequest, utils.ErrorTypeValidation, err.Error(), nil)
+		return
+	}
+
+	page, _ := strconv.Atoi(ctx.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(ctx.DefaultQuery("page_size", "10"))
+
+	stats, err := c.statsService.GetGlobalStats(ctx.Request.Context(), start, end, page, pageSize)
+	if err != nil {
+		utils.RespondError(ctx, http.StatusInternalServerError, utils.ErrorTypeInternal, err.Error(), nil)
+		return
+	}
+
+	if c.executor != nil && stats != nil {
+		if cacheStats := extractCacheStats(c.executor.GetCacheStats()); cacheStats != nil {
+			stats.Summary.CacheStats = cacheStats
+		}
+	}
+
+	utils.RespondSuccess(ctx, stats, "")
+}
+
 // GetScriptExecutionStats 单脚本统计
 func (c *ScriptController) GetScriptExecutionStats(ctx *gin.Context) {
 	tokenInfo, exists := middleware.GetTokenInfo(ctx)
@@ -456,6 +487,60 @@ func (c *ScriptController) GetScriptExecutionStats(ctx *gin.Context) {
 		return
 	}
 	utils.RespondSuccess(ctx, stats, "")
+}
+
+func extractCacheStats(raw map[string]interface{}) *model.GlobalCacheStats {
+	if raw == nil {
+		return nil
+	}
+
+	hits, _ := toInt64(raw["hits"])
+	misses, _ := toInt64(raw["misses"])
+	hitRate, hasRate := toFloat64(raw["hitRate"])
+
+	total := hits + misses
+	rate := 0.0
+	if hasRate {
+		rate = hitRate
+	} else if total > 0 {
+		rate = float64(hits) * 100 / float64(total)
+	}
+
+	return &model.GlobalCacheStats{
+		HitCount:  hits,
+		MissCount: misses,
+		HitRate:   fmt.Sprintf("%.1f", rate),
+	}
+}
+
+func toInt64(val interface{}) (int64, bool) {
+	switch v := val.(type) {
+	case int64:
+		return v, true
+	case int:
+		return int64(v), true
+	case float64:
+		return int64(v), true
+	case float32:
+		return int64(v), true
+	default:
+		return 0, false
+	}
+}
+
+func toFloat64(val interface{}) (float64, bool) {
+	switch v := val.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	default:
+		return 0, false
+	}
 }
 
 // GetScriptCleanupStats 查询脚本/统计清理服务状态（管理员）
