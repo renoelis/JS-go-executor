@@ -915,11 +915,6 @@
   margin-top: 6px;
 }
 
-.script-mode-config {
-  max-width: 1280px;
-  width: 98%;
-}
-
 .kv-list {
   display: flex;
   flex-direction: column;
@@ -929,56 +924,273 @@
 .kv-row {
   display: grid;
   grid-template-columns: 1fr 1fr auto;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
 }
 
 .kv-row input {
   width: 100%;
-  padding: 8px 10px;
-  border: 1px solid #ced4da;
-  border-radius: 6px;
+  padding: 10px 12px;
+  border: 1px solid #e5e6eb;
+  border-radius: 8px;
+  font-size: 14px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.kv-row button {
-  padding: 8px 10px;
-  border: 1px solid #dee2e6;
-  background: #fff;
-  border-radius: 6px;
+.kv-row input:focus {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.12);
+  outline: none;
+}
+
+.kv-row .kv-remove {
+  padding: 10px 12px;
+  min-width: 64px;
+  border: 1px solid #ffd8d6;
+  background: #fff7f7;
+  color: #d4380d;
+  border-radius: 8px;
   cursor: pointer;
+  transition: all 0.2s ease;
 }
 
-.kv-row button:hover {
-  background: #1976d2;
-  color: #fff;
-  border-color: #1976d2;
+.kv-row .kv-remove:hover {
+  background: #fff1f0;
+  border-color: #ffccc7;
+  color: #b32000;
 }
 
-.kv-actions {
-  margin-top: 6px;
+.script-mode-config {
+  max-width: 1180px;
+  width: 96%;
+  padding: 20px 22px 18px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.script-mode-config .modal-header {
+  border-bottom: 1px solid #e5e6eb;
+  padding: 0 0 10px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.script-mode-config .modal-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.script-mode-config .modal-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: #e6f4ff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+
+.script-mode-config h3 {
+  margin: 0;
+  font-size: 20px;
+  color: #1d2129;
+}
+
+.script-mode-config .modal-subtitle {
+  margin-top: 4px;
+  color: #86909c;
+  font-size: 13px;
+}
+
+.script-mode-config .sm-close-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: #f7f8fa;
+  border-radius: 10px;
+  font-size: 22px;
+  color: #4e5969;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.script-mode-config .sm-close-btn:hover {
+  background: #f2f3f5;
+  color: #d93026;
+}
+
+.script-mode-alert {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff2f0;
+  color: #d4380d;
+  border: 1px solid #ffccc7;
+  font-size: 13px;
+}
+
+.script-mode-alert.error {
+  background: #fff2f0;
+  color: #d4380d;
+  border-color: #ffccc7;
+}
+
+.script-mode-alert.success {
+  background: #f6ffed;
+  color: #389e0d;
+  border-color: #b7eb8f;
+}
+
+.script-mode-alert.info,
+.script-mode-alert.warning {
+  background: #e6f4ff;
+  color: #0958d9;
+  border-color: #91caff;
+}
+
+.script-mode-config .config-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.script-mode-config .method-group {
+  align-self: flex-start;
+}
+
+.script-mode-config .method-group .form-input {
+  width: 100%;
+  max-width: 100%;
 }
 
 .script-mode-config .form-group {
-  margin-bottom: 14px;
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.script-mode-config .form-label-row {
+.script-mode-config .form-label {
+  font-weight: 600;
+  color: #1d2129;
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 6px;
+}
+
+.script-mode-config .required {
+  color: #ff4d4f;
+}
+
+.script-mode-config .form-input {
+  border-radius: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e5e6eb;
+  font-size: 14px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.script-mode-config select.form-input {
+  height: 44px;
+  line-height: 22px;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: #1d2129;
+  background: #fff;
+}
+
+.script-mode-config .form-input:focus {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.12);
+  outline: none;
+}
+
+.script-mode-config .config-card {
+  border: 1px solid #eef0f3;
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: #fdfefe;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.config-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 12px;
+}
+
+.config-card-header .card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1d2129;
+}
+
+.config-card-header .card-hint {
+  font-size: 12px;
+  color: #86909c;
+}
+
+.config-card-header .ghost-btn {
+  height: 34px;
+}
+
+.config-card .kv-list {
+  margin-top: 6px;
+}
+
+.config-card .card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .script-mode-config .form-help-text {
   font-size: 12px;
   color: #555;
-  margin-top: 6px;
+  margin-top: 4px;
   line-height: 1.5;
 }
 
 .script-mode-config #configBodyEditor {
   min-height: 260px;
   height: 320px;
+  border: 1px solid #e5e6eb;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.script-mode-config .button-group {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.script-mode-config .button-group.right {
+  justify-content: flex-end;
+}
+
+@media (max-width: 900px) {
+  .script-mode-config {
+    width: 94%;
+    padding: 16px;
+  }
+
+  .script-mode-config .config-row {
+    grid-template-columns: 1fr;
+  }
+
+  .script-mode-config .method-group .form-input {
+    width: 100%;
+  }
 }
 
 @media (max-width: 768px) {

@@ -3629,46 +3629,65 @@ return readExcelFromUrl();`
         <div id="scriptModeConfigModal" class="modal-overlay">
             <div class="modal-content script-mode-config">
                 <div class="modal-header">
-                    <h3>🧩 脚本模式配置</h3>
-                    <button class="modal-close" onclick="closeScriptModeConfig()">×</button>
+                    <div class="modal-title-row">
+                        <span class="modal-icon">🧩</span>
+                        <div>
+                            <h3>脚本模式配置</h3>
+                            <div class="modal-subtitle">仅使用脚本模式配置的请求参数，外层 Input 不参与</div>
+                        </div>
+                    </div>
+                    <button class="sm-close-btn" onclick="closeScriptModeConfig()">×</button>
                 </div>
-                <div id="scriptModeConfigAlert" class="alert" style="display:none;"></div>
-                <div class="form-group">
-                    <label class="form-label">脚本ID <span style="color:red">*</span></label>
-                    <input type="text" id="configScriptId" class="form-input" placeholder="请输入脚本ID">
+                <div id="scriptModeConfigAlert" class="script-mode-alert" style="display:none;"></div>
+                <div class="config-row">
+                    <div class="form-group">
+                        <label class="form-label">脚本ID <span class="required">*</span></label>
+                        <input type="text" id="configScriptId" class="form-input" placeholder="请输入脚本ID">
+                    </div>
+                    <div class="form-group method-group">
+                        <label class="form-label">请求方式</label>
+                        <select id="configMethod" class="form-input" onchange="updateScriptModeBodyVisibility()">
+                            <option value="GET" selected>GET</option>
+                            <option value="POST">POST</option>
+                        </select>
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">请求方式</label>
-                    <select id="configMethod" class="form-input" onchange="updateScriptModeBodyVisibility()">
-                        <option value="GET" selected>GET</option>
-                        <option value="POST">POST</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Query 参数（Key/Value，可多行）</label>
+                <div class="config-card">
+                    <div class="config-card-header">
+                        <div>
+                            <div class="card-title">Query 参数</div>
+                            <div class="card-hint">Key / Value，可多行</div>
+                        </div>
+                        <button type="button" class="ghost-btn" onclick="addKVRow('configQueryList')">＋ 新增 Query</button>
+                    </div>
                     <div id="configQueryList" class="kv-list"></div>
-                    <div class="kv-actions">
-                        <button type="button" class="btn btn-info" onclick="addKVRow('configQueryList')">➕ 新增 Query</button>
-                    </div>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">自定义 Header（Key/Value，可多行）</label>
+                <div class="config-card">
+                    <div class="config-card-header">
+                        <div>
+                            <div class="card-title">自定义 Header</div>
+                            <div class="card-hint">Key / Value，可多行</div>
+                        </div>
+                        <button type="button" class="ghost-btn" onclick="addKVRow('configHeaderList')">＋ 新增 Header</button>
+                    </div>
                     <div id="configHeaderList" class="kv-list"></div>
-                    <div class="kv-actions">
-                        <button type="button" class="btn btn-info" onclick="addKVRow('configHeaderList')">➕ 新增 Header</button>
-                    </div>
                 </div>
-                <div class="form-group" id="configBodyGroup">
-                    <div class="form-label-row">
-                        <label class="form-label">Body（JSON，可选，脚本模式独立使用）</label>
-                        <button type="button" class="btn btn-fullscreen" onclick="openScriptBodyFullscreenEditor()">⛶ 全屏编辑</button>
+                <div class="config-card" id="configBodyGroup">
+                    <div class="config-card-header">
+                        <div>
+                            <div class="card-title">Body（JSON，可选）</div>
+                            <div class="card-hint">脚本模式独立使用，留空默认 {}</div>
+                        </div>
+                        <div class="card-actions">
+                            <button type="button" class="ghost-btn" onclick="openScriptBodyFullscreenEditor()">⛶ 全屏编辑</button>
+                        </div>
                     </div>
                     <div id="configBodyEditor" class="code-editor"></div>
                     <div class="form-help-text">脚本模式只会使用此处的 Body，外层 Input 内容不会带入；留空则默认发送 {}。</div>
                 </div>
-                <div class="button-group">
-                    <button class="btn btn-secondary" onclick="closeScriptModeConfig()">取消</button>
-                    <button class="btn btn-success" onclick="saveScriptModeConfig()">保存配置</button>
+                <div class="button-group right">
+                    <button class="ghost-btn" onclick="closeScriptModeConfig()">取消</button>
+                    <button class="primary-btn" onclick="saveScriptModeConfig()">保存配置</button>
                 </div>
             </div>
         </div>
@@ -4876,18 +4895,17 @@ return readExcelFromUrl();`
                 scriptModeAlertTimer = null;
             }
             if (!message) {
-                alertBox.classList.remove('show');
                 alertBox.textContent = '';
                 alertBox.style.display = 'none';
                 return;
             }
             alertBox.textContent = message;
-            alertBox.className = `alert alert-${type} show`;
+            alertBox.className = `script-mode-alert ${type || 'info'}`;
             alertBox.style.display = 'block';
             alertBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
             scriptModeAlertTimer = setTimeout(() => {
-                alertBox.classList.remove('show');
                 alertBox.style.display = 'none';
+                alertBox.className = 'script-mode-alert';
             }, 5000);
         }
 
@@ -4955,7 +4973,7 @@ return readExcelFromUrl();`
             row.innerHTML = `
                 <input type="text" class="kv-key" placeholder="Key" value="${key || ''}">
                 <input type="text" class="kv-value" placeholder="Value" value="${value || ''}">
-                <button type="button" onclick="this.parentElement.remove()">删除</button>
+                <button type="button" class="kv-remove" onclick="this.parentElement.remove()">删除</button>
             `;
             list.appendChild(row);
         }
