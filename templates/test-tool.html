@@ -3523,33 +3523,45 @@ return readExcelFromUrl();`
         </script>
         <div id="scriptManagerModal" class="modal-overlay">
             <div class="modal-content script-manager-modal">
-                <div class="modal-header">
-                    <h3>📚 脚本管理</h3>
-                    <button class="modal-close" onclick="closeScriptManager()">×</button>
+                <div class="modal-header script-manager-header">
+                    <div class="sm-title">
+                        <div class="sm-title-text">📚 脚本管理</div>
+                        <div class="sm-subtitle">保存、回滚并快速填充脚本</div>
+                    </div>
+                    <div class="sm-search">
+                        <span class="search-icon">🔍</span>
+                        <input type="text" class="search-input" placeholder="搜索脚本名称/ID...">
+                    </div>
+                    <div class="sm-actions">
+                        <button class="primary-btn btn-upload" onclick="handleUploadCurrentScript()" title="保存当前代码为脚本">➕ 保存当前脚本</button>
+                    </div>
+                    <button class="modal-close sm-close-btn" onclick="closeScriptManager()">×</button>
                 </div>
                 <div id="scriptManagerMessage" class="script-manager-message info"></div>
                 <div class="script-toolbar">
-                    <button class="btn btn-success btn-upload" onclick="handleUploadCurrentScript()">📤 上传当前代码</button>
-                    <button class="btn btn-info btn-load-to-editor" disabled>📥 加载到编辑器</button>
-                    <input type="text" class="search-input" placeholder="搜索脚本...">
-                    <select class="page-size-selector">
-                        <option value="5">5条/页</option>
-                        <option value="10">10条/页</option>
-                        <option value="20" selected>20条/页</option>
-                        <option value="50">50条/页</option>
-                        <option value="100">100条/页</option>
-                        <option value="custom">自定义</option>
-                    </select>
+                    <div class="toolbar-left">
+                        <span class="toolbar-hint">列表按更新时间倒序 · 选中行后可快速填充</span>
+                    </div>
+                    <div class="toolbar-right">
+                        <select class="page-size-selector">
+                            <option value="5">5条/页</option>
+                            <option value="10">10条/页</option>
+                            <option value="20" selected>20条/页</option>
+                            <option value="50">50条/页</option>
+                            <option value="100">100条/页</option>
+                            <option value="custom">自定义</option>
+                        </select>
+                        <button class="ghost-btn" onclick="scriptManager?.loadScripts(1)" title="刷新列表">🔄 刷新</button>
+                    </div>
                 </div>
                 <div class="script-list-container">
                     <table class="script-table">
                         <thead>
                             <tr>
-                                <th>脚本ID</th>
-                                <th>描述</th>
-                                <th>版本</th>
-                                <th>更新时间</th>
-                                <th>操作</th>
+                                <th style="width:40%">脚本</th>
+                                <th style="width:12%">版本</th>
+                                <th style="width:20%">更新时间</th>
+                                <th style="width:28%">操作</th>
                             </tr>
                         </thead>
                         <tbody id="scriptListBody"></tbody>
@@ -3561,8 +3573,48 @@ return readExcelFromUrl();`
                     <button class="btn-next">下一页</button>
                 </div>
                 <div id="versionPanel" class="version-panel" style="display:none;">
-                    <h4>版本历史</h4>
-                    <div class="version-list"></div>
+                    <div class="version-panel-head">
+                        <div>
+                            <div class="version-panel-title">版本历史</div>
+                            <div class="version-panel-script" id="versionPanelScriptId"></div>
+                        </div>
+                        <button class="ghost-btn" onclick="scriptManagerUI?.toggleVersionPanel(false)">折叠</button>
+                    </div>
+                    <div class="version-panel-body">
+                        <div class="version-list"></div>
+                            <div class="version-preview">
+                                <div class="version-preview-meta-row">
+                                    <div class="version-preview-meta" id="versionPreviewMeta">选择左侧版本查看代码</div>
+                                    <div class="version-preview-actions">
+                                        <button class="ghost-btn" onclick="scriptManagerUI?.openVersionFullscreen()">⛶ 全屏查看</button>
+                                    </div>
+                                </div>
+                                <div id="versionPreviewCode" class="version-preview-code"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+        </div>
+        <div id="versionFullscreenOverlay" class="modal-overlay">
+            <div class="modal-content version-fullscreen">
+                <div class="modal-header">
+                    <h3>版本代码预览</h3>
+                    <button class="modal-close" onclick="scriptManagerUI?.closeVersionFullscreen()">×</button>
+                </div>
+                <div class="version-fullscreen-meta" id="versionFullscreenMeta"></div>
+                <div class="version-fullscreen-code" id="versionFullscreenCode"></div>
+            </div>
+        </div>
+        <div id="scriptConfirmOverlay" class="modal-overlay">
+            <div class="modal-content confirm-dialog">
+                <div class="confirm-icon">!</div>
+                <div class="confirm-body">
+                    <div class="confirm-title" id="scriptConfirmTitle">操作确认</div>
+                    <div class="confirm-message" id="scriptConfirmMessage">确定执行此操作吗？</div>
+                </div>
+                <div class="confirm-actions">
+                    <button id="scriptConfirmCancel" class="ghost-btn">取消</button>
+                    <button id="scriptConfirmOk" class="primary-btn">确定</button>
                 </div>
             </div>
         </div>
@@ -3619,10 +3671,13 @@ return readExcelFromUrl();`
                     <button class="modal-close" onclick="closeDescriptionDialog()">×</button>
                 </div>
                 <div class="form-group">
+                    <label class="form-label">脚本描述</label>
                     <textarea id="scriptDescription" placeholder="请输入脚本描述（可选）" maxlength="200"></textarea>
                 </div>
-                <label class="form-label" style="margin-top:8px">IP 白名单（可选，逗号或换行分隔）</label>
-                <textarea id="ipWhitelistInput" placeholder="127.0.0.1&#10;192.168.0.0/16" style="min-height:80px"></textarea>
+                <div class="form-group">
+                    <label class="form-label">IP 白名单（可选，逗号或换行分隔）</label>
+                    <textarea id="ipWhitelistInput" placeholder="127.0.0.1&#10;192.168.0.0/16" style="min-height:90px"></textarea>
+                </div>
                 <div class="upload-hint">留空表示不限制 IP，填入后仅白名单 IP 可执行脚本</div>
                 <div class="dialog-buttons">
                     <button class="btn btn-secondary" data-dialog-action="cancel">取消</button>

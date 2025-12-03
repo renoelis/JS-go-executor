@@ -144,7 +144,10 @@
     }
 
     async deleteScript(scriptId) {
-      if (!confirm(`确定要删除脚本 ${scriptId} 吗？`)) return;
+      const ok = this.ui?.confirmDialog
+        ? await this.ui.confirmDialog(`确定要删除脚本 ${scriptId} 吗？`, { title: '删除确认', danger: true })
+        : confirm(`确定要删除脚本 ${scriptId} 吗？`);
+      if (!ok) return;
       const res = await this.api.deleteScript(scriptId);
       if (res && res.success) {
         this.ui?.showMessage('脚本已删除', 'success');
@@ -161,13 +164,34 @@
         const versions = payload.data || [];
         const currentVersion = payload.current_version;
         this.ui?.renderVersionList(versions, currentVersion, scriptId);
+        const defaultVersion = versions.find(v => v.version === currentVersion) || versions[0];
+        if (defaultVersion) {
+          if (defaultVersion.code_base64 || defaultVersion.code) {
+            const codeRaw = defaultVersion.code_base64
+              ? decodeBase64ToString(defaultVersion.code_base64)
+              : defaultVersion.code;
+            this.ui?.showVersionPreview({
+              scriptId,
+              version: defaultVersion.version,
+              code: codeRaw,
+              updated_at: defaultVersion.updated_at || defaultVersion.created_at || '',
+            });
+          } else {
+            this.viewVersionCode(scriptId, defaultVersion.version, { silent: true });
+          }
+        } else {
+          this.ui?.showVersionPreview(null);
+        }
       } else {
         this.ui?.showMessage(res?.message || res?.error?.message || '获取版本失败', 'error');
       }
     }
 
     async rollbackToVersion(scriptId, version) {
-      if (!confirm(`确定回滚到 v${version} 吗？`)) return;
+      const ok = this.ui?.confirmDialog
+        ? await this.ui.confirmDialog(`确定回滚到 v${version} 吗？`, { title: '回滚确认', danger: true })
+        : confirm(`确定回滚到 v${version} 吗？`);
+      if (!ok) return;
       const res = await this.api.updateScript(scriptId, { rollback_to_version: version });
       if (res && res.success) {
         this.ui?.showMessage('版本回滚成功', 'success');
@@ -178,18 +202,28 @@
       }
     }
 
-    async viewVersionCode(scriptId, version) {
+    async viewVersionCode(scriptId, version, options = {}) {
       const res = await this.api.getScript(scriptId, version);
       if (res && res.success) {
         const payload = res.data || {};
         const versions = payload.data || [];
         const target = versions.find(v => v.version === version) || versions[0];
-        if (target && target.code_base64) {
-          const code = decodeBase64ToString(target.code_base64);
-          alert(`版本 v${version} 代码:\n\n${code.slice(0, 8000)}`);
+        if (target && (target.code_base64 || target.code)) {
+          const code = target.code_base64 ? decodeBase64ToString(target.code_base64) : target.code;
+          this.ui?.showVersionPreview({
+            scriptId,
+            version: target.version,
+            code,
+            updated_at: target.updated_at || target.created_at || '',
+          });
+          if (!options.silent) {
+            this.ui?.showMessage(`已载入 v${version} 代码`, 'info');
+          }
         }
       } else {
-        this.ui?.showMessage(res?.message || res?.error?.message || '查看版本失败', 'error');
+        if (!options.silent) {
+          this.ui?.showMessage(res?.message || res?.error?.message || '查看版本失败', 'error');
+        }
       }
     }
 

@@ -11,15 +11,33 @@
       this.pageSizeSelector = document.querySelector('#scriptManagerModal .page-size-selector');
       this.versionPanel = document.getElementById('versionPanel');
       this.versionList = document.querySelector('#versionPanel .version-list');
+      this.versionScriptEl = document.getElementById('versionPanelScriptId');
+      this.versionPreviewMeta = document.getElementById('versionPreviewMeta');
+      this.versionPreviewCode = document.getElementById('versionPreviewCode');
       this.loadToEditorBtn = document.querySelector('#scriptManagerModal .btn-load-to-editor');
       this.messageBox = document.getElementById('scriptManagerMessage');
+      this.versionFullscreenOverlay = document.getElementById('versionFullscreenOverlay');
+      this.versionFullscreenMeta = document.getElementById('versionFullscreenMeta');
+      this.versionFullscreenCode = document.getElementById('versionFullscreenCode');
+      this.confirmOverlay = document.getElementById('scriptConfirmOverlay');
+      this.confirmTitle = document.getElementById('scriptConfirmTitle');
+      this.confirmMessage = document.getElementById('scriptConfirmMessage');
+      this.confirmCancelBtn = document.getElementById('scriptConfirmCancel');
+      this.confirmOkBtn = document.getElementById('scriptConfirmOk');
       this.searchTimer = null;
       this.selectedScript = null;
       this.versionListHandler = null;
+      this.currentPreviewVersion = null;
+      this.currentVersionScriptId = null;
+      this.currentPreviewCode = '';
+      this.versionPreviewAce = null;
+      this.versionFullscreenAce = null;
+      this.confirmResolver = null;
     }
 
     init() {
       this.bindEvents();
+      this.initVersionEditors();
     }
 
     bindEvents() {
@@ -83,6 +101,9 @@
           this.setSelectedScript({ id: scriptId, description: desc });
 
           switch (action) {
+            case 'copy-id':
+              this.copyId(scriptId);
+              break;
             case 'view-versions':
               this.manager.loadVersions(scriptId);
               break;
@@ -108,12 +129,29 @@
         if (cancelBtn) cancelBtn.addEventListener('click', () => this.closeDescriptionDialog());
         if (confirmBtn) confirmBtn.addEventListener('click', () => this.confirmDescriptionDialog());
       }
+
+      if (this.confirmCancelBtn) {
+        this.confirmCancelBtn.addEventListener('click', () => this.resolveConfirm(false));
+      }
+      if (this.confirmOkBtn) {
+        this.confirmOkBtn.addEventListener('click', () => this.resolveConfirm(true));
+      }
+      if (this.confirmOverlay) {
+        this.confirmOverlay.addEventListener('click', (e) => {
+          if (e.target === this.confirmOverlay) {
+            this.resolveConfirm(false);
+          }
+        });
+      }
     }
 
     showModal() {
       if (this.modal) {
         this.modal.classList.add('show');
         this.manager.loadScripts(1);
+        if (this.searchInput) {
+          setTimeout(() => this.searchInput.focus(), 50);
+        }
       }
     }
 
@@ -132,17 +170,26 @@
         const tr = document.createElement('tr');
         tr.dataset.id = script.id || '';
         tr.dataset.desc = script.description || '';
+        const desc = script.description || '未命名脚本';
+        const shortId = script.id ? `${script.id.slice(0, 6)}...${script.id.slice(-4)}` : '-';
         tr.innerHTML = `
-          <td title="${script.id}">${script.id ? script.id.substring(0, 10) + '...' : '-'}</td>
-          <td title="${script.description || ''}">${script.description ? this.truncateText(script.description, 30) : '-'}</td>
-          <td>v${script.version || 0}</td>
-          <td>${script.updated_at || '-'}</td>
+          <td>
+            <div class="script-cell">
+              <div class="script-name" title="${desc}">${this.truncateText(desc, 34)}</div>
+              <div class="script-meta">
+                <span class="script-id" title="${script.id || ''}">ID: ${shortId}</span>
+                ${script.id ? `<button class="copy-id-btn" data-action="copy-id" data-id="${script.id}" title="复制脚本ID">复制</button>` : ''}
+              </div>
+            </div>
+          </td>
+          <td><span class="tag">v${script.version || 0}</span></td>
+          <td><span class="time-text">${script.updated_at || '-'}</span></td>
           <td>
             <div class="action-buttons">
-              <button data-action="view-versions" data-id="${script.id}" title="查看版本">📜</button>
-              <button data-action="edit" data-id="${script.id}" data-desc="${script.description || ''}" title="编辑脚本">✏️</button>
-              <button data-action="delete" data-id="${script.id}" title="删除脚本">🗑️</button>
-              <button data-action="load" data-id="${script.id}" data-desc="${script.description || ''}" class="btn-primary" title="填充到执行区">▶️</button>
+              <button data-action="load" data-id="${script.id}" data-desc="${script.description || ''}" title="填充到执行区">▶ 填充</button>
+              <button data-action="edit" data-id="${script.id}" data-desc="${script.description || ''}" title="编辑脚本">✏️ 编辑</button>
+              <button data-action="view-versions" data-id="${script.id}" title="查看版本并预览">🕒 版本</button>
+              <button data-action="delete" data-id="${script.id}" title="删除脚本" class="action-danger">🗑️ 删除</button>
             </div>
           </td>`;
         this.listBody.appendChild(tr);
@@ -162,20 +209,27 @@
       if (!this.versionPanel || !this.versionList) return;
       this.toggleVersionPanel(true);
       this.versionList.innerHTML = '';
+      this.currentVersionScriptId = scriptId || '';
+      if (this.versionScriptEl) {
+        this.versionScriptEl.textContent = scriptId ? `脚本：${scriptId}` : '';
+      }
 
       versions.forEach((item) => {
         const wrapper = document.createElement('div');
         wrapper.className = 'version-item';
+        wrapper.dataset.version = item.version;
+        wrapper.dataset.id = scriptId;
         wrapper.innerHTML = `
           <div class="version-header">
-            <span class="version-number">v${item.version}</span>
-            <span class="version-date">${item.updated_at || item.created_at || '-'}</span>
+            <div>
+              <div class="version-number">v${item.version}</div>
+              <div class="version-date">${item.updated_at || item.created_at || '-'}</div>
+            </div>
             <span class="version-hash">${item.code_hash ? 'SHA: ' + item.code_hash.slice(0, 8) : ''}</span>
           </div>
           <div class="version-actions">
-            <button data-action="version-view" data-id="${scriptId}" data-version="${item.version}">查看代码</button>
-            <button data-action="version-rollback" data-id="${scriptId}" data-version="${item.version}">回滚</button>
-            <button data-action="version-load" data-id="${scriptId}" data-version="${item.version}">加载到编辑器</button>
+            <button data-action="version-load" data-id="${scriptId}" data-version="${item.version}">填充</button>
+            <button data-action="version-rollback" data-id="${scriptId}" data-version="${item.version}" class="action-danger">回滚</button>
           </div>`;
         this.versionList.appendChild(wrapper);
       });
@@ -185,13 +239,15 @@
       }
       this.versionListHandler = (e) => {
         const btn = e.target.closest('button[data-action]');
+        const card = e.target.closest('.version-item');
+        if (card && card.dataset.id && card.dataset.version) {
+          this.manager.viewVersionCode(card.dataset.id, parseInt(card.dataset.version, 10), { silent: true });
+        }
         if (!btn) return;
         const action = btn.dataset.action;
         const vid = btn.dataset.id;
         const version = parseInt(btn.dataset.version, 10);
-        if (action === 'version-view') {
-          this.manager.viewVersionCode(vid, version);
-        } else if (action === 'version-rollback') {
+        if (action === 'version-rollback') {
           this.manager.rollbackToVersion(vid, version);
         } else if (action === 'version-load') {
           this.manager.applyScript(vid, '', version);
@@ -203,6 +259,50 @@
     toggleVersionPanel(show) {
       if (!this.versionPanel) return;
       this.versionPanel.style.display = show ? 'block' : 'none';
+      if (!show) {
+        this.showVersionPreview(null);
+      }
+    }
+
+    showVersionPreview(payload) {
+      if (!this.versionPreviewMeta || !this.versionPreviewCode) return;
+      if (!payload || !payload.code) {
+        this.versionPreviewMeta.textContent = '选择左侧版本查看代码';
+        if (this.versionPreviewAce) {
+          this.versionPreviewAce.session.setValue('');
+        } else {
+          this.versionPreviewCode.textContent = '';
+        }
+        this.currentPreviewVersion = null;
+        this.currentPreviewCode = '';
+        this.highlightVersion(null);
+        return;
+      }
+      this.versionPreviewMeta.textContent = `v${payload.version || '-'} · ${payload.updated_at || ''}`;
+      this.currentPreviewCode = payload.code || '';
+      if (this.versionPreviewAce) {
+        this.versionPreviewAce.session.setValue(this.currentPreviewCode || '');
+        this.versionPreviewAce.session.setScrollTop(0);
+        this.versionPreviewAce.resize();
+      } else {
+        this.versionPreviewCode.textContent = this.currentPreviewCode || '';
+      }
+      this.currentPreviewVersion = payload.version;
+      this.highlightVersion(payload.version);
+      if (this.versionPreviewMeta?.scrollIntoView) {
+        setTimeout(() => this.versionPreviewMeta.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+      }
+    }
+
+    highlightVersion(version) {
+      if (!this.versionList) return;
+      this.versionList.querySelectorAll('.version-item').forEach((item) => {
+        if (parseInt(item.dataset.version, 10) === version) {
+          item.classList.add('active');
+        } else {
+          item.classList.remove('active');
+        }
+      });
     }
 
     setLoading(isLoading) {
@@ -227,11 +327,115 @@
       if (this.loadToEditorBtn) {
         this.loadToEditorBtn.disabled = !script;
       }
+      if (this.listBody) {
+        this.listBody.querySelectorAll('tr').forEach((row) => {
+          row.classList.toggle('active', script && row.dataset.id === script.id);
+        });
+      }
     }
 
     hideMessage() {
       if (this.messageBox) {
         this.messageBox.style.display = 'none';
+      }
+    }
+
+    confirmDialog(message, options = {}) {
+      const title = options.title || '操作确认';
+      const danger = !!options.danger;
+      if (!this.confirmOverlay || !this.confirmMessage || !this.confirmTitle) {
+        // 兜底使用原生 confirm
+        return Promise.resolve(window.confirm(message || title));
+      }
+      this.confirmTitle.textContent = title;
+      this.confirmMessage.textContent = message || '';
+      if (this.confirmOkBtn) {
+        this.confirmOkBtn.classList.toggle('danger', danger);
+        this.confirmOkBtn.textContent = options.okText || '确定';
+      }
+      if (this.confirmCancelBtn) {
+        this.confirmCancelBtn.textContent = options.cancelText || '取消';
+      }
+      this.confirmOverlay.classList.add('show');
+      return new Promise((resolve) => {
+        this.confirmResolver = resolve;
+      });
+    }
+
+    resolveConfirm(result) {
+      if (this.confirmOverlay) {
+        this.confirmOverlay.classList.remove('show');
+      }
+      if (this.confirmResolver) {
+        this.confirmResolver(result);
+        this.confirmResolver = null;
+      }
+    }
+
+    openVersionFullscreen() {
+      if (!this.versionFullscreenOverlay || !this.versionFullscreenMeta || !this.versionFullscreenCode) return;
+      this.initVersionEditors();
+      const codeToShow = this.currentPreviewCode || '';
+      if (!this.currentPreviewCode) {
+        this.versionFullscreenMeta.textContent = '当前无可预览的代码';
+        if (this.versionFullscreenAce) {
+          this.versionFullscreenAce.session.setValue('');
+        } else {
+          this.versionFullscreenCode.textContent = '';
+        }
+      } else {
+        const scriptId = this.currentVersionScriptId || '';
+        const versionText = this.currentPreviewVersion ? `v${this.currentPreviewVersion}` : '';
+        this.versionFullscreenMeta.textContent = `${scriptId ? `脚本：${scriptId} · ` : ''}${versionText}`;
+        if (this.versionFullscreenAce) {
+          this.versionFullscreenAce.session.setValue(codeToShow);
+          this.versionFullscreenAce.session.setScrollTop(0);
+        } else {
+          this.versionFullscreenCode.textContent = codeToShow;
+        }
+      }
+      this.versionFullscreenOverlay.classList.add('show');
+      if (this.versionFullscreenAce) {
+        setTimeout(() => {
+          this.versionFullscreenAce.resize();
+          this.versionFullscreenAce.session.setScrollTop(0);
+        }, 30);
+      }
+    }
+
+    closeVersionFullscreen() {
+      if (this.versionFullscreenOverlay) {
+        this.versionFullscreenOverlay.classList.remove('show');
+      }
+    }
+
+    initVersionEditors() {
+      if (typeof ace === 'undefined') return;
+      if (this.versionPreviewCode && !this.versionPreviewAce) {
+        this.versionPreviewAce = ace.edit(this.versionPreviewCode);
+        this.versionPreviewAce.setTheme('ace/theme/monokai');
+        this.versionPreviewAce.session.setMode('ace/mode/javascript');
+        this.versionPreviewAce.setOptions({
+          readOnly: true,
+          highlightActiveLine: false,
+          highlightGutterLine: false,
+          showPrintMargin: false,
+          fontSize: '12px',
+        });
+        this.versionPreviewAce.renderer.$cursorLayer.element.style.display = 'none';
+      }
+      if (this.versionFullscreenCode && !this.versionFullscreenAce) {
+        this.versionFullscreenAce = ace.edit(this.versionFullscreenCode);
+        this.versionFullscreenAce.setTheme('ace/theme/monokai');
+        this.versionFullscreenAce.session.setMode('ace/mode/javascript');
+        this.versionFullscreenAce.setOptions({
+          readOnly: true,
+          highlightActiveLine: false,
+          highlightGutterLine: false,
+          showPrintMargin: false,
+          fontSize: '13px',
+        });
+        this.versionFullscreenAce.renderer.$cursorLayer.element.style.display = 'none';
       }
     }
 
@@ -263,6 +467,25 @@
       const ipWhitelist = ipInput ? ipInput.value.split(/[\n,]/).map(v => v.trim()).filter(Boolean) : [];
       this.dialogResolver({ description, ipWhitelist });
       this.closeDescriptionDialog();
+    }
+
+    copyId(id) {
+      if (!id) return;
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(id).then(() => {
+          this.showMessage('脚本ID已复制', 'success');
+        }).catch(() => {
+          this.showMessage('复制失败，请手动复制', 'error');
+        });
+      } else {
+        const input = document.createElement('input');
+        input.value = id;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand('copy');
+        document.body.removeChild(input);
+        this.showMessage('脚本ID已复制', 'success');
+      }
     }
   }
 
