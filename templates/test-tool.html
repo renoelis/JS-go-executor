@@ -100,7 +100,8 @@
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 20px;
-            padding: 30px
+            padding: 30px;
+            align-items: stretch
         }
 
         .section {
@@ -361,6 +362,17 @@
             grid-column: 1/-1
         }
 
+        .execution-result-section {
+            display: flex;
+            flex-direction: column;
+            gap: 10px
+        }
+
+        .execution-result-section #loadingBox,
+        .execution-result-section .result-box {
+            flex: 1
+        }
+
         .result-box {
             background: #fff;
             color: #333;
@@ -370,9 +382,9 @@
             font-family: Monaco, Menlo, Consolas, 'Courier New', monospace;
             font-size: 13px;
             line-height: 1.8;
-            min-height: 400px;
-            height: calc(100vh - 200px);
-            max-height: 600px;
+            min-height: 520px;
+            height: calc(100vh - 240px);
+            max-height: none;
             overflow-y: auto;
             overflow-x: auto;
             white-space: pre-wrap;
@@ -949,7 +961,9 @@
             }
 
             .result-box {
-                max-height: 400px;
+                min-height: 320px;
+                height: auto;
+                max-height: none;
                 font-size: 12px
             }
 
@@ -1696,7 +1710,7 @@ return {
                         </button> <button class="btn btn-warning" onclick="decodeFromBase64()"> 🔓 Base64解码 </button>
                         <button class="btn btn-success" onclick="executeCode()" id="runBtn"> ▶️ 运行代码 </button> </div>
                 </div>
-                <div class="section">
+                <div class="section execution-result-section">
                     <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
                         <div> <span class="icon">📊</span> 执行结果 </div> <button id="copyResultBtn"
                             class="copy-result-btn" onclick="copyExecutionResult()" style="display:none" title="复制执行结果">
