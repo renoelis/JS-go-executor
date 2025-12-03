@@ -3551,6 +3551,14 @@ return readExcelFromUrl();`
                             <option value="100">100条/页</option>
                             <option value="custom">自定义</option>
                         </select>
+                        <div class="custom-page-size" id="customPageSizeBox">
+                            <span class="custom-label">自定义</span>
+                            <span class="custom-page-size-value" id="customPageSizeValue"></span>
+                            <div class="custom-inputs">
+                                <input type="number" id="customPageSizeInput" min="1" max="100" placeholder="输入 1-100">
+                                <button class="primary-btn" id="customPageSizeApply">应用</button>
+                            </div>
+                        </div>
                         <button class="ghost-btn" onclick="scriptManager?.loadScripts(1)" title="刷新列表">🔄 刷新</button>
                     </div>
                 </div>

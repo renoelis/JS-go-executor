@@ -9,6 +9,7 @@
       this.nextBtn = document.querySelector('#scriptManagerModal .btn-next');
       this.searchInput = document.querySelector('#scriptManagerModal .search-input');
       this.pageSizeSelector = document.querySelector('#scriptManagerModal .page-size-selector');
+      this.customPageSizeValue = document.getElementById('customPageSizeValue');
       this.versionPanel = document.getElementById('versionPanel');
       this.versionList = document.querySelector('#versionPanel .version-list');
       this.versionScriptEl = document.getElementById('versionPanelScriptId');
@@ -33,6 +34,7 @@
       this.versionPreviewAce = null;
       this.versionFullscreenAce = null;
       this.confirmResolver = null;
+      this.lastCustomPageSize = null;
     }
 
     init() {
@@ -54,15 +56,49 @@
         this.pageSizeSelector.addEventListener('change', () => {
           const val = this.pageSizeSelector.value;
           if (val === 'custom') {
-            const custom = prompt('请输入每页显示条数（1-100）：');
-            const num = parseInt(custom, 10);
-            if (num >= 1 && num <= 100) {
-              this.manager.updatePageSize(num);
-            }
+            this.toggleCustomPageSize(true);
           } else {
             this.manager.updatePageSize(parseInt(val, 10));
+            this.toggleCustomPageSize(false);
+            const customInput = document.getElementById('customPageSizeInput');
+            if (customInput) customInput.value = '';
+            if (this.customPageSizeValue) this.customPageSizeValue.style.display = 'none';
+            this.lastCustomPageSize = null;
           }
         });
+      }
+
+      const customApply = document.getElementById('customPageSizeApply');
+      const customInput = document.getElementById('customPageSizeInput');
+      if (customApply && customInput) {
+        customApply.addEventListener('click', () => {
+          const num = parseInt(customInput.value, 10);
+          if (num >= 1 && num <= 100) {
+            this.manager.updatePageSize(num);
+            this.pageSizeSelector.value = 'custom';
+            this.lastCustomPageSize = num;
+            if (this.customPageSizeValue) {
+              this.customPageSizeValue.textContent = `${num} 条/页`;
+              this.customPageSizeValue.style.display = 'inline-flex';
+            }
+            this.toggleCustomPageSize(true);
+          } else {
+            customInput.focus();
+            customInput.select();
+          }
+        });
+        customInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            customApply.click();
+          }
+        });
+        if (this.lastCustomPageSize) {
+          customInput.value = this.lastCustomPageSize;
+          if (this.customPageSizeValue) {
+            this.customPageSizeValue.textContent = `${this.lastCustomPageSize} 条/页`;
+            this.customPageSizeValue.style.display = 'inline-flex';
+          }
+        }
       }
 
       if (this.prevBtn) {
@@ -152,6 +188,11 @@
         if (this.searchInput) {
           setTimeout(() => this.searchInput.focus(), 50);
         }
+        if (this.pageSizeSelector?.value === 'custom') {
+          this.toggleCustomPageSize(true);
+        } else {
+          this.toggleCustomPageSize(false);
+        }
       }
     }
 
@@ -160,6 +201,9 @@
         this.modal.classList.remove('show');
       }
       this.toggleVersionPanel(false);
+      if (this.pageSizeSelector?.value !== 'custom') {
+        this.toggleCustomPageSize(false);
+      }
     }
 
     renderScriptList(scripts = [], pagination = {}) {
@@ -337,6 +381,43 @@
     hideMessage() {
       if (this.messageBox) {
         this.messageBox.style.display = 'none';
+      }
+    }
+
+    toggleCustomPageSize(show) {
+      const box = document.getElementById('customPageSizeBox');
+      const input = document.getElementById('customPageSizeInput');
+      const valueChip = this.customPageSizeValue;
+      const inputs = box ? box.querySelector('.custom-inputs') : null;
+      if (!box || !input) return;
+      if (show) {
+        box.style.display = 'flex';
+        box.classList.add('editing');
+        if (valueChip) {
+          if (this.lastCustomPageSize) {
+            valueChip.textContent = `${this.lastCustomPageSize} 条/页`;
+            valueChip.style.display = 'inline-flex';
+          } else {
+            valueChip.style.display = 'none';
+          }
+        }
+        if (inputs) inputs.style.display = 'flex';
+        if (this.lastCustomPageSize) input.value = this.lastCustomPageSize;
+        input.focus();
+      } else {
+        input.value = '';
+        box.classList.remove('editing');
+        if (inputs) inputs.style.display = 'none';
+        if (this.lastCustomPageSize) {
+          box.style.display = 'flex';
+          if (valueChip) {
+            valueChip.textContent = `${this.lastCustomPageSize} 条/页`;
+            valueChip.style.display = 'inline-flex';
+          }
+        } else {
+          box.style.display = 'none';
+          if (valueChip) valueChip.style.display = 'none';
+        }
       }
     }
 

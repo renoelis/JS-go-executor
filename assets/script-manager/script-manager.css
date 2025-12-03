@@ -328,6 +328,12 @@
   gap: 10px;
 }
 
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .toolbar-hint {
   color: #86909c;
   font-size: 12px;
@@ -345,6 +351,71 @@
   border-radius: 8px;
   background: #fff;
   color: #4e5969;
+}
+
+.custom-page-size {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  background: #f8f9fb;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid #e5e6eb;
+}
+
+.custom-page-size .custom-label {
+  font-size: 13px;
+  color: #4e5969;
+}
+
+.custom-page-size .custom-page-size-value {
+  font-size: 13px;
+  color: #1677ff;
+  background: #e8f3ff;
+  padding: 4px 8px;
+  border-radius: 8px;
+  display: none;
+}
+
+.custom-page-size input {
+  width: 120px;
+  height: 32px;
+  padding: 6px 10px;
+  border: 1px solid #d0d7e2;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #1d2129;
+}
+
+.custom-page-size .custom-page-size-value {
+  font-size: 13px;
+  color: #1677ff;
+  background: #e8f3ff;
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+
+.custom-page-size input:focus {
+  outline: none;
+  border-color: #1677ff;
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.15);
+}
+
+.custom-page-size .primary-btn {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+  border-radius: 8px;
+}
+
+.custom-page-size .custom-inputs {
+  display: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.custom-page-size.editing .custom-inputs {
+  display: flex;
 }
 
 .script-list-container {
