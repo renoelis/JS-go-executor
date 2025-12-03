@@ -2,6 +2,8 @@ package router
 
 import (
 	"os"
+	"path"
+	"strings"
 
 	"flow-codeblock-go/assets"
 	"flow-codeblock-go/config"
@@ -190,6 +192,16 @@ func SetupRouter(
 		flowGroup.GET("/assets/verify-code.js", func(c *gin.Context) {
 			c.Header("Content-Type", "application/javascript; charset=utf-8")
 			c.File("templates/verify-code.js")
+		})
+
+		// 脚本管理前端资源
+		flowGroup.GET("/assets/script-manager/*filepath", func(c *gin.Context) {
+			safePath := path.Clean(path.Join("assets/script-manager", strings.TrimPrefix(c.Param("filepath"), "/")))
+			if !strings.HasPrefix(safePath, "assets/script-manager") {
+				c.AbortWithStatus(403)
+				return
+			}
+			c.File(safePath)
 		})
 
 		// 代码执行接口（智能 IP 限流 + Token 认证 + Token 限流）

@@ -10,6 +10,7 @@
         <script src="/flow/assets/mode-json.js"></script>
         <script src="/flow/assets/theme-monokai.js"></script>
         <script src="/flow/assets/ext-searchbox.js"></script>
+        <link rel="stylesheet" href="/flow/assets/script-manager/script-manager.css">
         <style>
         * {
             margin: 0;
@@ -732,6 +733,10 @@
             animation: fadeIn .3s ease
         }
 
+        .fullscreen-editor-overlay.light-overlay {
+            background: rgba(255, 255, 255, .98);
+        }
+
         .fullscreen-editor-container {
             width: 100%;
             height: 100%;
@@ -740,12 +745,21 @@
             padding: 20px
         }
 
+        .fullscreen-editor-overlay.light-overlay .fullscreen-editor-container {
+            background: #fff;
+        }
+
         .fullscreen-editor-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
             margin-bottom: 15px;
             color: #fff
+        }
+
+        .fullscreen-editor-overlay.light-overlay .fullscreen-editor-header,
+        .fullscreen-editor-overlay.light-overlay .fullscreen-editor-title {
+            color: #333;
         }
 
         .fullscreen-editor-title {
@@ -1635,9 +1649,21 @@
                     </div>
                 </div>
                 <div class="section">
-                    <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
-                        <div> <span class="icon">💻</span> JavaScript 代码 </div> <button onclick="openFullscreenEditor()"
-                            class="fullscreen-edit-btn" title="全屏编辑代码"> 🖥️ 全屏编辑 </button>
+                    <div class="section-title" style="padding:0;background:none;border:none">
+                        <div class="code-editor-header">
+                            <h4>💻 JavaScript 代码</h4>
+                            <div class="header-actions">
+                                <button class="btn-script-config" onclick="openScriptModeConfig()" title="配置脚本ID及请求参数">
+                                    🧩 脚本模式配置
+                                </button>
+                                <button class="btn-script-manage" onclick="openScriptManager()" title="管理已保存的脚本">
+                                    📚 脚本管理
+                                </button>
+                                <button class="btn-fullscreen" onclick="openFullscreenEditor()" title="全屏编辑代码">
+                                    ⛶ 全屏编辑
+                                </button>
+                            </div>
+                        </div>
                     </div>
                     <div id="jsAlertBox" class="alert"></div>
                     <div class="form-group"> <label class="form-label">请编写符合项目规则的代码</label> <small
@@ -1649,6 +1675,21 @@ return {
   name: input.name,
   items: input.items
 };</textarea>
+                    </div>
+                    <div class="execution-options">
+                        <div class="response-format-selector">
+                            <label>
+                                <input type="radio" name="executionMode" value="code" checked>
+                                非脚本模式（使用 Access Token 执行当前代码）
+                            </label>
+                            <label>
+                                <input type="radio" name="executionMode" value="script">
+                                脚本模式（使用脚本模式配置调用 /flow/codeblock/:scriptId）
+                            </label>
+                        </div>
+                        <div class="script-mode-hint" id="scriptModeHint" style="display:none;">
+                            脚本模式仅使用“脚本模式配置”中的脚本ID、Query、Header、Body 调用 /flow/codeblock/:scriptId，外层 Input 数据不会参与。
+                        </div>
                     </div>
                     <div class="button-group code-action-group"> <button class="btn btn-danger" onclick="clearCode()">
                             🗑️ 清空代码 </button> <button class="btn btn-info" onclick="encodeToBase64()"> 🔒 Base64编码并复制
@@ -1686,6 +1727,9 @@ return {
                 </div>
             </div>
         </div>
+        <script src="/flow/assets/script-manager/script-manager-api.js"></script>
+        <script src="/flow/assets/script-manager/script-manager-ui.js"></script>
+        <script src="/flow/assets/script-manager/script-manager.js"></script>
         <script>
         // ==================== 全局变量 ====================
         let currentAbortController = null; // 用于取消请求的 AbortController
@@ -3477,6 +3521,115 @@ return readExcelFromUrl();`
         });
 
         </script>
+        <div id="scriptManagerModal" class="modal-overlay">
+            <div class="modal-content script-manager-modal">
+                <div class="modal-header">
+                    <h3>📚 脚本管理</h3>
+                    <button class="modal-close" onclick="closeScriptManager()">×</button>
+                </div>
+                <div id="scriptManagerMessage" class="script-manager-message info"></div>
+                <div class="script-toolbar">
+                    <button class="btn btn-success btn-upload" onclick="handleUploadCurrentScript()">📤 上传当前代码</button>
+                    <button class="btn btn-info btn-load-to-editor" disabled>📥 加载到编辑器</button>
+                    <input type="text" class="search-input" placeholder="搜索脚本...">
+                    <select class="page-size-selector">
+                        <option value="5">5条/页</option>
+                        <option value="10">10条/页</option>
+                        <option value="20" selected>20条/页</option>
+                        <option value="50">50条/页</option>
+                        <option value="100">100条/页</option>
+                        <option value="custom">自定义</option>
+                    </select>
+                </div>
+                <div class="script-list-container">
+                    <table class="script-table">
+                        <thead>
+                            <tr>
+                                <th>脚本ID</th>
+                                <th>描述</th>
+                                <th>版本</th>
+                                <th>更新时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="scriptListBody"></tbody>
+                    </table>
+                </div>
+                <div class="pagination-container">
+                    <button class="btn-prev">上一页</button>
+                    <span class="page-info">第 1/1 页</span>
+                    <button class="btn-next">下一页</button>
+                </div>
+                <div id="versionPanel" class="version-panel" style="display:none;">
+                    <h4>版本历史</h4>
+                    <div class="version-list"></div>
+                </div>
+            </div>
+        </div>
+        <div id="scriptModeConfigModal" class="modal-overlay">
+            <div class="modal-content script-mode-config">
+                <div class="modal-header">
+                    <h3>🧩 脚本模式配置</h3>
+                    <button class="modal-close" onclick="closeScriptModeConfig()">×</button>
+                </div>
+                <div id="scriptModeConfigAlert" class="alert" style="display:none;"></div>
+                <div class="form-group">
+                    <label class="form-label">脚本ID <span style="color:red">*</span></label>
+                    <input type="text" id="configScriptId" class="form-input" placeholder="请输入脚本ID">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">请求方式</label>
+                    <select id="configMethod" class="form-input" onchange="updateScriptModeBodyVisibility()">
+                        <option value="GET" selected>GET</option>
+                        <option value="POST">POST</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Query 参数（Key/Value，可多行）</label>
+                    <div id="configQueryList" class="kv-list"></div>
+                    <div class="kv-actions">
+                        <button type="button" class="btn btn-info" onclick="addKVRow('configQueryList')">➕ 新增 Query</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">自定义 Header（Key/Value，可多行）</label>
+                    <div id="configHeaderList" class="kv-list"></div>
+                    <div class="kv-actions">
+                        <button type="button" class="btn btn-info" onclick="addKVRow('configHeaderList')">➕ 新增 Header</button>
+                    </div>
+                </div>
+                <div class="form-group" id="configBodyGroup">
+                    <div class="form-label-row">
+                        <label class="form-label">Body（JSON，可选，脚本模式独立使用）</label>
+                        <button type="button" class="btn btn-fullscreen" onclick="openScriptBodyFullscreenEditor()">⛶ 全屏编辑</button>
+                    </div>
+                    <div id="configBodyEditor" class="code-editor"></div>
+                    <div class="form-help-text">脚本模式只会使用此处的 Body，外层 Input 内容不会带入；留空则默认发送 {}。</div>
+                </div>
+                <div class="button-group">
+                    <button class="btn btn-secondary" onclick="closeScriptModeConfig()">取消</button>
+                    <button class="btn btn-success" onclick="saveScriptModeConfig()">保存配置</button>
+                </div>
+            </div>
+        </div>
+        <div id="descriptionDialogOverlay" class="modal-overlay">
+            <div class="modal-content description-dialog">
+                <div class="modal-header">
+                    <h4>脚本描述</h4>
+                    <button class="modal-close" onclick="closeDescriptionDialog()">×</button>
+                </div>
+                <div class="form-group">
+                    <textarea id="scriptDescription" placeholder="请输入脚本描述（可选）" maxlength="200"></textarea>
+                </div>
+                <label class="form-label" style="margin-top:8px">IP 白名单（可选，逗号或换行分隔）</label>
+                <textarea id="ipWhitelistInput" placeholder="127.0.0.1&#10;192.168.0.0/16" style="min-height:80px"></textarea>
+                <div class="upload-hint">留空表示不限制 IP，填入后仅白名单 IP 可执行脚本</div>
+                <div class="dialog-buttons">
+                    <button class="btn btn-secondary" data-dialog-action="cancel">取消</button>
+                    <button class="btn btn-success" data-dialog-action="confirm">确认</button>
+                </div>
+            </div>
+        </div>
         <div id="tokenModal" class="modal-overlay">
             <div class="modal-content">
                 <div class="modal-header"> <span>🔍 查询 Token 信息</span> <button class="modal-close"
@@ -3552,6 +3705,7 @@ return readExcelFromUrl();`
         let mainEditor = null;
         let inputEditor = null;
         let fullscreenEditor = null;
+        let fullscreenScriptBodyEditor = null;
 
         // 初始化 Ace Editor
         function initAceEditor() {
@@ -3703,6 +3857,7 @@ return readExcelFromUrl();`
         function openFullscreenEditor() {
             const editorOverlay = document.getElementById('fullscreenEditor');
             const container = document.getElementById('fullscreenEditorContainer');
+            editorOverlay.classList.remove('light-overlay');
 
             if (typeof ace === 'undefined') {
                 alert('编辑器正在加载中，请稍候...');
@@ -4311,6 +4466,11 @@ return readExcelFromUrl();`
         function closeFullscreenEditor() {
             const editorOverlay = document.getElementById('fullscreenEditor');
             editorOverlay.style.display = 'none';
+            editorOverlay.classList.remove('light-overlay');
+            const title = document.querySelector('.fullscreen-editor-title');
+            if (title) {
+                title.textContent = '🖥️ 全屏代码编辑器';
+            }
 
             // 销毁全屏编辑器实例
             if (fullscreenEditor) {
@@ -4325,6 +4485,7 @@ return readExcelFromUrl();`
         function openFullscreenInputEditor() {
             const editorOverlay = document.getElementById('fullscreenEditor');
             const container = document.getElementById('fullscreenEditorContainer');
+            editorOverlay.classList.remove('light-overlay');
 
             if (typeof ace === 'undefined') {
                 alert('编辑器正在加载中，请稍候...');
@@ -4478,6 +4639,7 @@ return readExcelFromUrl();`
         function closeFullscreenInputEditor() {
             const editorOverlay = document.getElementById('fullscreenEditor');
             editorOverlay.style.display = 'none';
+            editorOverlay.classList.remove('light-overlay');
 
             // 恢复标题
             const title = document.querySelector('.fullscreen-editor-title');
@@ -4497,7 +4659,9 @@ return readExcelFromUrl();`
             if (e.key === 'Escape') {
                 const editorOverlay = document.getElementById('fullscreenEditor');
                 if (editorOverlay.style.display === 'block') {
-                    if (fullscreenInputEditor) {
+                    if (fullscreenScriptBodyEditor) {
+                        closeScriptBodyFullscreenEditor();
+                    } else if (fullscreenInputEditor) {
                         closeFullscreenInputEditor();
                     } else {
                         closeFullscreenEditor();
@@ -4518,7 +4682,9 @@ return readExcelFromUrl();`
         // ==================== 全屏编辑器按钮统一处理 ====================
         // 智能保存：根据当前编辑器类型调用对应的保存函数
         function saveFullscreenCodeBtn() {
-            if (fullscreenInputEditor) {
+            if (fullscreenScriptBodyEditor) {
+                saveFullscreenScriptBody();
+            } else if (fullscreenInputEditor) {
                 saveFullscreenInputCode();
             } else if (fullscreenEditor) {
                 saveFullscreenCode();
@@ -4527,7 +4693,9 @@ return readExcelFromUrl();`
 
         // 智能关闭：根据当前编辑器类型调用对应的关闭函数
         function closeFullscreenEditorBtn() {
-            if (fullscreenInputEditor) {
+            if (fullscreenScriptBodyEditor) {
+                closeScriptBodyFullscreenEditor();
+            } else if (fullscreenInputEditor) {
                 closeFullscreenInputEditor();
             } else if (fullscreenEditor) {
                 closeFullscreenEditor();
@@ -4544,6 +4712,608 @@ return readExcelFromUrl();`
         </script>
         <script src="/flow/assets/verify-code.js"></script>
         {{end}}
+        <script>
+        // ==================== 脚本管理与脚本模式增强 ====================
+        let scriptManager = null;
+        let scriptManagerUI = null;
+        let scriptAPI = null;
+        let scriptBodyEditor = null;
+        window.scriptModeConfig = window.scriptModeConfig || null;
+        let scriptModeAlertTimer = null;
+
+        function encodeWithTextEncoderCompat(code) {
+            const encoder = new TextEncoder();
+            const bytes = encoder.encode(code || '');
+            let binary = '';
+            for (let i = 0; i < bytes.length; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary);
+        }
+
+        function bindExecutionModeEvents() {
+            const radios = document.querySelectorAll('input[name=\"executionMode\"]');
+            const hint = document.getElementById('scriptModeHint');
+            radios.forEach(radio => {
+                radio.addEventListener('change', (e) => {
+                    if (hint) {
+                        hint.style.display = e.target.value === 'script' ? 'block' : 'none';
+                    }
+                });
+            });
+            const methodSelect = document.getElementById('configMethod');
+            if (methodSelect) {
+                methodSelect.addEventListener('change', updateScriptModeBodyVisibility);
+            }
+        }
+
+        function initScriptManagerBridge() {
+            if (scriptManager) return;
+            const tryInit = () => {
+                if (typeof ScriptAPI === 'undefined' || typeof ScriptManager === 'undefined' || typeof ScriptManagerUI === 'undefined') {
+                    setTimeout(tryInit, 300);
+                    return;
+                }
+                if (!mainEditor) {
+                    setTimeout(tryInit, 200);
+                    return;
+                }
+                const apiGetter = () => (document.getElementById('apiUrl')?.value || '').trim();
+                const tokenGetter = () => (document.getElementById('accessToken')?.value || '').trim();
+                scriptAPI = new ScriptAPI({ getBaseUrl: apiGetter, getToken: tokenGetter });
+                scriptManager = new ScriptManager({
+                    api: scriptAPI,
+                    getCurrentCode: () => mainEditor ? mainEditor.getValue() : document.getElementById('jsCode').value,
+                    onScriptApplied: (code) => {
+                        if (mainEditor) {
+                            mainEditor.setValue(code, -1);
+                        }
+                        const textarea = document.getElementById('jsCode');
+                        if (textarea) textarea.value = code;
+                        showAlertInArea('jsAlertBox', '脚本代码已加载到编辑器', 'success');
+                    },
+                    onScriptSelected: (scriptId) => {
+                        switchToScriptMode(scriptId);
+                    },
+                });
+                scriptManagerUI = new ScriptManagerUI(scriptManager);
+                scriptManager.ui = scriptManagerUI;
+                scriptManager.init();
+            };
+            tryInit();
+        }
+
+        function openScriptManager() {
+            initScriptManagerBridge();
+            if (scriptManagerUI) {
+                scriptManagerUI.showModal();
+            } else {
+                setTimeout(() => scriptManagerUI?.showModal(), 300);
+            }
+        }
+
+        function closeScriptManager() {
+            scriptManagerUI?.hideModal();
+        }
+
+        function handleUploadCurrentScript() {
+            initScriptManagerBridge();
+            scriptManager?.uploadCurrentCode();
+        }
+
+        function closeDescriptionDialog() {
+            scriptManagerUI?.closeDescriptionDialog();
+        }
+
+        function showScriptModeConfigAlert(message = '', type = 'warning') {
+            const alertBox = document.getElementById('scriptModeConfigAlert');
+            if (!alertBox) return;
+            if (scriptModeAlertTimer) {
+                clearTimeout(scriptModeAlertTimer);
+                scriptModeAlertTimer = null;
+            }
+            if (!message) {
+                alertBox.classList.remove('show');
+                alertBox.textContent = '';
+                alertBox.style.display = 'none';
+                return;
+            }
+            alertBox.textContent = message;
+            alertBox.className = `alert alert-${type} show`;
+            alertBox.style.display = 'block';
+            alertBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            scriptModeAlertTimer = setTimeout(() => {
+                alertBox.classList.remove('show');
+                alertBox.style.display = 'none';
+            }, 5000);
+        }
+
+        function openScriptModeConfig() {
+            if (!scriptBodyEditor) {
+                initScriptBodyEditor();
+            }
+            const modal = document.getElementById('scriptModeConfigModal');
+            if (!modal) return;
+            const cfg = window.scriptModeConfig || {};
+            document.getElementById('configScriptId').value = cfg.scriptId || '';
+            document.getElementById('configMethod').value = (cfg.method || 'GET').toUpperCase();
+            setKVList('configQueryList', cfg.query || {});
+            setKVList('configHeaderList', cfg.header || {});
+            if (scriptBodyEditor) {
+                const bodyValue = cfg.body ? JSON.stringify(cfg.body, null, 2) : '{}';
+                scriptBodyEditor.setValue(bodyValue, -1);
+            }
+            modal.classList.add('show');
+            showScriptModeConfigAlert('');
+            updateScriptModeBodyVisibility();
+        }
+
+        function closeScriptModeConfig() {
+            const modal = document.getElementById('scriptModeConfigModal');
+            if (modal) modal.classList.remove('show');
+        }
+
+        function parseJSONSafe(val, fallback = {}) {
+            if (!val || !val.trim()) return fallback;
+            try {
+                return JSON.parse(val);
+            } catch (error) {
+                showAlertInArea('alertBox', `JSON 解析失败: ${error.message}`, 'warning');
+                return fallback;
+            }
+        }
+
+        function parseKVValue(val) {
+            if (val === undefined || val === null) return '';
+            return String(val).trim();
+        }
+
+        function parseKVRows(listId) {
+            const list = document.getElementById(listId);
+            if (!list) return {};
+            const rows = list.querySelectorAll('.kv-row');
+            const result = {};
+            rows.forEach(row => {
+                const keyInput = row.querySelector('.kv-key');
+                const valInput = row.querySelector('.kv-value');
+                const key = keyInput ? keyInput.value.trim() : '';
+                if (!key) return;
+                const value = valInput ? valInput.value : '';
+                result[key] = parseKVValue(value);
+            });
+            return result;
+        }
+
+        function addKVRow(listId, key = '', value = '') {
+            const list = document.getElementById(listId);
+            if (!list) return;
+            const row = document.createElement('div');
+            row.className = 'kv-row';
+            row.innerHTML = `
+                <input type="text" class="kv-key" placeholder="Key" value="${key || ''}">
+                <input type="text" class="kv-value" placeholder="Value" value="${value || ''}">
+                <button type="button" onclick="this.parentElement.remove()">删除</button>
+            `;
+            list.appendChild(row);
+        }
+
+        function setKVList(listId, obj) {
+            const list = document.getElementById(listId);
+            if (!list) return;
+            list.innerHTML = '';
+            const entries = obj && typeof obj === 'object' ? Object.entries(obj) : [];
+            if (entries.length === 0) {
+                addKVRow(listId, '', '');
+                return;
+            }
+            entries.forEach(([k, v]) => {
+                const displayVal = typeof v === 'string' ? v : JSON.stringify(v);
+                addKVRow(listId, k, displayVal);
+            });
+        }
+
+        function initScriptBodyEditor() {
+            if (typeof ace === 'undefined') return;
+            scriptBodyEditor = ace.edit('configBodyEditor');
+            scriptBodyEditor.setTheme('ace/theme/textmate');
+            scriptBodyEditor.session.setMode('ace/mode/json');
+            scriptBodyEditor.setOptions({
+                fontSize: '14px',
+                showPrintMargin: false,
+                wrap: true,
+                tabSize: 2,
+                useSoftTabs: true,
+                useWorker: true,
+                highlightActiveLine: true,
+                highlightSelectedWord: true,
+            });
+            scriptBodyEditor.session.setUseWrapMode(true);
+            scriptBodyEditor.session.setTabSize(2);
+            scriptBodyEditor.session.setUseSoftTabs(true);
+            scriptBodyEditor.session.setUseWorker(true);
+            scriptBodyEditor.setHighlightGutterLine(true);
+            scriptBodyEditor.setShowInvisibles(false);
+            scriptBodyEditor.setValue('{}', -1);
+        }
+
+        function openScriptBodyFullscreenEditor() {
+            const editorOverlay = document.getElementById('fullscreenEditor');
+            const container = document.getElementById('fullscreenEditorContainer');
+            if (typeof ace === 'undefined') {
+                alert('编辑器正在加载中，请稍候...');
+                return;
+            }
+            if (!scriptBodyEditor) {
+                initScriptBodyEditor();
+            }
+            if (fullscreenInputEditor) {
+                closeFullscreenInputEditor();
+            }
+            if (fullscreenEditor) {
+                closeFullscreenEditor();
+            }
+            const currentBody = scriptBodyEditor ? scriptBodyEditor.getValue() : '{}';
+            container.innerHTML = '<div id="fullscreenScriptBodyAceEditor" style="width: 100%; height: 100%;"></div>';
+            fullscreenScriptBodyEditor = ace.edit('fullscreenScriptBodyAceEditor');
+            fullscreenScriptBodyEditor.setTheme('ace/theme/monokai'); // 与 Input 全屏保持一致的深色背景
+            fullscreenScriptBodyEditor.session.setMode('ace/mode/json');
+            fullscreenScriptBodyEditor.setValue(currentBody, -1);
+            fullscreenScriptBodyEditor.setOptions({
+                fontSize: '16px',
+                showPrintMargin: false,
+                tabSize: 2,
+                useSoftTabs: true,
+                wrap: true,
+                useWorker: true,
+                highlightActiveLine: true,
+                highlightSelectedWord: true,
+            });
+            fullscreenScriptBodyEditor.session.setUseWorker(true);
+            fullscreenScriptBodyEditor.setShowInvisibles(false);
+            fullscreenScriptBodyEditor.setHighlightGutterLine(true);
+            fullscreenScriptBodyEditor.commands.addCommand({
+                name: 'save',
+                bindKey: { win: 'Ctrl-S', mac: 'Command-S' },
+                exec: function() {
+                    saveFullscreenScriptBody();
+                }
+            });
+            ace.config.loadModule('ace/ext/searchbox', function(e) {
+                fullscreenScriptBodyEditor.commands.addCommand({
+                    name: 'find',
+                    bindKey: { win: 'Ctrl-F', mac: 'Command-F' },
+                    exec: function(editor) {
+                        e.Search(editor, false);
+                        setTimeout(function() {
+                            adjustSearchBoxLayout(editor, true);
+                        }, 50);
+                    }
+                });
+                fullscreenScriptBodyEditor.commands.addCommand({
+                    name: 'replace',
+                    bindKey: { win: 'Ctrl-H', mac: 'Command-Option-F' },
+                    exec: function(editor) {
+                        e.Search(editor, true);
+                        setTimeout(function() {
+                            adjustSearchBoxLayout(editor, false);
+                        }, 50);
+                    }
+                });
+            });
+            editorOverlay.classList.remove('light-overlay');
+            editorOverlay.style.display = 'block';
+            const title = document.querySelector('.fullscreen-editor-title');
+            if (title) {
+                title.textContent = '🧩 脚本模式 Body 全屏编辑';
+            }
+            setTimeout(() => {
+                fullscreenScriptBodyEditor.focus();
+            }, 100);
+        }
+
+        function saveFullscreenScriptBody() {
+            if (!fullscreenScriptBodyEditor) return;
+            const bodyContent = fullscreenScriptBodyEditor.getValue().trim();
+            if (bodyContent) {
+                try {
+                    JSON.parse(bodyContent);
+                } catch (error) {
+                    alert('❌ JSON 格式错误: ' + error.message);
+                    fullscreenScriptBodyEditor.focus();
+                    return;
+                }
+            }
+            const finalContent = bodyContent || '{}';
+            if (scriptBodyEditor) {
+                scriptBodyEditor.setValue(finalContent, -1);
+            }
+            closeScriptBodyFullscreenEditor();
+            showAlertInArea('jsAlertBox', '✅ 脚本模式 Body 已更新', 'success');
+        }
+
+        function closeScriptBodyFullscreenEditor() {
+            const editorOverlay = document.getElementById('fullscreenEditor');
+            editorOverlay.style.display = 'none';
+            editorOverlay.classList.remove('light-overlay');
+            const title = document.querySelector('.fullscreen-editor-title');
+            if (title) {
+                title.textContent = '🖥️ 全屏代码编辑器';
+            }
+            if (fullscreenScriptBodyEditor) {
+                fullscreenScriptBodyEditor.destroy();
+                fullscreenScriptBodyEditor = null;
+            }
+        }
+
+        function saveScriptModeConfig() {
+            const scriptId = document.getElementById('configScriptId').value.trim();
+            if (!scriptId) {
+                showScriptModeConfigAlert('❌ 脚本ID不能为空', 'error');
+                return;
+            }
+            showScriptModeConfigAlert('');
+            const method = (document.getElementById('configMethod').value || 'GET').toUpperCase();
+            const query = parseKVRows('configQueryList');
+            const header = parseKVRows('configHeaderList');
+            const bodyRaw = scriptBodyEditor ? scriptBodyEditor.getValue() : '';
+            const body = method === 'POST' ? parseJSONSafe(bodyRaw, {}) : {};
+            window.scriptModeConfig = { scriptId, method, query, header, body };
+            closeScriptModeConfig();
+            showAlertInArea('alertBox', `脚本模式配置已保存：${scriptId}`, 'success');
+        }
+
+        function updateScriptModeBodyVisibility() {
+            const method = (document.getElementById('configMethod')?.value || 'POST').toUpperCase();
+            const bodyGroup = document.getElementById('configBodyGroup');
+            if (bodyGroup) {
+                bodyGroup.style.display = method === 'POST' ? 'block' : 'none';
+            }
+        }
+
+        function switchToScriptMode(scriptId) {
+            const radio = document.querySelector('input[name=\"executionMode\"][value=\"script\"]');
+            if (radio) {
+                radio.checked = true;
+            }
+            const hint = document.getElementById('scriptModeHint');
+            if (hint) hint.style.display = 'block';
+            window.scriptModeConfig = {
+                scriptId,
+                method: 'GET',
+                query: {},
+                header: {},
+                body: {},
+            };
+        }
+
+        // 重写执行入口：支持脚本模式和响应格式切换
+        async function executeCode() {
+            const mode = document.querySelector('input[name=\"executionMode\"]:checked')?.value || 'code';
+            if (isExecuting) {
+                cancelExecution();
+                return;
+            }
+            if (mode === 'script') {
+                await executeScriptMode();
+            } else {
+                await executeEditorCode();
+            }
+        }
+
+        function prepareExecutionUI() {
+            const runBtn = document.getElementById('runBtn');
+            currentAbortController = new AbortController();
+            isExecuting = true;
+            showLoading(true);
+            hideAlert();
+            document.getElementById('resultBox').style.display = 'none';
+            document.getElementById('statsBox').style.display = 'none';
+            document.getElementById('copyResultBtn').style.display = 'none';
+            if (runBtn) {
+                runBtn.className = 'btn btn-cancel';
+                runBtn.innerHTML = '⏹️ 取消执行';
+                runBtn.title = '点击取消正在执行的代码';
+            }
+        }
+
+        async function executeEditorCode() {
+            const accessToken = document.getElementById('accessToken').value.trim();
+            const jsCode = document.getElementById('jsCode').value.trim();
+            const inputData = document.getElementById('inputData').value.trim();
+            const apiUrl = document.getElementById('apiUrl').value.trim();
+
+            if (!accessToken) {
+                showAlert('❌ 请输入 Access Token', 'error');
+                return;
+            }
+            if (!jsCode) {
+                showAlert('❌ 请输入 JavaScript 代码', 'error');
+                return;
+            }
+
+            let inputObj = {};
+            try {
+                inputObj = inputData ? JSON.parse(inputData) : {};
+            } catch (error) {
+                showAlert('❌ Input 参数不是有效的 JSON 格式: ' + error.message, 'error');
+                return;
+            }
+
+            let base64Code = '';
+            try {
+                base64Code = encodeWithTextEncoderCompat(jsCode);
+            } catch (error) {
+                showAlert('❌ Base64 编码失败: ' + error.message, 'error');
+                return;
+            }
+
+            prepareExecutionUI();
+            try {
+                const response = await fetch(`${apiUrl}/flow/codeblock`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'accessToken': accessToken,
+                    },
+                    body: JSON.stringify({
+                        input: inputObj,
+                        codebase64: base64Code,
+                    }),
+                    signal: currentAbortController.signal,
+                });
+                const result = await response.json();
+                resetExecutionState();
+                displayWrappedResult(result, response.ok);
+            } catch (error) {
+                resetExecutionState();
+                let errorMessage = '网络请求失败';
+                if (error.name === 'AbortError') {
+                    errorMessage = '代码执行已被用户取消';
+                    showAlert('⚠️ ' + errorMessage, 'warning');
+                    displayWrappedResult({
+                        success: false,
+                        error: '用户取消',
+                        message: errorMessage,
+                        timestamp: new Date().toISOString(),
+                    }, false);
+                    return;
+                }
+                if (error.message.includes('Failed to fetch')) {
+                    errorMessage = '无法连接到服务器，请检查：\n1. API 服务地址是否正确\n2. 服务是否已启动\n3. 是否存在跨域问题';
+                } else {
+                    errorMessage = error.message;
+                }
+                showAlert('❌ 请求失败: ' + errorMessage, 'error');
+                displayWrappedResult({
+                    success: false,
+                    error: error.message,
+                    message: errorMessage,
+                    timestamp: new Date().toISOString(),
+                }, false);
+            }
+        }
+
+        async function executeScriptMode() {
+            if (!window.scriptModeConfig || !window.scriptModeConfig.scriptId) {
+                showAlert('请先在“脚本模式配置”中填写并保存脚本ID', 'warning');
+                return;
+            }
+            const { scriptId, method = 'POST', query, header, body } = window.scriptModeConfig;
+            const apiUrl = document.getElementById('apiUrl').value.trim();
+            const finalMethod = (method || 'POST').toUpperCase() === 'GET' ? 'GET' : 'POST';
+            const params = query && Object.keys(query).length ? new URLSearchParams(query).toString() : '';
+            const headers = Object.assign({ 'Content-Type': 'application/json' }, header || {});
+
+            prepareExecutionUI();
+            try {
+                const response = await fetch(`${apiUrl}/flow/codeblock/${scriptId}${params ? '?' + params : ''}`, {
+                    method: finalMethod,
+                    headers,
+                    body: finalMethod === 'POST' ? JSON.stringify(body || {}) : undefined,
+                    signal: currentAbortController.signal,
+                });
+                const result = await response.json();
+                resetExecutionState();
+                const success = response.ok && result?.success !== false;
+                displayRawResult(result, success);
+            } catch (error) {
+                resetExecutionState();
+                if (error.name === 'AbortError') {
+                    showAlert('⚠️ 代码执行已取消', 'warning');
+                    return;
+                }
+                showAlert('❌ 请求失败: ' + error.message, 'error');
+                displayRawResult({
+                    success: false,
+                    error: { message: error.message },
+                    timestamp: new Date().toISOString(),
+                }, false);
+            }
+        }
+
+        function displayWrappedResult(result, isSuccess) {
+            displayResult(result, isSuccess);
+        }
+
+        function displayRawResult(result, isSuccess) {
+            const resultBox = document.getElementById('resultBox');
+            const statsBox = document.getElementById('statsBox');
+            const copyBtn = document.getElementById('copyResultBtn');
+            const successFlag = (isSuccess === undefined || isSuccess === null) ? (result?.success !== undefined ? result.success : true) : isSuccess;
+
+            resultBox.style.display = 'block';
+            resultBox.className = 'result-box ' + (successFlag ? 'success' : 'error');
+            if (copyBtn) copyBtn.style.display = 'inline-flex';
+
+            const jsonString = JSON.stringify(result, null, 2);
+            resultBox.innerHTML = syntaxHighlight(jsonString);
+
+            const timing = result?.timing || {};
+            if (timing.executionTime !== undefined || timing.totalTime !== undefined) {
+                statsBox.style.display = 'block';
+                document.getElementById('statExecutionTime').textContent = timing.executionTime || timing.totalTime || '-';
+                document.getElementById('statStatus').innerHTML = successFlag ?
+                    '<span class=\"badge badge-success\">成功</span>' :
+                    '<span class=\"badge badge-error\">失败</span>';
+                document.getElementById('statRequestId').textContent = result.request_id ?
+                    result.request_id.substring(0, 8) + '...' :
+                    '-';
+            } else {
+                statsBox.style.display = 'none';
+            }
+
+            if (successFlag) {
+                showAlert('✅ 代码执行成功！', 'success');
+            } else {
+                const errMsg = result?.error?.message || result?.message || result?.error || '未知错误';
+                showAlert('❌ 代码执行失败: ' + errMsg, 'error');
+            }
+        }
+
+        // 兼容旧函数
+        function displayResult(result, isSuccess) {
+            const resultBox = document.getElementById('resultBox');
+            const statsBox = document.getElementById('statsBox');
+            const copyBtn = document.getElementById('copyResultBtn');
+            const successFlag = (isSuccess === undefined || isSuccess === null) ? (result?.success !== undefined ? result.success : true) : isSuccess;
+
+            resultBox.style.display = 'block';
+            resultBox.className = 'result-box ' + (successFlag ? 'success' : 'error');
+            if (copyBtn) {
+                copyBtn.style.display = 'inline-flex';
+            }
+
+            const jsonString = JSON.stringify(result, null, 2);
+            resultBox.innerHTML = syntaxHighlight(jsonString);
+
+            const timing = result?.timing || {};
+            if (timing.executionTime !== undefined || timing.totalTime !== undefined) {
+                statsBox.style.display = 'block';
+                document.getElementById('statExecutionTime').textContent = timing.executionTime || timing.totalTime || '-';
+                document.getElementById('statStatus').innerHTML = successFlag ?
+                    '<span class=\"badge badge-success\">成功</span>' :
+                    '<span class=\"badge badge-error\">失败</span>';
+                document.getElementById('statRequestId').textContent = result.request_id ?
+                    result.request_id.substring(0, 8) + '...' :
+                    '-';
+            } else {
+                statsBox.style.display = 'none';
+            }
+
+            if (successFlag) {
+                showAlert('✅ 代码执行成功！', 'success');
+            } else {
+                const errMsg = result?.error?.message || result?.message || result?.error || '未知错误';
+                showAlert('❌ 代码执行失败: ' + errMsg, 'error');
+            }
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            bindExecutionModeEvents();
+            updateScriptModeBodyVisibility();
+            initScriptManagerBridge();
+        });
+        </script>
         <div id="base64InputModal" class="modal-overlay">
             <div class="modal-content">
                 <div class="modal-header"> <span>🔓 Base64 解码</span> <button class="modal-close"

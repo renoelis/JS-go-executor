@@ -52,8 +52,9 @@ COPY --from=builder /app/flow-codeblock-go .
 # 复制 templates 目录（测试工具页面）
 COPY templates ./templates
 
-# 复制 assets/elements 目录（Logo等静态资源）
+# 仅复制需要暴露的静态资源
 COPY assets/elements ./assets/elements
+COPY assets/script-manager ./assets/script-manager
 
 # 修改文件所有权
 RUN chown -R appuser:appuser /app

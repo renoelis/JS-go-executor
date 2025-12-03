@@ -1,0 +1,433 @@
+/* 脚本管理样式与脚本模式配置 */
+.code-editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  gap: 12px;
+}
+
+.code-editor-header h4 {
+  margin: 0;
+  font-size: 16px;
+  color: #333;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.btn-script-manage {
+  padding: 6px 16px;
+  background: linear-gradient(135deg, #9c27b0 0%, #673ab7 100%);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.3s;
+  box-shadow: 0 2px 6px rgba(156, 39, 176, 0.25);
+}
+
+.btn-script-manage:hover {
+  background: linear-gradient(135deg, #7b1fa2 0%, #512da8 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(156, 39, 176, 0.35);
+}
+
+.btn-script-config {
+  padding: 6px 14px;
+  background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.3s;
+  box-shadow: 0 2px 6px rgba(76, 175, 80, 0.25);
+}
+
+.btn-script-config:hover {
+  background: linear-gradient(135deg, #388e3c 0%, #1b5e20 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(76, 175, 80, 0.35);
+}
+
+.btn-fullscreen {
+  padding: 6px 16px;
+  background: linear-gradient(135deg, #1976d2 0%, #1565c0 100%);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.btn-fullscreen:hover {
+  background: linear-gradient(135deg, #1565c0 0%, #0d47a1 100%);
+  transform: translateY(-1px);
+}
+
+.execution-options {
+  margin-top: 12px;
+  background: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.response-format-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  font-size: 13px;
+  color: #333;
+}
+
+.response-format-selector label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.script-mode-hint {
+  font-size: 12px;
+  color: #555;
+  padding: 8px 10px;
+  background: #fff3e0;
+  border: 1px dashed #ffb74d;
+  border-radius: 6px;
+}
+
+.response-format-switcher {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  font-size: 13px;
+}
+
+.response-format-switcher .switch-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+/* 脚本管理模态框 */
+.script-manager-modal {
+  max-width: 960px;
+  width: 92%;
+  max-height: 82vh;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.script-manager-modal .modal-header {
+  padding: 16px 20px;
+  border-bottom: 2px solid #e9ecef;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.script-toolbar {
+  padding: 12px 20px;
+  background: #f8f9fa;
+  border-bottom: 1px solid #e9ecef;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.script-toolbar .search-input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+}
+
+.script-toolbar .page-size-selector {
+  padding: 7px 10px;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+}
+
+.script-list-container {
+  padding: 12px 20px;
+  overflow: auto;
+}
+
+.script-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.script-table th {
+  background: #f8f9fa;
+  padding: 10px 8px;
+  text-align: left;
+  font-weight: 600;
+  color: #495057;
+  border-bottom: 2px solid #dee2e6;
+}
+
+.script-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid #e9ecef;
+  font-size: 13px;
+}
+
+.script-table tr:hover {
+  background: #f8f9fa;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.action-buttons button {
+  padding: 6px 8px;
+  background: #fff;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.action-buttons button:hover {
+  background: #1976d2;
+  color: #fff;
+  border-color: #1976d2;
+}
+
+.pagination-container {
+  padding: 12px 20px;
+  border-top: 1px solid #e9ecef;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 14px;
+}
+
+.version-panel {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 360px;
+  height: 100%;
+  background: #fff;
+  border-left: 2px solid #e9ecef;
+  box-shadow: -5px 0 15px rgba(0, 0, 0, 0.1);
+  padding: 18px;
+  overflow-y: auto;
+  animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.version-item {
+  padding: 12px;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  transition: all 0.2s;
+}
+
+.version-item:hover {
+  border-color: #1976d2;
+  box-shadow: 0 2px 8px rgba(25, 118, 210, 0.15);
+}
+
+.version-item .version-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.version-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.version-actions button {
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid #dee2e6;
+  background: #fff;
+  cursor: pointer;
+}
+
+.version-actions button:hover {
+  background: #1976d2;
+  color: #fff;
+}
+
+/* 描述输入弹窗 */
+.description-dialog {
+  max-width: 480px;
+  width: 90%;
+}
+
+.description-dialog textarea {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  font-family: 'Courier New', monospace;
+  resize: vertical;
+}
+
+.dialog-buttons {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.script-manager-message {
+  padding: 10px 12px;
+  margin: 10px 20px 0;
+  border-radius: 6px;
+  display: none;
+  font-size: 13px;
+}
+
+.script-manager-message.info {
+  background: #e3f2fd;
+  color: #0d47a1;
+}
+
+.script-manager-message.success {
+  background: #e8f5e9;
+  color: #1b5e20;
+}
+
+.script-manager-message.error {
+  background: #ffebee;
+  color: #b71c1c;
+}
+
+.upload-hint {
+  font-size: 12px;
+  color: #6c757d;
+  margin-top: 6px;
+}
+
+.script-mode-config {
+  max-width: 1280px;
+  width: 98%;
+}
+
+.kv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kv-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.kv-row input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+}
+
+.kv-row button {
+  padding: 8px 10px;
+  border: 1px solid #dee2e6;
+  background: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.kv-row button:hover {
+  background: #1976d2;
+  color: #fff;
+  border-color: #1976d2;
+}
+
+.kv-actions {
+  margin-top: 6px;
+}
+
+.script-mode-config .form-group {
+  margin-bottom: 14px;
+}
+
+.script-mode-config .form-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.script-mode-config .form-help-text {
+  font-size: 12px;
+  color: #555;
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+.script-mode-config #configBodyEditor {
+  min-height: 260px;
+  height: 320px;
+}
+
+@media (max-width: 768px) {
+  .code-editor-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .header-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .script-manager-modal {
+    width: 95%;
+    max-height: 90vh;
+  }
+
+  .version-panel {
+    position: fixed;
+    width: 100%;
+  }
+}
