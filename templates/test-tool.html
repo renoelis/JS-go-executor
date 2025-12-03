@@ -550,27 +550,32 @@
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 15px;
-            margin-top: 15px
+            gap: 8px;
+            margin-top: 8px
         }
 
         .stat-card {
             background: #fff;
-            padding: 15px;
+            padding: 8px 10px;
             border-radius: 8px;
             border: 1px solid #e9ecef;
-            text-align: center
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 4px;
+            min-height: 72px
         }
 
         .stat-value {
-            font-size: 24px;
+            font-size: 18px;
             font-weight: 700;
             color: #1976d2;
-            margin-bottom: 5px
+            margin-bottom: 0
         }
 
         .stat-label {
-            font-size: 12px;
+            font-size: 10px;
             color: #6c757d;
             text-transform: uppercase
         }
