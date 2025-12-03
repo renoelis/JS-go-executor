@@ -733,6 +733,47 @@
             color: #28a745
         }
 
+        .usage-head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px
+        }
+
+        .usage-figure {
+            font-size: 20px;
+            font-weight: 700
+        }
+
+        .usage-tag {
+            font-size: 12px;
+            color: #6c757d
+        }
+
+        .usage-progress {
+            background: #e9ecef;
+            height: 8px;
+            border-radius: 4px;
+            overflow: hidden
+        }
+
+        .usage-progress-bar {
+            height: 100%;
+            width: 0;
+            transition: width .3s ease
+        }
+
+        .usage-meta {
+            margin-top: 6px;
+            font-size: 12px;
+            color: #6c757d;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap
+        }
+
         .fullscreen-editor-overlay {
             display: none;
             position: fixed;
@@ -3303,6 +3344,49 @@ return readExcelFromUrl();`
             displaySelectedTokenInfo(token, infoDiv);
         }
 
+        // 构建脚本使用情况进度块
+        function buildScriptUsageSection(tokenData) {
+            const maxScriptsRaw = tokenData.max_scripts ?? tokenData.maxScripts;
+            const currentScriptsRaw = tokenData.current_scripts ?? tokenData.currentScripts ?? 0;
+            const total = typeof maxScriptsRaw === 'number' ? maxScriptsRaw : Number(maxScriptsRaw) || 0;
+            const used = typeof currentScriptsRaw === 'number' ? currentScriptsRaw : Number(currentScriptsRaw) || 0;
+            const safeUsed = Math.max(0, used);
+
+            if (!total || total <= 0) {
+                return `
+                    <div class="token-item">
+                        <div class="token-label">脚本使用情况</div>
+                        <div class="token-value">已创建 ${safeUsed} 个 · 未配置上限（无限制）</div>
+                    </div>
+                `;
+            }
+
+            const percent = Math.min(100, Math.max(0, Number(((safeUsed / total) * 100).toFixed(1))));
+            const remaining = Math.max(total - safeUsed, 0);
+            let usageColor = '#28a745';
+            if (percent >= 90) usageColor = '#dc3545';
+            else if (percent >= 70) usageColor = '#ffc107';
+
+            return `
+                <div class="token-item">
+                    <div class="token-label">脚本使用情况</div>
+                    <div class="token-value">
+                        <div class="usage-head">
+                            <span class="usage-figure" style="color: ${usageColor};">${safeUsed} / ${total}</span>
+                            <span class="usage-tag">个脚本</span>
+                        </div>
+                        <div class="usage-progress">
+                            <div class="usage-progress-bar" style="background: ${usageColor}; width: ${percent}%;"></div>
+                        </div>
+                        <div class="usage-meta">
+                            <span>使用率 ${percent}%</span>
+                            <span>剩余 ${remaining} 个</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
         // 显示选中的 Token 详情
         function displaySelectedTokenInfo(tokenData, targetDiv) {
             const now = new Date();
@@ -3378,6 +3462,7 @@ return readExcelFromUrl();`
                         </div>
                     </div>
                     ${quotaStatusHTML}
+                    ${buildScriptUsageSection(tokenData)}
                     <div class="token-item">
                         <div class="token-label">失效时间</div>
                         <div class="token-value ${isExpired ? 'expired' : ''}">
@@ -3493,6 +3578,7 @@ return readExcelFromUrl();`
                         </div>
                     </div>
                     ${quotaStatusHTML}
+                    ${buildScriptUsageSection(tokenData)}
                     <div class="token-item">
                         <div class="token-label">失效时间</div>
                         <div class="token-value ${isExpired ? 'expired' : ''}">
