@@ -365,12 +365,16 @@
         .execution-result-section {
             display: flex;
             flex-direction: column;
-            gap: 10px
+            gap: 10px;
+            --result-panel-max-height: calc(100vh - 240px);
+            max-height: var(--result-panel-max-height);
+            overflow: hidden
         }
 
         .execution-result-section #loadingBox,
         .execution-result-section .result-box {
-            flex: 1
+            flex: 1 1 auto;
+            min-height: 0
         }
 
         .result-box {
@@ -382,9 +386,9 @@
             font-family: Monaco, Menlo, Consolas, 'Courier New', monospace;
             font-size: 13px;
             line-height: 1.8;
-            min-height: 520px;
-            height: calc(100vh - 240px);
-            max-height: none;
+            min-height: 320px;
+            height: auto;
+            max-height: var(--result-panel-max-height);
             overflow-y: auto;
             overflow-x: auto;
             white-space: pre-wrap;
@@ -1051,8 +1055,13 @@
                 font-size: 13px
             }
 
+            .execution-result-section {
+                max-height: none;
+                overflow: visible
+            }
+
             .result-box {
-                min-height: 320px;
+                min-height: 260px;
                 height: auto;
                 max-height: none;
                 font-size: 12px
@@ -1753,7 +1762,7 @@
                     <div class="button-group"> <button class="btn btn-danger" onclick="clearInput()"> 🗑️ 清空输入 </button>
                     </div>
                 </div>
-                <div class="section">
+                <div class="section" id="jsSection">
                     <div class="section-title" style="padding:0;background:none;border:none">
                         <div class="code-editor-header">
                             <h4>💻 JavaScript 代码</h4>
@@ -3014,11 +3023,25 @@ return readExcelFromUrl();`
         function showLoading(show) {
             const loadingBox = document.getElementById('loadingBox');
             loadingBox.className = show ? 'loading show' : 'loading';
+            syncResultPanelHeight();
+        }
+
+        function syncResultPanelHeight() {
+            const jsSection = document.getElementById('jsSection');
+            const resultSection = document.querySelector('.execution-result-section');
+
+            if (!jsSection || !resultSection) return;
+
+            const jsHeight = jsSection.getBoundingClientRect().height;
+            if (jsHeight > 0) {
+                resultSection.style.setProperty('--result-panel-max-height', `${jsHeight}px`);
+            }
         }
 
         // ==================== 页面加载时的初始化 ====================
         window.addEventListener('DOMContentLoaded', () => {
             // 页面加载完成，初始化完毕
+            syncResultPanelHeight();
         });
 
         // ==================== Token 查询功能 ====================
@@ -4174,6 +4197,7 @@ return readExcelFromUrl();`
             });
 
             // Ace Editor 初始化完成
+            syncResultPanelHeight();
         }
 
         // 页面加载完成后初始化
@@ -5724,6 +5748,7 @@ return readExcelFromUrl();`
                 const errMsg = result?.error?.message || result?.message || result?.error || '未知错误';
                 showAlert('❌ 代码执行失败: ' + errMsg, 'error');
             }
+            syncResultPanelHeight();
         }
 
         // 兼容旧函数
@@ -5762,13 +5787,16 @@ return readExcelFromUrl();`
                 const errMsg = result?.error?.message || result?.message || result?.error || '未知错误';
                 showAlert('❌ 代码执行失败: ' + errMsg, 'error');
             }
+            syncResultPanelHeight();
         }
 
         window.addEventListener('DOMContentLoaded', () => {
             bindExecutionModeEvents();
             updateScriptModeBodyVisibility();
             initScriptManagerBridge();
+            syncResultPanelHeight();
         });
+        window.addEventListener('resize', syncResultPanelHeight);
         </script>
         <div id="base64InputModal" class="modal-overlay">
             <div class="modal-content">
