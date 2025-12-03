@@ -477,6 +477,56 @@
             border: 1px solid #ffeaa7
         }
 
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 10000;
+            pointer-events: none
+        }
+
+        .toast {
+            min-width: 240px;
+            max-width: 360px;
+            padding: 12px 14px;
+            border-radius: 10px;
+            border: 1px solid #d0d7e2;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, .15);
+            background: #fff;
+            color: #1d2129;
+            font-size: 13px;
+            opacity: 0;
+            transform: translateY(-10px);
+            transition: all .25s ease;
+            pointer-events: auto;
+        }
+
+        .toast.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .toast-success {
+            border-color: #b7eb8f;
+            background: #f6ffed;
+            color: #389e0d;
+        }
+
+        .toast-error {
+            border-color: #ffccc7;
+            background: #fff2f0;
+            color: #d4380d;
+        }
+
+        .toast-info {
+            border-color: #91caff;
+            background: #e6f4ff;
+            color: #0958d9;
+        }
+
         .info-box {
             background: #f8f9fa;
             border-left: 4px solid #28a745;
@@ -2927,6 +2977,35 @@ return readExcelFromUrl();`
             }, 5000);
         }
 
+        function showToast(message, type = 'info') {
+            let container = document.getElementById('globalToastContainer');
+            if (!container) {
+                container = document.createElement('div');
+                container.id = 'globalToastContainer';
+                container.className = 'toast-container';
+                document.body.appendChild(container);
+            }
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            requestAnimationFrame(() => {
+                toast.classList.add('show');
+            });
+            const hide = () => {
+                toast.classList.remove('show');
+                setTimeout(() => {
+                    if (toast.parentNode === container) {
+                        container.removeChild(toast);
+                    }
+                    if (container.childElementCount === 0 && container.parentNode) {
+                        container.parentNode.removeChild(container);
+                    }
+                }, 250);
+            };
+            setTimeout(hide, 4200);
+        }
+
         function hideAlert() {
             const alertBox = document.getElementById('alertBox');
             alertBox.classList.remove('show');
@@ -2948,7 +3027,7 @@ return readExcelFromUrl();`
             document.getElementById('tokenResult').style.display = 'none';
             const modalAlert = document.getElementById('modalAlert');
             if (modalAlert) {
-                modalAlert.style.display = 'none';
+                modalAlert.className = 'token-alert-inline';
                 modalAlert.textContent = '';
             }
             const verifyCodeHint = document.getElementById('verifyCodeHint');
@@ -3280,19 +3359,7 @@ return readExcelFromUrl();`
             }
 
             // 自动滚动到结果区域（在模态框内滚动）
-            setTimeout(() => {
-                const resultDiv = document.getElementById('tokenResult');
-                const modalContent = document.querySelector('.modal-content');
-                if (resultDiv && modalContent) {
-                    // 获取结果区域相对于模态框的位置
-                    const resultTop = resultDiv.offsetTop;
-                    // 平滑滚动到结果区域
-                    modalContent.scrollTo({
-                        top: resultTop - 20, // 减去一点空间，让结果区域不要紧贴顶部
-                        behavior: 'smooth'
-                    });
-                }
-            }, 150);
+            setTimeout(scrollTokenResult, 150);
         }
 
         // 显示 Token 选择器
@@ -3327,6 +3394,27 @@ return readExcelFromUrl();`
 
             // 保存 tokens 数据供选择时使用
             window.queriedTokens = tokens;
+        }
+
+        function scrollTokenResult() {
+            const resultDiv = document.getElementById('tokenResult');
+            const modalContent = document.querySelector('#tokenModal .modal-content');
+            if (!resultDiv || !modalContent) return;
+            const containerRect = modalContent.getBoundingClientRect();
+            const targetRect = resultDiv.getBoundingClientRect();
+            const topOffset = targetRect.top - containerRect.top;
+            const bottomOffset = targetRect.bottom - containerRect.top;
+            const visibleHeight = containerRect.height;
+            const margin = 12;
+            // 如果结果区域已在可视范围内，就不滚动，避免“抽动”
+            if (topOffset >= margin && bottomOffset <= visibleHeight - margin) {
+                return;
+            }
+            const offset = topOffset + modalContent.scrollTop - margin;
+            modalContent.scrollTo({
+                top: Math.max(offset, 0),
+                behavior: 'smooth'
+            });
         }
 
         // Token 选择事件处理
@@ -3499,7 +3587,7 @@ return readExcelFromUrl();`
         function fillTokenToInput(token) {
             document.getElementById('accessToken').value = token;
             hideTokenQuery();
-            showAlert('✅ Token 已填充到输入框', 'success');
+            showToast('✅ Token 已填充到输入框', 'success');
         }
 
         // 显示单个 Token 详情（用于只有一个 Token 的情况）
@@ -3616,13 +3704,18 @@ return readExcelFromUrl();`
             if (!alertBox) return;
 
             const variant = type === 'success' ? 'success' : type === 'warning' ? 'warning' : type === 'info' ? 'info' : 'error';
-            alertBox.className = `script-mode-alert ${variant}`;
+            alertBox.className = `token-alert-inline ${variant} is-visible`;
             alertBox.textContent = message;
-            alertBox.style.display = 'block';
+            alertBox.style.display = 'flex';
 
-            setTimeout(() => {
-                alertBox.style.display = 'none';
-            }, 4000);
+            if (modalAlertTimer) {
+                clearTimeout(modalAlertTimer);
+            }
+            modalAlertTimer = setTimeout(() => {
+                alertBox.className = 'token-alert-inline';
+                alertBox.textContent = '';
+                alertBox.style.display = '';
+            }, 5000);
         }
 
         // 点击遮罩层不关闭弹窗（仅通过右上角 × 按钮关闭）
@@ -3859,7 +3952,6 @@ return readExcelFromUrl();`
                     <button class="modal-close" onclick="hideTokenQuery()">×</button>
                 </div>
                 <div class="token-tip">💡 提示：点击右上角 × 或「取消」关闭窗口</div>
-                <div id="modalAlert" class="script-mode-alert" style="display:none"></div>
                 <div class="token-section">
                     <div class="token-section-header">
                         <div>
@@ -3909,9 +4001,12 @@ return readExcelFromUrl();`
                     <input type="checkbox" id="includeExpiredTokens" style="width:18px;height:18px;cursor:pointer">
                     <span>📋 包含已失效的 Token（用于查看过期 Token 以便续期）</span>
                 </label>
-                <div class="button-group token-actions"> 
-                    <button class="ghost-btn" onclick="hideTokenQuery()">取消</button>
-                    <button class="primary-btn" id="queryBtn" onclick="queryToken()">🔍 查询Token</button>
+                <div class="token-actions-row">
+                    <div class="token-alert-inline" id="modalAlert"></div>
+                    <div class="button-group token-actions">
+                        <button class="ghost-btn" onclick="hideTokenQuery()">取消</button>
+                        <button class="primary-btn" id="queryBtn" onclick="queryToken()">🔍 查询Token</button>
+                    </div>
                 </div>
                 <div id="tokenResult" class="token-result" style="display:none"></div>
             </div>
@@ -3936,6 +4031,7 @@ return readExcelFromUrl();`
         let fullscreenScriptBodyEditor = null;
         let fullscreenCustomCodeEditor = null;
         let dialogCustomCodeEditor = null;
+        let modalAlertTimer = null;
 
         // 初始化 Ace Editor
         function initAceEditor() {
