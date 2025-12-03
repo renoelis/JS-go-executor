@@ -144,8 +144,8 @@ func (r *ScriptRepository) ListScripts(ctx context.Context, token string, page, 
 
 	var total int64
 	if err := r.db.GetContext(ctx, &total, `
-		SELECT COUNT(*) FROM code_scripts WHERE token = ? AND description LIKE ?
-	`, token, keywordLike); err != nil {
+		SELECT COUNT(*) FROM code_scripts WHERE token = ? AND (description LIKE ? OR id LIKE ?)
+	`, token, keywordLike, keywordLike); err != nil {
 		return nil, 0, err
 	}
 
@@ -153,12 +153,12 @@ func (r *ScriptRepository) ListScripts(ctx context.Context, token string, page, 
 	query := fmt.Sprintf(`
 		SELECT id, token, ws_id, email, description, version, code_length, updated_at, created_at
 		FROM code_scripts
-		WHERE token = ? AND description LIKE ?
+		WHERE token = ? AND (description LIKE ? OR id LIKE ?)
 		ORDER BY %s %s
 		LIMIT ? OFFSET ?
 	`, sortField, orderVal)
 
-	if err := r.db.SelectContext(ctx, &scripts, query, token, keywordLike, size, offset); err != nil {
+	if err := r.db.SelectContext(ctx, &scripts, query, token, keywordLike, keywordLike, size, offset); err != nil {
 		return nil, 0, err
 	}
 
