@@ -525,7 +525,7 @@
   position: absolute;
   right: 0;
   top: 0;
-  width: 560px;
+  width: clamp(560px, 52vw, 840px);
   height: 100%;
   background: #fff;
   border-left: 1px solid #e5e6eb;
@@ -634,8 +634,8 @@
 
 .version-panel-body {
   display: grid;
-  grid-template-rows: minmax(120px, 1fr) minmax(220px, 1.2fr);
-  gap: 10px;
+  grid-template-rows: minmax(140px, 32vh) minmax(360px, 1fr);
+  gap: 12px;
   overflow: hidden;
   flex: 1;
   min-height: 0;
@@ -644,6 +644,8 @@
 .version-list {
   overflow-y: auto;
   padding-right: 4px;
+  height: 100%;
+  min-height: 0;
 }
 
 .version-preview {
@@ -655,7 +657,8 @@
   flex-direction: column;
   gap: 8px;
   overflow: hidden;
-  min-height: 240px;
+  flex: 1;
+  min-height: 360px;
 }
 
 .version-preview-meta {
@@ -674,7 +677,8 @@
   font-size: 12px;
   line-height: 1.45;
   white-space: pre;
-  min-height: 220px;
+  min-height: 0;
+  height: 100%;
 }
 
 .version-preview-code .ace_editor {
