@@ -104,6 +104,7 @@
       const detail = await this.api.getScript(scriptId);
       let description = '';
       let ipWhitelist = [];
+      let currentCode = '';
       if (detail && detail.success) {
         const payload = detail.data || {};
         const currentVersion = payload.current_version;
@@ -111,20 +112,39 @@
         const current = versions.find(v => v.version === currentVersion) || versions[0];
         description = current?.description || '';
         ipWhitelist = current?.ip_whitelist || [];
+        if (current?.code_base64 || current?.code) {
+          currentCode = current.code_base64 ? decodeBase64ToString(current.code_base64) : current.code;
+        }
+      }
+      if (!currentCode) {
+        currentCode = this.getCurrentCode();
       }
       this.ui?.openDescriptionDialog({
+        title: '更新代码',
+        mode: 'update',
         description,
         ip_whitelist: ipWhitelist,
-        onConfirm: async ({ description: desc, ipWhitelist: whitelist }) => {
-          await this.updateScript(scriptId, desc, whitelist);
+        enableCodeSource: true,
+        codeSource: { value: 'editor', customCode: currentCode },
+        onConfirm: async ({ description: desc, ipWhitelist: whitelist, codeSource, customCode }) => {
+          await this.updateScript(scriptId, {
+            description: desc,
+            ipWhitelist: whitelist,
+            codeSource,
+            customCode,
+          });
         },
       });
     }
 
-    async updateScript(scriptId, description, ipWhitelist) {
-      const code = this.getCurrentCode();
+    async updateScript(scriptId, options = {}) {
+      const description = options.description || '';
+      const ipWhitelist = options.ipWhitelist;
+      const source = options.codeSource || 'editor';
+      const customCode = options.customCode;
+      const code = source === 'custom' ? (customCode || '') : this.getCurrentCode();
       if (!code || !code.trim()) {
-        this.ui?.showMessage('当前代码为空，无法更新脚本', 'error');
+        this.ui?.showMessage('代码内容为空，无法更新脚本', 'error');
         return;
       }
       const body = {

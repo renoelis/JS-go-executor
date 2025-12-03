@@ -25,6 +25,12 @@
       this.confirmMessage = document.getElementById('scriptConfirmMessage');
       this.confirmCancelBtn = document.getElementById('scriptConfirmCancel');
       this.confirmOkBtn = document.getElementById('scriptConfirmOk');
+      this.descriptionTitle = document.getElementById('descriptionDialogTitle');
+      this.descriptionAlert = document.getElementById('descriptionDialogAlert');
+      this.descriptionDialogContent = null;
+      this.codeSourceSection = document.getElementById('codeSourceSection');
+      this.customCodeWrapper = document.getElementById('customCodeEditorWrapper');
+      this.customCodeFullscreenBtn = document.getElementById('customCodeFullscreenBtn');
       this.searchTimer = null;
       this.selectedScript = null;
       this.versionListHandler = null;
@@ -35,6 +41,13 @@
       this.versionFullscreenAce = null;
       this.confirmResolver = null;
       this.lastCustomPageSize = null;
+      this.customCodeEditor = null;
+      this.codeSourceChangeHandler = null;
+      this.codeSourceEnabled = false;
+      this.customCodeInitialValue = '';
+      this.customCodeFullscreenHandler = null;
+      this.descriptionAlertTimer = null;
+      this.messageTimer = null;
     }
 
     init() {
@@ -361,9 +374,16 @@
 
     showMessage(message, type = 'info') {
       if (!this.messageBox) return;
-      this.messageBox.textContent = message;
+      if (this.messageTimer) {
+        clearTimeout(this.messageTimer);
+        this.messageTimer = null;
+      }
+      const prefix = type === 'success' ? '✅ ' : type === 'info' ? 'ℹ️ ' : '❌ ';
+      this.messageBox.textContent = `${prefix}${message}`;
       this.messageBox.className = `script-manager-message ${type}`;
       this.messageBox.style.display = 'block';
+      this.messageBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      this.messageTimer = setTimeout(() => this.hideMessage(), 5000);
     }
 
     setSelectedScript(script) {
@@ -381,6 +401,49 @@
     hideMessage() {
       if (this.messageBox) {
         this.messageBox.style.display = 'none';
+        this.messageBox.textContent = '';
+      }
+      if (this.messageTimer) {
+        clearTimeout(this.messageTimer);
+        this.messageTimer = null;
+      }
+    }
+
+    showDescriptionAlert(message, type = 'error') {
+      if (!this.descriptionAlert) return;
+      if (this.descriptionAlertTimer) {
+        clearTimeout(this.descriptionAlertTimer);
+        this.descriptionAlertTimer = null;
+      }
+      const variant = type === 'success' ? 'success' : type === 'info' ? 'info' : '';
+      this.descriptionAlert.className = variant ? `dialog-alert ${variant}` : 'dialog-alert';
+      const prefix = variant === 'success' ? '✅ ' : variant === 'info' ? 'ℹ️ ' : '❌ ';
+      this.descriptionAlert.textContent = `${prefix}${message}`;
+      this.descriptionAlert.style.display = 'block';
+      this.scrollToDescriptionAlert();
+      this.descriptionAlertTimer = setTimeout(() => this.clearDescriptionAlert(), 5000);
+    }
+
+    clearDescriptionAlert() {
+      if (!this.descriptionAlert) return;
+      this.descriptionAlert.textContent = '';
+      this.descriptionAlert.className = 'dialog-alert';
+      this.descriptionAlert.style.display = 'none';
+      if (this.descriptionAlertTimer) {
+        clearTimeout(this.descriptionAlertTimer);
+        this.descriptionAlertTimer = null;
+      }
+    }
+
+    scrollToDescriptionAlert() {
+      if (!this.descriptionAlert) return;
+      const container = this.descriptionAlert.closest('.modal-content') || this.descriptionDialogContent;
+      if (container && typeof container.scrollTo === 'function') {
+        const targetTop = Math.max((this.descriptionAlert.offsetTop || 0) - 12, 0);
+        container.scrollTo({ top: targetTop, behavior: 'smooth' });
+      }
+      if (this.descriptionAlert.scrollIntoView) {
+        this.descriptionAlert.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
       }
     }
 
@@ -523,17 +586,55 @@
     openDescriptionDialog(defaults = {}) {
       const overlay = document.getElementById('descriptionDialogOverlay');
       if (!overlay) return;
+      this.descriptionDialogContent = overlay.querySelector('.modal-content');
       overlay.classList.add('show');
+      if (this.descriptionDialogContent) {
+        this.descriptionDialogContent.scrollTo({ top: 0 });
+      }
+      this.clearDescriptionAlert();
       const descInput = document.getElementById('scriptDescription');
       const ipInput = document.getElementById('ipWhitelistInput');
+      const title = defaults.title || (defaults.mode === 'update' ? '更新代码' : '脚本描述');
+      if (this.descriptionTitle) {
+        this.descriptionTitle.textContent = title;
+      }
       if (descInput) descInput.value = defaults.description || '';
       if (ipInput) ipInput.value = (defaults.ip_whitelist || []).join('\n');
+      this.codeSourceEnabled = !!defaults.enableCodeSource;
+      const codeSection = this.codeSourceSection;
+      if (codeSection) {
+        codeSection.style.display = this.codeSourceEnabled ? 'block' : 'none';
+      }
+      if (this.codeSourceEnabled) {
+        const sourceRadios = document.querySelectorAll('input[name="codeSource"]');
+        const selected = defaults.code_source || defaults.codeSource || {};
+        const selectedValue = selected.value || selected.selected || 'editor';
+        const initialCustomCode = selected.customCode || defaults.custom_code || '';
+        this.customCodeInitialValue = initialCustomCode;
+        if (!this.codeSourceChangeHandler) {
+          this.codeSourceChangeHandler = (e) => this.handleCodeSourceChange(e);
+        }
+        sourceRadios.forEach((radio) => {
+          radio.checked = radio.value === selectedValue;
+          radio.removeEventListener('change', this.codeSourceChangeHandler);
+          radio.addEventListener('change', this.codeSourceChangeHandler);
+        });
+        this.ensureCustomCodeEditor(initialCustomCode);
+        this.toggleCustomCodeEditor(selectedValue === 'custom');
+        if (this.customCodeFullscreenBtn) {
+          this.customCodeFullscreenBtn.disabled = selectedValue !== 'custom';
+          this.customCodeFullscreenBtn.removeEventListener('click', this.customCodeFullscreenHandler);
+          this.customCodeFullscreenHandler = () => this.openCustomCodeFullscreen();
+          this.customCodeFullscreenBtn.addEventListener('click', this.customCodeFullscreenHandler);
+        }
+      }
       this.dialogResolver = defaults.onConfirm;
     }
 
     closeDescriptionDialog() {
       const overlay = document.getElementById('descriptionDialogOverlay');
       if (overlay) overlay.classList.remove('show');
+      this.clearDescriptionAlert();
       this.dialogResolver = null;
     }
 
@@ -542,11 +643,21 @@
         this.closeDescriptionDialog();
         return;
       }
+      this.clearDescriptionAlert();
       const descInput = document.getElementById('scriptDescription');
       const ipInput = document.getElementById('ipWhitelistInput');
       const description = descInput ? descInput.value.trim() : '';
       const ipWhitelist = ipInput ? ipInput.value.split(/[\n,]/).map(v => v.trim()).filter(Boolean) : [];
-      this.dialogResolver({ description, ipWhitelist });
+      const codeSource = this.codeSourceEnabled ? this.getSelectedCodeSource() : 'editor';
+      const customCode = this.codeSourceEnabled && this.customCodeEditor ? this.customCodeEditor.getValue() : '';
+      if (this.codeSourceEnabled && codeSource === 'custom' && (!customCode || !customCode.trim())) {
+        this.showDescriptionAlert('请输入自定义代码');
+        if (this.customCodeEditor) {
+          this.customCodeEditor.focus();
+        }
+        return;
+      }
+      this.dialogResolver({ description, ipWhitelist, codeSource, customCode });
       this.closeDescriptionDialog();
     }
 
@@ -566,6 +677,73 @@
         document.execCommand('copy');
         document.body.removeChild(input);
         this.showMessage('脚本ID已复制', 'success');
+      }
+    }
+
+    ensureCustomCodeEditor(initialCode = '') {
+      if (typeof ace === 'undefined') return;
+      if (!this.customCodeWrapper) return;
+      if (!this.customCodeEditor) {
+        this.customCodeEditor = ace.edit('customCodeEditor');
+        this.customCodeEditor.setTheme('ace/theme/textmate');
+        this.customCodeEditor.session.setMode('ace/mode/javascript');
+        this.customCodeEditor.setOptions({
+          fontSize: '14px',
+          showPrintMargin: false,
+          wrap: true,
+          tabSize: 2,
+          useSoftTabs: true,
+          useWorker: true,
+          highlightActiveLine: true,
+          highlightSelectedWord: true,
+        });
+        this.customCodeEditor.session.setUseWorker(true);
+        this.customCodeEditor.setHighlightGutterLine(true);
+        this.customCodeEditor.setShowInvisibles(false);
+      }
+      this.customCodeEditor.setValue(initialCode || '', -1);
+      this.customCodeEditor.session.setScrollTop(0);
+      if (typeof setDialogCustomCodeEditor === 'function') {
+        setDialogCustomCodeEditor(this.customCodeEditor);
+      }
+      setTimeout(() => {
+        this.customCodeEditor?.resize();
+      }, 30);
+    }
+
+    toggleCustomCodeEditor(show) {
+      if (!this.customCodeWrapper) return;
+      this.customCodeWrapper.style.display = show ? 'block' : 'none';
+      const help = document.getElementById('customCodeHelp');
+      if (help) {
+        help.style.display = show ? 'block' : 'none';
+      }
+      if (this.customCodeFullscreenBtn) {
+        this.customCodeFullscreenBtn.disabled = !show;
+        this.customCodeFullscreenBtn.classList.toggle('disabled', !show);
+      }
+      if (show && this.customCodeEditor) {
+        setTimeout(() => this.customCodeEditor?.resize(), 30);
+      }
+    }
+
+    handleCodeSourceChange(e) {
+      const value = e?.target?.value || 'editor';
+      this.clearDescriptionAlert();
+      this.toggleCustomCodeEditor(value === 'custom');
+    }
+
+    getSelectedCodeSource() {
+      const checked = document.querySelector('input[name="codeSource"]:checked');
+      return checked ? checked.value : 'editor';
+    }
+
+    openCustomCodeFullscreen() {
+      if (!this.customCodeEditor) {
+        this.ensureCustomCodeEditor(this.customCodeInitialValue || '');
+      }
+      if (typeof window.openCustomCodeFullscreen === 'function') {
+        window.openCustomCodeFullscreen();
       }
     }
   }

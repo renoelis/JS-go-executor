@@ -3807,12 +3807,33 @@ return readExcelFromUrl();`
         <div id="descriptionDialogOverlay" class="modal-overlay">
             <div class="modal-content description-dialog">
                 <div class="modal-header">
-                    <h4>脚本描述</h4>
+                    <h4 id="descriptionDialogTitle">脚本描述</h4>
                     <button class="modal-close" onclick="closeDescriptionDialog()">×</button>
                 </div>
+                <div id="descriptionDialogAlert" class="dialog-alert" style="display:none;"></div>
                 <div class="form-group">
                     <label class="form-label">脚本描述</label>
                     <textarea id="scriptDescription" placeholder="请输入脚本描述（可选）" maxlength="200"></textarea>
+                </div>
+                <div class="form-group code-source-group" id="codeSourceSection" style="display:none;">
+                    <div class="code-source-header">
+                        <label class="form-label">代码来源</label>
+                        <button type="button" id="customCodeFullscreenBtn" class="ghost-btn code-fullscreen-btn">⛶ 全屏编辑</button>
+                    </div>
+                    <div class="code-source-options">
+                        <label class="radio-option">
+                            <input type="radio" name="codeSource" value="editor" checked>
+                            <span>使用当前编辑器里的代码</span>
+                        </label>
+                        <label class="radio-option">
+                            <input type="radio" name="codeSource" value="custom">
+                            <span>自定义代码输入</span>
+                        </label>
+                    </div>
+                    <div id="customCodeEditorWrapper" class="code-editor-wrapper" style="display:none;">
+                        <div id="customCodeEditor" class="code-editor"></div>
+                    </div>
+                    <div class="form-help-text" id="customCodeHelp">选择“自定义代码”后，可直接粘贴或编写 JavaScript，体验与主编辑器一致。</div>
                 </div>
                 <div class="form-group">
                     <label class="form-label">IP 白名单（可选，逗号或换行分隔）</label>
@@ -3913,6 +3934,8 @@ return readExcelFromUrl();`
         let inputEditor = null;
         let fullscreenEditor = null;
         let fullscreenScriptBodyEditor = null;
+        let fullscreenCustomCodeEditor = null;
+        let dialogCustomCodeEditor = null;
 
         // 初始化 Ace Editor
         function initAceEditor() {
@@ -4686,6 +4709,131 @@ return readExcelFromUrl();`
             }
         }
 
+        // 自定义代码全屏编辑（脚本管理使用）
+        function setDialogCustomCodeEditor(editorInstance) {
+            dialogCustomCodeEditor = editorInstance;
+        }
+
+        function openCustomCodeFullscreen() {
+            const editorOverlay = document.getElementById('fullscreenEditor');
+            const container = document.getElementById('fullscreenEditorContainer');
+            editorOverlay.classList.remove('light-overlay');
+
+            if (typeof ace === 'undefined') {
+                alert('编辑器正在加载中，请稍候...');
+                return;
+            }
+
+            const currentCode = dialogCustomCodeEditor ? dialogCustomCodeEditor.getValue() : (mainEditor ? mainEditor.getValue() : '');
+            container.innerHTML = '<div id="fullscreenCustomCodeEditorContainer" style="width: 100%; height: 100%;"></div>';
+
+            fullscreenCustomCodeEditor = ace.edit('fullscreenCustomCodeEditorContainer');
+            fullscreenCustomCodeEditor.setTheme('ace/theme/monokai'); // 深色主题，与主编辑器全屏一致
+            fullscreenCustomCodeEditor.session.setMode('ace/mode/javascript');
+            fullscreenCustomCodeEditor.setValue(currentCode, -1);
+            fullscreenCustomCodeEditor.setOptions({
+                fontSize: '16px',
+                showPrintMargin: false,
+                tabSize: 2,
+                useSoftTabs: true,
+                wrap: true,
+                useWorker: true,
+                highlightActiveLine: true,
+                highlightSelectedWord: true
+            });
+            fullscreenCustomCodeEditor.session.setUseWorker(true);
+            fullscreenCustomCodeEditor.setHighlightGutterLine(true);
+            fullscreenCustomCodeEditor.setBehavioursEnabled(true);
+            fullscreenCustomCodeEditor.setShowInvisibles(false);
+            fullscreenCustomCodeEditor.commands.addCommand({
+                name: 'save',
+                bindKey: {
+                    win: 'Ctrl-S',
+                    mac: 'Command-S'
+                },
+                exec: function() {
+                    saveFullscreenCustomCode();
+                }
+            });
+
+            ace.config.loadModule('ace/ext/searchbox', function(e) {
+                fullscreenCustomCodeEditor.commands.addCommand({
+                    name: 'find',
+                    bindKey: {
+                        win: 'Ctrl-F',
+                        mac: 'Command-F'
+                    },
+                    exec: function(editor) {
+                        e.Search(editor, false);
+                        setTimeout(function() {
+                            adjustSearchBoxLayout(editor, true);
+                        }, 50);
+                    }
+                });
+
+                fullscreenCustomCodeEditor.commands.addCommand({
+                    name: 'replace',
+                    bindKey: {
+                        win: 'Ctrl-H',
+                        mac: 'Command-Option-F'
+                    },
+                    exec: function(editor) {
+                        e.Search(editor, true);
+                        setTimeout(function() {
+                            adjustSearchBoxLayout(editor, false);
+                        }, 50);
+                    }
+                });
+            });
+
+            editorOverlay.style.display = 'block';
+            const title = document.querySelector('.fullscreen-editor-title');
+            if (title) {
+                title.textContent = '📝 自定义代码全屏编辑';
+            }
+            setTimeout(() => {
+                fullscreenCustomCodeEditor.focus();
+            }, 100);
+        }
+
+        function saveFullscreenCustomCode() {
+            if (!fullscreenCustomCodeEditor) return;
+            const code = fullscreenCustomCodeEditor.getValue().trim();
+            const annotations = fullscreenCustomCodeEditor.session.getAnnotations();
+            const errors = annotations.filter(ann => ann.type === 'error');
+            if (errors.length > 0) {
+                let errorMsg = '❌ JavaScript 代码存在语法错误，无法保存！\n\n';
+                errors.forEach((err, index) => {
+                    errorMsg += `${index + 1}. 第 ${err.row + 1} 行: ${err.text}\n`;
+                });
+                errorMsg += '\n请修复错误后再保存。';
+                alert(errorMsg);
+                if (errors[0]) {
+                    fullscreenCustomCodeEditor.gotoLine(errors[0].row + 1, 0, true);
+                }
+                fullscreenCustomCodeEditor.focus();
+                return;
+            }
+            if (dialogCustomCodeEditor) {
+                dialogCustomCodeEditor.setValue(code, -1);
+            }
+            closeCustomCodeFullscreen();
+        }
+
+        function closeCustomCodeFullscreen() {
+            const editorOverlay = document.getElementById('fullscreenEditor');
+            editorOverlay.style.display = 'none';
+            editorOverlay.classList.remove('light-overlay');
+            const title = document.querySelector('.fullscreen-editor-title');
+            if (title) {
+                title.textContent = '🖥️ 全屏代码编辑器';
+            }
+            if (fullscreenCustomCodeEditor) {
+                fullscreenCustomCodeEditor.destroy();
+                fullscreenCustomCodeEditor = null;
+            }
+        }
+
         // ==================== Input 全屏编辑器 ====================
         let fullscreenInputEditor = null;
 
@@ -4870,6 +5018,8 @@ return readExcelFromUrl();`
                         closeScriptBodyFullscreenEditor();
                     } else if (fullscreenInputEditor) {
                         closeFullscreenInputEditor();
+                    } else if (fullscreenCustomCodeEditor) {
+                        closeCustomCodeFullscreen();
                     } else {
                         closeFullscreenEditor();
                     }
@@ -4893,6 +5043,8 @@ return readExcelFromUrl();`
                 saveFullscreenScriptBody();
             } else if (fullscreenInputEditor) {
                 saveFullscreenInputCode();
+            } else if (fullscreenCustomCodeEditor) {
+                saveFullscreenCustomCode();
             } else if (fullscreenEditor) {
                 saveFullscreenCode();
             }
@@ -4904,6 +5056,8 @@ return readExcelFromUrl();`
                 closeScriptBodyFullscreenEditor();
             } else if (fullscreenInputEditor) {
                 closeFullscreenInputEditor();
+            } else if (fullscreenCustomCodeEditor) {
+                closeCustomCodeFullscreen();
             } else if (fullscreenEditor) {
                 closeFullscreenEditor();
             }

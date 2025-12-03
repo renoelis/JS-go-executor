@@ -841,6 +841,30 @@
   border-bottom: 1px solid #e5e6eb;
 }
 
+.description-dialog .dialog-alert {
+  display: none;
+  margin: 0 0 12px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #ffccc7;
+  background: #fff2f0;
+  color: #d4380d;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.description-dialog .dialog-alert.info {
+  border-color: #91caff;
+  background: #e6f4ff;
+  color: #0958d9;
+}
+
+.description-dialog .dialog-alert.success {
+  border-color: #b7eb8f;
+  background: #f6ffed;
+  color: #389e0d;
+}
+
 .description-dialog .modal-header h4 {
   margin: 0;
   font-size: 18px;
@@ -878,6 +902,74 @@
   outline: none;
   border-color: #1677ff;
   box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.15);
+}
+
+.description-dialog .code-source-group {
+  border: 1px solid #e5e6eb;
+  border-radius: 12px;
+  padding: 12px 12px 10px 12px;
+  background: #f9fafb;
+  margin-bottom: 14px;
+}
+
+.description-dialog .code-source-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.description-dialog .code-fullscreen-btn {
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.description-dialog .code-source-options {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.description-dialog .radio-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: #1d2129;
+  cursor: pointer;
+}
+
+.description-dialog .radio-option input[type="radio"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.description-dialog .code-editor-wrapper {
+  border: 1px solid #d0d7e2;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+  min-height: 220px;
+}
+
+.description-dialog .code-editor-wrapper .code-editor {
+  min-height: 220px;
+}
+
+.description-dialog .code-editor-wrapper:focus-within {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.12);
+}
+
+.description-dialog .form-help-text {
+  margin-top: 8px;
+  color: #4e5969;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .dialog-buttons {
