@@ -3193,46 +3193,82 @@ return readExcelFromUrl();`
                 }
             }, 1000);
         }
-        
+
+        // Tab 切换函数
+        function switchTokenTab(tabName) {
+            // 更新 tab 按钮状态
+            const tabs = document.querySelectorAll('.token-tab');
+            tabs.forEach(tab => {
+                if (tab.dataset.tab === tabName) {
+                    tab.classList.add('active');
+                } else {
+                    tab.classList.remove('active');
+                }
+            });
+
+            // 更新 tab 内容显示
+            const tokenContent = document.getElementById('tokenTabContent');
+            const accountContent = document.getElementById('accountTabContent');
+
+            if (tabName === 'token') {
+                tokenContent.classList.add('active');
+                accountContent.classList.remove('active');
+            } else {
+                tokenContent.classList.remove('active');
+                accountContent.classList.add('active');
+            }
+
+            // 清空提示信息
+            const alertEl = document.getElementById('modalAlert');
+            if (alertEl) {
+                alertEl.style.display = 'none';
+                alertEl.textContent = '';
+            }
+        }
+
         function hideTokenQuery() {
             document.getElementById('tokenModal').classList.remove('show');
             // 不再在关闭弹窗时清理倒计时，避免按钮保持禁用但计时停止的状态
         }
 
         async function queryToken() {
-            const tokenDirect = document.getElementById('queryTokenDirect').value.trim();
-            const wsId = document.getElementById('queryWsId').value.trim();
-            const email = document.getElementById('queryEmail').value.trim();
-            const verifyCode = document.getElementById('verifyCodeInput') ? document.getElementById('verifyCodeInput').value.trim() : '';
             const apiUrl = document.getElementById('apiUrl').value.trim();
 
-            // 🔥 智能判断查询方式
-            // 方式1：直接通过Token查询
-            if (tokenDirect) {
+            // 判断当前激活的 Tab
+            const activeTab = document.querySelector('.token-tab.active');
+            const isTokenTab = activeTab && activeTab.dataset.tab === 'token';
+
+            if (isTokenTab) {
+                // Token 直接查询模式
+                const tokenDirect = document.getElementById('queryTokenDirect').value.trim();
+                if (!tokenDirect) {
+                    showAlertInModal('请输入 Token', 'error');
+                    return;
+                }
                 await queryTokenDirect(tokenDirect, apiUrl);
-                return;
+            } else {
+                // 账号查询模式
+                const wsId = document.getElementById('queryWsId').value.trim();
+                const email = document.getElementById('queryEmail').value.trim();
+                const verifyCode = document.getElementById('verifyCodeInput') ? document.getElementById('verifyCodeInput').value.trim() : '';
+
+                if (!wsId || !email) {
+                    showAlertInModal('请同时输入 Workspace ID 和 Email', 'error');
+                    return;
+                }
+
+                // 验证码模式
+                if (document.getElementById('verifyCodeInput')) {
+                    if (!verifyCode) {
+                        showAlertInModal('请先发送验证码并输入', 'error');
+                        return;
+                    }
+                    await queryTokenByVerifyCode(wsId, email, verifyCode);
+                } else {
+                    // 非验证码模式
+                    await queryTokenByWsIdEmail(wsId, email, apiUrl);
+                }
             }
-            
-            // 方式2：通过验证码验证并查询
-            if (verifyCode && wsId && email) {
-                await queryTokenByVerifyCode(wsId, email, verifyCode);
-                return;
-            }
-            
-            // 方式3：直接通过ws_id + email查询（非验证码模式）
-            if (wsId && email && !document.getElementById('verifyCodeInput')) {
-                await queryTokenByWsIdEmail(wsId, email, apiUrl);
-                return;
-            }
-            
-            // 方式4：验证码模式下，但未输入验证码
-            if (wsId && email && document.getElementById('verifyCodeInput') && !verifyCode) {
-                showAlertInModal('❌ 请先发送验证码并输入验证码', 'error');
-                return;
-            }
-            
-            // 验证必填项
-            showAlertInModal('❌ 请输入 Token，或者同时输入 Workspace ID 和 Email', 'error');
         }
         
         // 🔥 直接Token查询
@@ -3988,69 +4024,73 @@ return readExcelFromUrl();`
                         <div class="modal-icon">🔍</div>
                         <div>
                             <h3>查询 Token 信息</h3>
-                            <div class="modal-subtitle">支持 Token 直查，或 Workspace + Email 查询</div>
                         </div>
                     </div>
                     <button class="modal-close" onclick="hideTokenQuery()">×</button>
                 </div>
-                <div class="token-tip">💡 提示：点击右上角 × 或「取消」关闭窗口</div>
-                <div class="token-section">
-                    <div class="token-section-header">
-                        <div>
-                            <div class="card-title">Token 直接查询</div>
-                            <div class="card-hint">输入完整的 Token（推荐优先使用）</div>
-                        </div>
-                        <span class="token-badge">推荐</span>
-                    </div>
-                    <input type="text" id="queryTokenDirect" class="form-input" placeholder="输入完整的 Token 进行查询（优先使用此方式）"
-                        style="font-family:'SFMono-Regular',Consolas,'Courier New',monospace">
-                    <div class="form-help-text">如果填写了 Token，将直接查询该 Token 信息（无需填写下方的 Workspace ID 和 Email）。</div>
+
+                <!-- Tab 切换栏 -->
+                <div class="token-tabs">
+                    <button class="token-tab active" data-tab="token" onclick="switchTokenTab('token')">
+                        🔑 Token 查询
+                    </button>
+                    <button class="token-tab" data-tab="account" onclick="switchTokenTab('account')">
+                        👤 账号查询
+                    </button>
                 </div>
-                <div class="token-divider"><span>或者</span></div>
-                <div class="token-grid">
-                    <div class="token-section">
+
+                <!-- Tab 1: Token 直接查询 -->
+                <div id="tokenTabContent" class="token-tab-content active">
+                    <div class="token-input-group">
+                        <label class="form-label">请输入您的 Token</label>
+                        <input type="text" id="queryTokenDirect" class="form-input token-input"
+                            placeholder="flow_410xxxxxx...">
+                    </div>
+                </div>
+
+                <!-- Tab 2: 账号查询 -->
+                <div id="accountTabContent" class="token-tab-content">
+                    <div class="token-input-group">
                         <label class="form-label">Workspace ID</label>
                         <input type="text" id="queryWsId" class="form-input" placeholder="请输入 Workspace ID">
                     </div>
-                    <div class="token-section">
+                    <div class="token-input-group">
                         <label class="form-label">Email</label>
                         <input type="text" id="queryEmail" class="form-input" placeholder="请输入 Email 地址">
-                        <div class="form-help-text">同时填写 Workspace ID 和 Email 可查询该用户的所有 Token。</div>
                     </div>
-                </div>
-                {{if .VerifyCodeEnabled}}
-                <!-- 验证码功能UI -->
-                <div id="verifyCodeSection" class="token-section verify-section">
-                    <div class="token-section-header">
-                        <div>
-                            <div class="card-title">验证码验证</div>
-                            <div class="card-hint">按需发送邮件验证码后输入 6 位数字</div>
+                    {{if .VerifyCodeEnabled}}
+                    <!-- 验证码功能UI -->
+                    <div class="token-input-group" id="verifyCodeSection">
+                        <label class="form-label">验证码</label>
+                        <div class="verify-row">
+                            <input type="text" id="verifyCodeInput" placeholder="请输入 6 位验证码" maxlength="6" class="form-input">
+                            <button type="button" id="sendVerifyCodeBtn" onclick="sendVerifyCodeOnly()" class="primary-btn">
+                                发送验证码
+                            </button>
+                        </div>
+                        <div id="verifyCodeHint" class="form-help-text" style="display:none">
+                            验证码已发送到您的邮箱，有效期 5 分钟
                         </div>
                     </div>
-                    <div class="verify-row">
-                        <input type="text" id="verifyCodeInput" placeholder="请输入验证码" maxlength="6" class="form-input"
-                            style="font-family:'SFMono-Regular',Consolas,'Courier New',monospace">
-                        <button type="button" id="sendVerifyCodeBtn" onclick="sendVerifyCodeOnly()" class="primary-btn" style="white-space:nowrap;min-width:140px">
-                            📧 发送验证码
-                        </button>
-                    </div>
-                    <div id="verifyCodeHint" class="form-help-text" style="display:none;text-align:center">
-                        ⏰ 验证码已发送到您的邮箱，有效期5分钟
-                    </div>
+                    {{end}}
                 </div>
-                {{end}}
-                <label class="token-checkbox">
-                    <input type="checkbox" id="includeExpiredTokens" style="width:18px;height:18px;cursor:pointer">
-                    <span>📋 包含已失效的 Token（用于查看过期 Token 以便续期）</span>
-                </label>
-                <div class="token-actions-row">
-                    <div class="token-alert-inline" id="modalAlert"></div>
-                    <div class="button-group token-actions">
+
+                <!-- 提示信息 -->
+                <div class="token-alert-inline" id="modalAlert" style="display:none"></div>
+
+                <!-- 底部操作区 -->
+                <div class="token-footer">
+                    <label class="token-checkbox">
+                        <input type="checkbox" id="includeExpiredTokens">
+                        <span>包含已失效 Token</span>
+                    </label>
+                    <div class="token-actions">
                         <button class="ghost-btn" onclick="hideTokenQuery()">取消</button>
-                        <button class="primary-btn" id="queryBtn" onclick="queryToken()">🔍 查询Token</button>
+                        <button class="primary-btn" id="queryBtn" onclick="queryToken()">查询</button>
                     </div>
                 </div>
-                <div id="tokenResult" class="token-result" style="display:none"></div>
+
+                <div id="tokenResult" class="token-result"></div>
             </div>
         </div>
         <div id="fullscreenEditor" class="fullscreen-editor-overlay">
