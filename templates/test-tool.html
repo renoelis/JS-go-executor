@@ -3920,10 +3920,6 @@ return readExcelFromUrl();`
                 </div>
                 <div id="scriptModeConfigAlert" class="script-mode-alert" style="display:none;"></div>
                 <div class="config-row">
-                    <div class="form-group">
-                        <label class="form-label">脚本ID <span class="required">*</span></label>
-                        <input type="text" id="configScriptId" class="form-input" placeholder="请输入脚本ID">
-                    </div>
                     <div class="form-group method-group">
                         <label class="form-label">请求方式</label>
                         <select id="configMethod" class="form-input" onchange="updateScriptModeBodyVisibility()">
@@ -3931,14 +3927,19 @@ return readExcelFromUrl();`
                             <option value="POST">POST</option>
                         </select>
                     </div>
+                    <div class="form-group">
+                        <label class="form-label">脚本ID <span class="required">*</span></label>
+                        <input type="text" id="configScriptId" class="form-input" placeholder="请输入脚本ID">
+                    </div>
                 </div>
                 <div class="config-card">
                     <div class="config-card-header">
                         <div>
                             <div class="card-title">Query 参数</div>
-                            <div class="card-hint">Key / Value，可多行</div>
                         </div>
-                        <button type="button" class="ghost-btn" onclick="addKVRow('configQueryList')">＋ 新增 Query</button>
+                        <button type="button" class="add-kv-btn" onclick="addKVRow('configQueryList')">
+                            <span class="add-icon">+</span> 新增
+                        </button>
                     </div>
                     <div id="configQueryList" class="kv-list"></div>
                 </div>
@@ -3946,24 +3947,27 @@ return readExcelFromUrl();`
                     <div class="config-card-header">
                         <div>
                             <div class="card-title">自定义 Header</div>
-                            <div class="card-hint">Key / Value，可多行</div>
                         </div>
-                        <button type="button" class="ghost-btn" onclick="addKVRow('configHeaderList')">＋ 新增 Header</button>
+                        <button type="button" class="add-kv-btn" onclick="addKVRow('configHeaderList')">
+                            <span class="add-icon">+</span> 新增
+                        </button>
                     </div>
                     <div id="configHeaderList" class="kv-list"></div>
                 </div>
                 <div class="config-card" id="configBodyGroup">
                     <div class="config-card-header">
                         <div>
-                            <div class="card-title">Body（JSON，可选）</div>
-                            <div class="card-hint">脚本模式独立使用，留空默认 {}</div>
+                            <div class="card-title">Body（JSON）</div>
                         </div>
                         <div class="card-actions">
-                            <button type="button" class="ghost-btn" onclick="openScriptBodyFullscreenEditor()">⛶ 全屏编辑</button>
+                            <button type="button" class="ghost-btn fullscreen-btn" onclick="openScriptBodyFullscreenEditor()" title="全屏编辑">⛶</button>
                         </div>
                     </div>
+                    <div class="body-info-alert">
+                        <span class="info-icon">ℹ</span>
+                        <span>脚本模式独立使用此 Body，外层 Input 不参与；留空默认 {}</span>
+                    </div>
                     <div id="configBodyEditor" class="code-editor"></div>
-                    <div class="form-help-text">脚本模式只会使用此处的 Body，外层 Input 内容不会带入；留空则默认发送 {}。</div>
                 </div>
                 <div class="button-group right">
                     <button class="ghost-btn" onclick="closeScriptModeConfig()">取消</button>
@@ -5429,9 +5433,9 @@ return readExcelFromUrl();`
             const row = document.createElement('div');
             row.className = 'kv-row';
             row.innerHTML = `
-                <input type="text" class="kv-key" placeholder="Key" value="${key || ''}">
-                <input type="text" class="kv-value" placeholder="Value" value="${value || ''}">
-                <button type="button" class="kv-remove" onclick="this.parentElement.remove()">删除</button>
+                <input type="text" class="kv-key" placeholder="参数名" value="${key || ''}">
+                <input type="text" class="kv-value" placeholder="参数值" value="${value || ''}">
+                <button type="button" class="kv-remove" onclick="this.parentElement.remove()" title="删除">🗑</button>
             `;
             list.appendChild(row);
         }
