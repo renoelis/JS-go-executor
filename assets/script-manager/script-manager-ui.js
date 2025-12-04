@@ -596,7 +596,7 @@
       this.clearDescriptionAlert();
       const descInput = document.getElementById('scriptDescription');
       const ipInput = document.getElementById('ipWhitelistInput');
-      const title = defaults.title || (defaults.mode === 'update' ? '更新代码' : '脚本描述');
+      const title = defaults.title || (defaults.mode === 'update' ? '更新代码' : '脚本配置');
       if (this.descriptionTitle) {
         this.descriptionTitle.textContent = title;
       }
