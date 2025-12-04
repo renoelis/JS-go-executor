@@ -142,21 +142,37 @@
       const ipWhitelist = options.ipWhitelist;
       const source = options.codeSource || 'editor';
       const customCode = options.customCode;
-      const code = source === 'custom' ? (customCode || '') : this.getCurrentCode();
-      if (!code || !code.trim()) {
-        this.ui?.showMessage('代码内容为空，无法更新脚本', 'error');
-        return;
+      const skipCodeUpdate = source === 'meta';
+      const body = { description: description || '' };
+      if (!skipCodeUpdate) {
+        const code = source === 'custom' ? (customCode || '') : this.getCurrentCode();
+        if (!code || !code.trim()) {
+          this.ui?.showMessage('代码内容为空，无法更新脚本', 'error');
+          return;
+        }
+        body.code_base64 = encodeWithTextEncoder(code);
       }
-      const body = {
-        code_base64: encodeWithTextEncoder(code),
-        description: description || '',
-      };
       if (Array.isArray(ipWhitelist)) {
         body.ip_whitelist = ipWhitelist;
       }
       const res = await this.api.updateScript(scriptId, body);
       if (res && res.success) {
-        this.ui?.showMessage('脚本更新成功', 'success');
+        const payload = res.data || res;
+        const codeChanged = payload.code_changed ?? payload.codeChanged;
+        const successMsg = '脚本更新成功';
+        if (!skipCodeUpdate && codeChanged === false) {
+          this.ui?.showMessage(`${successMsg}；检测到代码未变更，如仅调整描述/IP，建议选择“仅改描述/IP”。`, 'info');
+          if (this.ui?.confirmDialog) {
+            this.ui.confirmDialog('检测到代码与当前版本一致。如只需更新描述或 IP，请选择“仅改描述/IP”重试。', {
+              title: '代码未变更提示',
+              okText: '知道了',
+              cancelText: '关闭',
+              danger: false,
+            }).catch(() => {});
+          }
+        } else {
+          this.ui?.showMessage(successMsg, 'success');
+        }
         this.loadScripts(this.pagination.page || 1);
       } else {
         this.ui?.showMessage(res?.message || res?.error?.message || '脚本更新失败', 'error');

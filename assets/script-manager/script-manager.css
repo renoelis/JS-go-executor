@@ -343,6 +343,12 @@
   margin-top: 6px;
 }
 
+#scriptConfirmOverlay {
+  z-index: 10001;
+  justify-content: center;
+  align-items: center;
+}
+
 .script-toolbar {
   padding: 12px 20px;
   background: #fff;
@@ -931,6 +937,8 @@
   gap: 16px;
   align-items: center;
   margin-bottom: 10px;
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 .description-dialog .radio-option {

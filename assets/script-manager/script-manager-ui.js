@@ -48,6 +48,7 @@
       this.customCodeFullscreenHandler = null;
       this.descriptionAlertTimer = null;
       this.messageTimer = null;
+      this.descriptionDialogMode = 'create';
     }
 
     init() {
@@ -586,6 +587,7 @@
     openDescriptionDialog(defaults = {}) {
       const overlay = document.getElementById('descriptionDialogOverlay');
       if (!overlay) return;
+      this.descriptionDialogMode = defaults.mode || 'create';
       this.descriptionDialogContent = overlay.querySelector('.modal-content');
       overlay.classList.add('show');
       if (this.descriptionDialogContent) {
@@ -608,7 +610,9 @@
       if (this.codeSourceEnabled) {
         const sourceRadios = document.querySelectorAll('input[name="codeSource"]');
         const selected = defaults.code_source || defaults.codeSource || {};
-        const selectedValue = selected.value || selected.selected || 'editor';
+        const selectedValue = typeof selected === 'string'
+          ? selected
+          : (selected.value || selected.selected || 'editor');
         const initialCustomCode = selected.customCode || defaults.custom_code || '';
         this.customCodeInitialValue = initialCustomCode;
         if (!this.codeSourceChangeHandler) {
@@ -634,11 +638,13 @@
     closeDescriptionDialog() {
       const overlay = document.getElementById('descriptionDialogOverlay');
       if (overlay) overlay.classList.remove('show');
+      this.resolveConfirm(false);
       this.clearDescriptionAlert();
       this.dialogResolver = null;
+      this.descriptionDialogMode = 'create';
     }
 
-    confirmDescriptionDialog() {
+    async confirmDescriptionDialog() {
       if (!this.dialogResolver) {
         this.closeDescriptionDialog();
         return;
@@ -657,8 +663,57 @@
         }
         return;
       }
+      let confirmContent = null;
+      if (this.descriptionDialogMode === 'update') {
+        confirmContent = this.getUpdateConfirmContent(codeSource);
+      } else if (this.descriptionDialogMode === 'create') {
+        confirmContent = this.getCreateConfirmContent();
+      }
+      if (confirmContent) {
+        const ok = this.confirmDialog
+          ? await this.confirmDialog(confirmContent.message, {
+            title: confirmContent.title,
+            okText: confirmContent.okText,
+            cancelText: confirmContent.cancelText,
+            danger: confirmContent.danger,
+          })
+          : window.confirm(confirmContent.message || confirmContent.title);
+        if (!ok) return;
+      }
       this.dialogResolver({ description, ipWhitelist, codeSource, customCode });
       this.closeDescriptionDialog();
+    }
+
+    getCreateConfirmContent() {
+      return {
+        title: '保存当前脚本',
+        message: '将以当前编辑器中的代码创建新脚本，并同步保存描述/IP，确认保存？',
+        okText: '确认保存',
+      };
+    }
+
+    getUpdateConfirmContent(codeSource) {
+      switch (codeSource) {
+        case 'meta':
+          return {
+            title: '仅改描述/IP',
+            message: '将仅更新脚本描述和 IP 白名单，代码保持不变，确认提交吗？',
+            okText: '仅更新描述/IP',
+          };
+        case 'custom':
+          return {
+            title: '使用自定义代码',
+            message: '将使用自定义区域的代码覆盖当前脚本，并同步更新描述/IP。请确认自定义代码已校验无误。',
+            okText: '用自定义代码更新',
+          };
+        case 'editor':
+        default:
+          return {
+            title: '使用编辑器代码',
+            message: '将以当前编辑器中的代码覆盖脚本，并同步更新描述/IP。',
+            okText: '用编辑器代码更新',
+          };
+      }
     }
 
     copyId(id) {
@@ -731,6 +786,10 @@
       const value = e?.target?.value || 'editor';
       this.clearDescriptionAlert();
       this.toggleCustomCodeEditor(value === 'custom');
+      if (this.customCodeFullscreenBtn) {
+        this.customCodeFullscreenBtn.disabled = value !== 'custom';
+        this.customCodeFullscreenBtn.classList.toggle('disabled', value !== 'custom');
+      }
     }
 
     getSelectedCodeSource() {

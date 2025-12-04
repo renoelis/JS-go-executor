@@ -685,6 +685,16 @@
             display: flex
         }
 
+        #descriptionDialogOverlay {
+            justify-content: center;
+            align-items: center;
+            padding: 32px 16px;
+        }
+
+        #descriptionDialogOverlay .description-dialog {
+            margin: 0 auto;
+        }
+
         @keyframes fadeIn {
             from {
                 opacity: 0
@@ -3944,17 +3954,21 @@ return readExcelFromUrl();`
                     <div class="code-source-options">
                         <label class="radio-option">
                             <input type="radio" name="codeSource" value="editor" checked>
-                            <span>使用当前编辑器里的代码</span>
+                            <span>编辑器代码</span>
+                        </label>
+                        <label class="radio-option">
+                            <input type="radio" name="codeSource" value="meta">
+                            <span>仅改描述/IP</span>
                         </label>
                         <label class="radio-option">
                             <input type="radio" name="codeSource" value="custom">
-                            <span>自定义代码输入</span>
+                            <span>自定义</span>
                         </label>
                     </div>
                     <div id="customCodeEditorWrapper" class="code-editor-wrapper" style="display:none;">
                         <div id="customCodeEditor" class="code-editor"></div>
                     </div>
-                    <div class="form-help-text" id="customCodeHelp">选择“自定义代码”后，可直接粘贴或编写 JavaScript，体验与主编辑器一致。</div>
+                    <div class="form-help-text" id="customCodeHelp">选择“自定义”后，可直接粘贴或编写 JavaScript，体验与主编辑器一致。</div>
                 </div>
                 <div class="form-group">
                     <label class="form-label">IP 白名单（可选，逗号或换行分隔）</label>
