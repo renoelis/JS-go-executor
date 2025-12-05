@@ -328,6 +328,188 @@
             box-shadow: 0 4px 10px rgba(120, 144, 156, .35)
         }
 
+        /* ==================== 代码编辑器工具栏优化 ==================== */
+        .code-editor-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .code-editor-header h4 {
+            margin: 0;
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .code-editor-header h4::before {
+            display: none;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+        }
+
+        /* 代码编辑器工具按钮 - 精简图标式 */
+        .code-tool-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            padding: 6px 10px;
+            background: var(--bg-white);
+            border: 1px solid var(--border-medium);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            color: var(--text-secondary);
+            transition: all 0.15s ease;
+            white-space: nowrap;
+        }
+
+        .code-tool-btn:hover {
+            background: var(--bg-light);
+            border-color: #bdbdbd;
+            color: var(--text-primary);
+            transform: translateY(-1px);
+        }
+
+        .code-tool-btn:active {
+            transform: translateY(0);
+        }
+
+        .code-tool-btn.btn-clear:hover {
+            background: #ffebee;
+            border-color: #ef5350;
+            color: #c62828;
+        }
+
+        .code-tool-btn.btn-encode:hover {
+            background: #e3f2fd;
+            border-color: #42a5f5;
+            color: #1976d2;
+        }
+
+        .code-tool-btn.btn-decode:hover {
+            background: #fff3e0;
+            border-color: #ffb74d;
+            color: #e65100;
+        }
+
+        .code-tool-btn.btn-manage {
+            background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+            border-color: #81c784;
+            color: #2e7d32;
+            font-weight: 500;
+        }
+
+        .code-tool-btn.btn-manage:hover {
+            background: linear-gradient(135deg, #c8e6c9 0%, #a5d6a7 100%);
+            border-color: #66bb6a;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 6px rgba(76, 175, 80, 0.2);
+        }
+        .code-tool-btn.btn-fullscreen {
+            background: var(--bg-white);
+        }
+        .header-actions .code-tool-btn.btn-fullscreen {
+            background: var(--bg-white);
+            color: var(--text-secondary);
+            font-weight: 500;
+            box-shadow: none;
+        }
+        .header-actions .code-tool-btn.btn-fullscreen:hover {
+            background: var(--bg-light);
+            border-color: #bdbdbd;
+            color: var(--text-primary);
+            box-shadow: none;
+        }
+
+        /* 分隔线 */
+        .toolbar-divider {
+            width: 1px;
+            height: 18px;
+            background: var(--border-medium);
+            margin: 0 6px;
+        }
+
+        /* 运行按钮 - 占满一行 */
+        .btn-run {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            width: 100%;
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #1976d2 0%, #42a5f5 100%);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.2s ease;
+            box-shadow: 0 3px 10px rgba(25, 118, 210, 0.35);
+        }
+
+        .btn-run:hover {
+            background: linear-gradient(135deg, #1565c0 0%, #1976d2 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 16px rgba(25, 118, 210, 0.45);
+        }
+
+        .btn-run:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 6px rgba(25, 118, 210, 0.3);
+        }
+
+        .btn-run.executing {
+            background: linear-gradient(135deg, #ef5350 0%, #e53935 100%);
+            box-shadow: 0 3px 10px rgba(229, 57, 53, 0.35);
+            animation: pulse-run 1.5s ease-in-out infinite;
+        }
+
+        .btn-run.executing:hover {
+            background: linear-gradient(135deg, #e53935 0%, #c62828 100%);
+            box-shadow: 0 5px 16px rgba(229, 57, 53, 0.45);
+        }
+
+        @keyframes pulse-run {
+            0%, 100% { box-shadow: 0 3px 10px rgba(229, 57, 53, 0.35); }
+            50% { box-shadow: 0 3px 16px rgba(229, 57, 53, 0.55); }
+        }
+
+        /* 代码编辑器底部运行栏 */
+        .code-run-bar {
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border-light);
+        }
+
+        /* 代码提示文字样式 */
+        .code-hint-text {
+            color: var(--text-hint);
+            font-size: 12px;
+            line-height: 1.5;
+            margin-bottom: 10px;
+        }
+
+        .code-hint-text strong {
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
         .btn:disabled {
             opacity: .6;
             cursor: not-allowed;
@@ -1980,6 +2162,13 @@
         }
 
         /* ==================== 脚本模式紧凑版样式 ==================== */
+        /* 脚本模式头部 */
+        .script-mode-header {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 12px;
+        }
+
         /* 执行类型选择 - 紧凑版 */
         .script-execution-type-compact {
             display: flex;
@@ -2050,6 +2239,25 @@
             display: flex;
             gap: 10px;
             margin-bottom: 12px;
+            align-items: flex-end;
+        }
+
+        /* Safari 兼容：请求方法下拉框高度对齐 */
+        .script-fields-compact .form-group {
+            margin-bottom: 0;
+        }
+
+        .script-fields-compact .form-input {
+            height: 44px;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+
+        .script-fields-compact select.form-input {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23666' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 32px;
         }
 
         /* Query/Header 参数并排 */
@@ -2392,6 +2600,12 @@
                     </div>
                     <!-- Tab 内容：脚本模式 -->
                     <div id="script-mode-content" class="input-tab-content">
+                        <!-- 脚本管理入口 -->
+                        <div class="script-mode-header">
+                            <button class="code-tool-btn btn-manage" onclick="openScriptManager()" title="管理已保存的脚本">
+                                📚 脚本管理
+                            </button>
+                        </div>
                         <!-- 执行类型选择 - 紧凑版 -->
                         <div class="script-execution-type-compact">
                             <label class="radio-option-compact selected" onclick="selectScriptExecutionType('real')">
@@ -2453,23 +2667,26 @@
                     </div>
                 </div>
                 <div class="section" id="jsSection">
-                    <div class="section-title" style="padding:0;background:none;border:none">
-                        <div class="code-editor-header">
-                            <h4>💻 JavaScript 代码</h4>
-                            <div class="header-actions">
-                                <button class="btn-script-manage" onclick="openScriptManager()" title="管理已保存的脚本">
-                                    📚 脚本管理
-                                </button>
-                                <button class="btn-fullscreen" onclick="openFullscreenEditor()" title="全屏编辑代码">
-                                    ⛶ 全屏编辑
-                                </button>
-                            </div>
+                    <div class="code-editor-header">
+                        <h4>💻 JavaScript 代码</h4>
+                        <div class="header-actions">
+                            <button class="code-tool-btn btn-clear" onclick="clearCode()" title="清空代码">
+                                🗑 清空
+                            </button>
+                            <button class="code-tool-btn btn-encode" onclick="encodeToBase64()" title="Base64编码并复制">
+                                🔒 编码
+                            </button>
+                            <button class="code-tool-btn btn-decode" onclick="decodeFromBase64()" title="Base64解码">
+                                🔓 解码
+                            </button>
+                            <button class="code-tool-btn btn-fullscreen" onclick="openFullscreenEditor()" title="全屏编辑代码">
+                                ⛶ 全屏
+                            </button>
                         </div>
                     </div>
                     <div id="jsAlertBox" class="alert"></div>
-                    <div class="form-group"> <label class="form-label">请编写符合项目规则的代码</label> <small
-                            style="color:#6c757d;font-size:12px;display:block;margin-bottom:8px"> 💡 提示：在上方 Input
-                            参数区域点击<strong>完整示例</strong>按钮，可同时加载 Input 和代码 </small>
+                    <div class="form-group">
+                        <p class="code-hint-text">💡 提示：在上方 Input 参数区域点击<strong>完整示例</strong>按钮，可同时加载 Input 和代码</p>
                         <div id="codeEditorContainer"></div> <textarea id="jsCode" style="display:none">// 计算年龄的两倍
 return {
   result: input.age * 2,
@@ -2477,10 +2694,9 @@ return {
   items: input.items
 };</textarea>
                     </div>
-                    <div class="button-group code-action-group"> <button class="btn btn-secondary btn-clear-danger" onclick="clearCode()">
-                            🗑️ 清空代码 </button> <button class="btn btn-info" onclick="encodeToBase64()"> 🔒 Base64编码并复制
-                        </button> <button class="btn btn-warning" onclick="decodeFromBase64()"> 🔓 Base64解码 </button>
-                        <button class="btn btn-success" onclick="executeCode()" id="runBtn"> ▶️ 运行代码 </button> </div>
+                    <div class="code-run-bar">
+                        <button class="btn-run" onclick="executeCode()" id="runBtn">▶️ 运行代码</button>
+                    </div>
                 </div>
                 <div class="section execution-result-section">
                     <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
@@ -2981,7 +3197,7 @@ return {
             showLoading(false);
 
             // 恢复按钮为运行状态
-            runBtn.className = 'btn btn-success';
+            runBtn.className = 'btn-run';
             runBtn.innerHTML = '▶️ 运行代码';
             runBtn.title = '';
         }
@@ -6050,7 +6266,7 @@ return readExcelFromUrl();`
             document.getElementById('statsBox').style.display = 'none';
             document.getElementById('copyResultBtn').style.display = 'none';
             if (runBtn) {
-                runBtn.className = 'btn btn-cancel';
+                runBtn.className = 'btn-run executing';
                 runBtn.innerHTML = '⏹️ 取消执行';
                 runBtn.title = '点击取消正在执行的代码';
             }
