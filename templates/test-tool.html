@@ -540,33 +540,36 @@
         }
 
         .copy-result-btn {
-            padding: 8px 16px;
-            background: linear-gradient(135deg, #28a745 0, #20c997 100%);
-            color: #fff;
-            border: none;
+            padding: 8px 14px;
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            color: #555;
             border-radius: 6px;
             font-size: 13px;
             font-weight: 500;
             cursor: pointer;
-            transition: all .3s ease;
-            box-shadow: 0 2px 4px rgba(40, 167, 69, .2);
+            transition: all .2s ease;
+            box-shadow: none;
             display: inline-flex;
             align-items: center;
             gap: 6px
         }
 
         .copy-result-btn:hover {
-            background: linear-gradient(135deg, #218838 0, #1aa179 100%);
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(40, 167, 69, .3)
+            background: #e3f2fd;
+            border-color: #1976d2;
+            color: #1976d2
         }
 
         .copy-result-btn:active {
-            transform: translateY(0)
+            transform: translateY(0);
+            box-shadow: none
         }
 
         .copy-result-btn.copied {
-            background: linear-gradient(135deg, #17a2b8 0, #138496 100%)
+            background: #e8f5e9;
+            border-color: #28a745;
+            color: #2c7a3f
         }
 
         .fullscreen-edit-btn {
@@ -2583,8 +2586,9 @@
                                         <span class="icon">📊</span> Excel 处理</div>
                                 </div>
                                 <div class="editor-toolbar-actions">
-                                    <button class="ghost-btn" onclick="openFullscreenInputEditor()" title="全屏编辑">⛶ 全屏</button>
+                                    <button class="ghost-btn" onclick="clearInput()" title="清空输入">🗑️ 清空</button>
                                     <button class="ghost-btn" onclick="copyInputData()" title="复制">📋 复制</button>
+                                    <button class="ghost-btn" onclick="openFullscreenInputEditor()" title="全屏编辑">⛶ 全屏</button>
                                 </div>
                             </div>
                             <div id="inputEditorContainer"
@@ -2594,8 +2598,6 @@
   "age": 25,
   "items": [1, 2, 3, 4, 5]
 }</textarea>
-                        </div>
-                        <div class="button-group"> <button class="btn btn-secondary btn-clear-danger" onclick="clearInput()"> 🗑️ 清空输入 </button>
                         </div>
                     </div>
                     <!-- Tab 内容：脚本模式 -->
@@ -2698,11 +2700,11 @@ return {
                         <button class="btn-run" onclick="executeCode()" id="runBtn">▶️ 运行代码</button>
                     </div>
                 </div>
-                <div class="section execution-result-section">
+                    <div class="section execution-result-section">
                     <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
                         <div> <span class="icon">📊</span> 执行结果 </div> <button id="copyResultBtn"
                             class="copy-result-btn" onclick="copyExecutionResult()" style="display:none" title="复制执行结果">
-                            📋 复制结果 </button>
+                            📋 复制 </button>
                     </div>
                     <div id="alertBox" class="alert"></div>
                     <div class="loading" id="loadingBox">
