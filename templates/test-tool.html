@@ -2921,21 +2921,21 @@ return {
                     navigator.clipboard.writeText(base64)
                         .then(() => {
                             showAlertInArea('jsAlertBox',
-                                `✅ Base64 编码成功并已复制到剪贴板！\n原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`,
+                                `Base64 编码成功并已复制到剪贴板！\n原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`,
                                 'success');
                         })
                         .catch(err => {
                             // 降级方案：使用传统方法
                             fallbackCopyToClipboard(base64);
                             showAlertInArea('jsAlertBox',
-                                `✅ Base64 编码成功并已复制到剪贴板！\n原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`,
+                                `Base64 编码成功并已复制到剪贴板！\n原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`,
                                 'success');
                         });
                 } else {
                     // 降级方案：使用传统方法
                     fallbackCopyToClipboard(base64);
                     showAlertInArea('jsAlertBox',
-                        `✅ Base64 编码成功并已复制到剪贴板！\n原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`,
+                        `Base64 编码成功并已复制到剪贴板！\n原始字符数: ${code.length}, UTF-8 字节数: ${utf8Bytes.length}, Base64 长度: ${base64.length}`,
                         'success');
                 }
             } catch (error) {
@@ -2999,7 +2999,7 @@ return {
 
                 // 显示成功提示
                 showAlertInArea('jsAlertBox',
-                    `✅ Base64 解码成功！\nBase64 长度: ${base64String.length}, 解码后字符数: ${decodedCode.length}`,
+                    `Base64 解码成功！\nBase64 长度: ${base64String.length}, 解码后字符数: ${decodedCode.length}`,
                     'success'
                 );
 
@@ -3008,7 +3008,7 @@ return {
 
             } catch (error) {
                 showAlertInArea('jsAlertBox',
-                    `❌ Base64 解码失败: ${error.message}\n请确保输入的是有效的 Base64 编码字符串`,
+                    `Base64 解码失败: ${error.message}\n请确保输入的是有效的 Base64 编码字符串`,
                     'error'
                 );
             }
@@ -3061,7 +3061,7 @@ return {
             }
 
             if (!isValidBase64(base64String)) {
-                errorMsg.textContent = '❌ 格式错误，请输入有效的 Base64 字符串';
+                errorMsg.textContent = '格式错误，请输入有效的 Base64 字符串';
                 errorMsg.style.display = 'block';
                 return;
             }
@@ -3114,7 +3114,7 @@ return {
                 navigator.clipboard.writeText(resultText)
                     .then(() => {
                         // 显示成功提示
-                        showAlertInArea('alertBox', '✅ 执行结果已复制到剪贴板！', 'success');
+                        showAlertInArea('alertBox', '执行结果已复制到剪贴板！', 'success');
 
                         // 按钮视觉反馈
                         const originalText = copyBtn.innerHTML;
@@ -3148,7 +3148,7 @@ return {
 
             try {
                 document.execCommand('copy');
-                showAlertInArea('alertBox', '✅ 执行结果已复制到剪贴板！', 'success');
+                showAlertInArea('alertBox', '执行结果已复制到剪贴板！', 'success');
 
                 // 按钮视觉反馈
                 const copyBtn = document.getElementById('copyResultBtn');
@@ -3161,7 +3161,7 @@ return {
                     copyBtn.classList.remove('copied');
                 }, 2000);
             } catch (err) {
-                showAlertInArea('alertBox', '❌ 复制失败，请手动复制', 'error');
+                showAlertInArea('alertBox', '复制失败，请手动复制', 'error');
             }
 
             document.body.removeChild(textArea);
@@ -3183,7 +3183,7 @@ return {
                 navigator.clipboard.writeText(inputText)
                     .then(() => {
                         // 显示成功提示
-                        showAlertInArea('inputAlertBox', '✅ Input 参数已复制到剪贴板！', 'success');
+                        showAlertInArea('inputAlertBox', 'Input 参数已复制到剪贴板！', 'success');
                     })
                     .catch(err => {
                         // 降级方案
@@ -3206,9 +3206,9 @@ return {
 
             try {
                 document.execCommand('copy');
-                showAlertInArea('inputAlertBox', '✅ Input 参数已复制到剪贴板！', 'success');
+                showAlertInArea('inputAlertBox', 'Input 参数已复制到剪贴板！', 'success');
             } catch (err) {
-                showAlertInArea('inputAlertBox', '❌ 复制失败，请手动复制', 'error');
+                showAlertInArea('inputAlertBox', '复制失败，请手动复制', 'error');
             }
 
             document.body.removeChild(textArea);
@@ -3231,12 +3231,12 @@ return {
             const apiUrl = document.getElementById('apiUrl').value.trim();
 
             if (!accessToken) {
-                showAlert('❌ 请输入 Access Token', 'error');
+                showAlert('请输入 Access Token', 'error');
                 return;
             }
 
             if (!jsCode) {
-                showAlert('❌ 请输入 JavaScript 代码', 'error');
+                showAlert('请输入 JavaScript 代码', 'error');
                 return;
             }
 
@@ -3245,7 +3245,7 @@ return {
             try {
                 inputObj = inputData ? JSON.parse(inputData) : {};
             } catch (error) {
-                showAlert('❌ Input 参数不是有效的 JSON 格式: ' + error.message, 'error');
+                showAlert('Input 参数不是有效的 JSON 格式: ' + error.message, 'error');
                 return;
             }
 
@@ -3261,7 +3261,7 @@ return {
                 }
                 base64Code = btoa(binary);
             } catch (error) {
-                showAlert('❌ Base64 编码失败: ' + error.message, 'error');
+                showAlert('Base64 编码失败: ' + error.message, 'error');
                 return;
             }
 
@@ -3328,7 +3328,7 @@ return {
                     errorMessage = error.message;
                 }
 
-                showAlert('❌ 请求失败: ' + errorMessage, 'error');
+                showAlert('请求失败: ' + errorMessage, 'error');
                 displayResult({
                     success: false,
                     error: error.message,
@@ -3390,9 +3390,9 @@ return {
 
             // 显示提示信息
             if (result.success) {
-                showAlert('✅ 代码执行成功！', 'success');
+                showAlert('代码执行成功！', 'success');
             } else {
-                showAlert('❌ 代码执行失败: ' + (result.error || result.message || '未知错误'), 'error');
+                showAlert('代码执行失败: ' + (result.error || result.message || '未知错误'), 'error');
             }
         }
 
@@ -3515,7 +3515,7 @@ return {
             };
 
             document.getElementById('jsCode').value = examples[type] || examples.simple;
-            showAlertInArea('jsAlertBox', '✅ 示例代码已加载', 'success');
+            showAlertInArea('jsAlertBox', '示例代码已加载', 'success');
         }
 
         // 清空输入框
@@ -3524,13 +3524,13 @@ return {
                 inputEditor.setValue('{}', -1);
             }
             document.getElementById('inputData').value = '{}';
-            showAlertInArea('inputAlertBox', '✅ 输入已清空', 'success');
+            showAlertInArea('inputAlertBox', '输入已清空', 'success');
         }
 
         // 清空代码
         function clearCode() {
             document.getElementById('jsCode').value = '';
-            showAlertInArea('jsAlertBox', '✅ 代码已清空', 'success');
+            showAlertInArea('jsAlertBox', '代码已清空', 'success');
         }
 
         function loadInputExample(type) {
@@ -3564,7 +3564,7 @@ return {
                 inputEditor.setValue(inputStr, -1);
             }
 
-            showAlertInArea('inputAlertBox', '✅ 示例 Input 已加载', 'success');
+            showAlertInArea('inputAlertBox', '示例 Input 已加载', 'success');
         }
 
         // 加载完整示例（Input + 代码）
@@ -3915,7 +3915,7 @@ async function readExcelFromUrl() {
       });
     }
     
-    // ✅ 保存到变量，不在 try 中 return
+    // 保存到变量，不在 try 中 return
     result = {
       success: true,
       source: {
@@ -3947,7 +3947,7 @@ async function readExcelFromUrl() {
     if (workbook) workbook.close();  // ⭐ 必须调用，释放资源
   }
   
-  return result;  // ✅ 在 finally 之后 return
+  return result;  // 在 finally 之后 return
 }
 
 // 执行异步函数并返回结果
@@ -3973,7 +3973,7 @@ return readExcelFromUrl();`
             }
 
             // 显示成功提示
-            showAlertInArea('inputAlertBox', '✅ 完整示例已加载！Input 数据和代码已同步填充', 'success');
+            showAlertInArea('inputAlertBox', '完整示例已加载！Input 数据和代码已同步填充', 'success');
 
             // 滚动到代码区域
             setTimeout(() => {
@@ -4141,14 +4141,14 @@ return readExcelFromUrl();`
             
             // 验证输入
             if (!wsId || !email) {
-                showAlertInModal('❌ 请填写 Workspace ID 和 Email', 'error');
+                showAlertInModal('请填写 Workspace ID 和 Email', 'error');
                 return;
             }
             
             // 验证邮箱格式
             const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
             if (!emailRegex.test(email)) {
-                showAlertInModal('❌ 邮箱格式不正确', 'error');
+                showAlertInModal('邮箱格式不正确', 'error');
                 return;
             }
             
@@ -4180,7 +4180,7 @@ return readExcelFromUrl();`
                     // 🔥 开始60秒倒计时，期间按钮置灰
                     startSendCodeCooldown(sendBtn, 60);
                     
-                    showAlertInModal('✅ 验证码已发送到您的邮箱，请查收', 'success');
+                    showAlertInModal('验证码已发送到您的邮箱，请查收', 'success');
                 } else {
                     if (sendBtn) {
                         sendBtn.disabled = false;
@@ -4188,14 +4188,14 @@ return readExcelFromUrl();`
                     }
                     // 🔥 优先使用 error.message，其次是 message，最后是默认提示
                     const errorMsg = data.error?.message || data.message || '发送失败';
-                    showAlertInModal('❌ ' + errorMsg, 'error');
+                    showAlertInModal(errorMsg, 'error');
                 }
             } catch (error) {
                 if (sendBtn) {
                     sendBtn.disabled = false;
                     sendBtn.textContent = '📧 发送验证码';
                 }
-                showAlertInModal('❌ 网络错误，请稍后重试', 'error');
+                showAlertInModal('网络错误，请稍后重试', 'error');
             }
         }
         
@@ -4336,7 +4336,7 @@ return readExcelFromUrl();`
         async function queryTokenByVerifyCode(wsId, email, code) {
             // 验证码格式检查
             if (!/^[0-9]{6}$/.test(code)) {
-                showAlertInModal('❌ 验证码格式不正确（应为6位数字）', 'error');
+                showAlertInModal('验证码格式不正确（应为6位数字）', 'error');
                 return;
             }
 
@@ -4365,26 +4365,26 @@ return readExcelFromUrl();`
                     const tokens = result.data.tokens || [];
                     if (tokens.length > 0) {
                         handleTokensResult(tokens);
-                        showAlertInModal(`✅ 验证成功！找到 ${tokens.length} 个 Token`, 'success');
+                        showAlertInModal(`验证成功！找到 ${tokens.length} 个 Token`, 'success');
                         // 清空验证码
                         document.getElementById('verifyCodeInput').value = '';
                         // 隐藏提示
                         const verifyCodeHint = document.getElementById('verifyCodeHint');
                         if (verifyCodeHint) verifyCodeHint.style.display = 'none';
                     } else {
-                        showAlertInModal('❌ 未找到Token信息', 'error');
+                        showAlertInModal('未找到Token信息', 'error');
                     }
                 } else {
                     // 🔥 优先使用 error.message，其次是 message，最后是默认提示
                     const errorMsg = result.error?.message || result.message || '验证失败';
-                    showAlertInModal('❌ ' + errorMsg, 'error');
+                    showAlertInModal(errorMsg, 'error');
                 }
             } catch (error) {
                 if (queryBtn) {
                     queryBtn.disabled = false;
                     queryBtn.textContent = '🔍 查询Token';
                 }
-                showAlertInModal('❌ 网络错误，请稍后重试', 'error');
+                showAlertInModal('网络错误，请稍后重试', 'error');
             }
         }
         
@@ -4445,7 +4445,7 @@ return readExcelFromUrl();`
 
                     if (displayTokens.length > 0) {
                         handleTokensResult(displayTokens);
-                        let message = `✅ 查询成功！找到 ${displayTokens.length} 个 Token`;
+                        let message = `查询成功！找到 ${displayTokens.length} 个 Token`;
                         if (includeExpired && expiredCount > 0) {
                             message += `（其中 ${expiredCount} 个已过期）`;
                         } else if (!includeExpired) {
@@ -4454,13 +4454,13 @@ return readExcelFromUrl();`
                         showAlertInModal(message, 'success');
                     } else if (tokens.length > 0) {
                         // 所有 Token 都已过期
-                        showAlertInModal(`❌ 所有 ${tokens.length} 个 Token 均已过期。提示：勾选"包含已失效的 Token"可查看过期Token`,
+                        showAlertInModal(`所有 ${tokens.length} 个 Token 均已过期。提示：勾选"包含已失效的 Token"可查看过期Token`,
                             'warning');
                     } else {
-                        showAlertInModal('❌ 未找到 Token 信息', 'error');
+                        showAlertInModal('未找到 Token 信息', 'error');
                     }
                 } else {
-                    showAlertInModal('❌ ' + (result.message || result.error?.message || '未找到 Token 信息'), 'error');
+                    showAlertInModal(result.message || result.error?.message || '未找到 Token 信息', 'error');
                 }
 
             } catch (error) {
@@ -4468,7 +4468,7 @@ return readExcelFromUrl();`
                     queryBtn.disabled = false;
                     queryBtn.textContent = '🔍 查询Token';
                 }
-                showAlertInModal('❌ 查询失败: ' + error.message, 'error');
+                showAlertInModal('查询失败: ' + error.message, 'error');
             }
         }
         // 处理查询到的 Token 结果
@@ -4498,12 +4498,12 @@ return readExcelFromUrl();`
 
             tokens.forEach((token, index) => {
                 const isActive = token.is_active !== undefined ? token.is_active : true;
-                const statusIcon = isActive ? '✅' : '❌';
+                const statusLabel = isActive ? '有效' : '已禁用';
                 const expiresAt = token.expires_at ? new Date(token.expires_at) : null;
                 const expireText = expiresAt ? expiresAt.toLocaleDateString('zh-CN') : '永久';
                 const tokenStr = token.access_token || token.token || '';
                 const tokenPreview = tokenStr.length > 20 ? tokenStr.substring(0, 20) + '...' : tokenStr;
-                html += `<option value="${index}">${statusIcon} ${tokenPreview} (${expireText})</option>`;
+                html += `<option value="${index}">[${statusLabel}] ${tokenPreview} (${expireText})</option>`;
             });
 
             html += `
@@ -4663,7 +4663,7 @@ return readExcelFromUrl();`
                     <div class="token-item">
                         <div class="token-label">状态</div>
                         <div class="token-value ${isActive ? 'active' : 'expired'}">
-                            ${isActive ? '✅ 有效' : '❌ 已禁用'}
+                            ${isActive ? '有效' : '已禁用'}
                         </div>
                     </div>
                     <div class="token-item">
@@ -4710,7 +4710,7 @@ return readExcelFromUrl();`
         function fillTokenToInput(token) {
             document.getElementById('accessToken').value = token;
             hideTokenQuery();
-            showToast('✅ Token 已填充到输入框', 'success');
+            showToast('Token 已填充到输入框', 'success');
         }
 
         // 显示单个 Token 详情（用于只有一个 Token 的情况）
@@ -4779,7 +4779,7 @@ return readExcelFromUrl();`
                     <div class="token-item">
                         <div class="token-label">状态</div>
                         <div class="token-value ${isActive ? 'active' : 'expired'}">
-                            ${isActive ? '✅ 有效' : '❌ 已禁用'}
+                            ${isActive ? '有效' : '已禁用'}
                         </div>
                     </div>
                     <div class="token-item">
@@ -5093,8 +5093,8 @@ return readExcelFromUrl();`
                 <div class="fullscreen-editor-header">
                     <div class="fullscreen-editor-title">🖥️ 全屏代码编辑器</div>
                     <div class="fullscreen-editor-actions"> <button class="fullscreen-btn fullscreen-btn-close"
-                            onclick="closeFullscreenEditorBtn()"> ❌ 取消 </button> <button
-                            class="fullscreen-btn fullscreen-btn-save" onclick="saveFullscreenCodeBtn()"> ✅ 保存并关闭
+                            onclick="closeFullscreenEditorBtn()">取消</button> <button
+                            class="fullscreen-btn fullscreen-btn-save" onclick="saveFullscreenCodeBtn()">保存并关闭
                         </button> </div>
                 </div>
                 <div id="fullscreenEditorContainer" style="flex:1;display:flex;flex-direction:column"></div>
@@ -5376,7 +5376,7 @@ return readExcelFromUrl();`
 
             if (errors.length > 0) {
                 // 构建错误信息
-                let errorMsg = '❌ JavaScript 代码存在语法错误，无法保存！\n\n';
+                let errorMsg = 'JavaScript 代码存在语法错误，无法保存！\n\n';
                 errorMsg += '错误列表：\n';
                 errors.forEach((err, index) => {
                     errorMsg += `${index + 1}. 第 ${err.row + 1} 行: ${err.text}\n`;
@@ -5395,7 +5395,7 @@ return readExcelFromUrl();`
                 return; // 阻止保存
             }
 
-            // ✅ 没有错误，继续保存
+            // 没有错误，继续保存
             // 更新主编辑器
             if (mainEditor) {
                 mainEditor.setValue(code, -1);
@@ -5408,7 +5408,7 @@ return readExcelFromUrl();`
             closeFullscreenEditor();
 
             // 显示成功提示
-            showAlert('✅ 代码已保存（语法检查通过）', 'success');
+            showAlert('代码已保存（语法检查通过）', 'success');
         }
 
         // 🎨 调整搜索框布局为 VSCode 风格
@@ -5988,7 +5988,7 @@ return readExcelFromUrl();`
             const annotations = fullscreenCustomCodeEditor.session.getAnnotations();
             const errors = annotations.filter(ann => ann.type === 'error');
             if (errors.length > 0) {
-                let errorMsg = '❌ JavaScript 代码存在语法错误，无法保存！\n\n';
+                let errorMsg = 'JavaScript 代码存在语法错误，无法保存！\n\n';
                 errors.forEach((err, index) => {
                     errorMsg += `${index + 1}. 第 ${err.row + 1} 行: ${err.text}\n`;
                 });
@@ -6148,7 +6148,7 @@ return readExcelFromUrl();`
                     const errorMsg = error.message || 'JSON 格式错误';
                     const errorLine = error.message.match(/position (\d+)/);
 
-                    let alertMsg = `❌ JSON 格式错误: ${errorMsg}\n\n`;
+                    let alertMsg = `JSON 格式错误: ${errorMsg}\n\n`;
                     alertMsg += '请检查:\n';
                     alertMsg += '• 括号、引号是否匹配\n';
                     alertMsg += '• 键名是否使用双引号\n';
@@ -6174,7 +6174,7 @@ return readExcelFromUrl();`
             closeFullscreenInputEditor();
 
             // 显示成功提示
-            showAlertInArea('inputAlertBox', '✅ Input 数据已保存（JSON 格式正确）', 'success');
+            showAlertInArea('inputAlertBox', 'Input 数据已保存（JSON 格式正确）', 'success');
         }
 
         function closeFullscreenInputEditor() {
@@ -6219,7 +6219,7 @@ return readExcelFromUrl();`
                 mainEditor.setValue('', -1);
             }
             document.getElementById('jsCode').value = '';
-            showAlertInArea('jsAlertBox', '✅ 代码已清空', 'success');
+            showAlertInArea('jsAlertBox', '代码已清空', 'success');
         }
 
         // ==================== 全屏编辑器按钮统一处理 ====================
@@ -6501,11 +6501,11 @@ return readExcelFromUrl();`
             const apiUrl = document.getElementById('apiUrl').value.trim();
 
             if (!accessToken) {
-                showAlert('❌ 请输入 Access Token', 'error');
+                showAlert('请输入 Access Token', 'error');
                 return;
             }
             if (!jsCode) {
-                showAlert('❌ 请输入 JavaScript 代码', 'error');
+                showAlert('请输入 JavaScript 代码', 'error');
                 return;
             }
 
@@ -6513,7 +6513,7 @@ return readExcelFromUrl();`
             try {
                 inputObj = inputData ? JSON.parse(inputData) : {};
             } catch (error) {
-                showAlert('❌ Input 参数不是有效的 JSON 格式: ' + error.message, 'error');
+                showAlert('Input 参数不是有效的 JSON 格式: ' + error.message, 'error');
                 return;
             }
 
@@ -6521,7 +6521,7 @@ return readExcelFromUrl();`
             try {
                 base64Code = encodeWithTextEncoderCompat(jsCode);
             } catch (error) {
-                showAlert('❌ Base64 编码失败: ' + error.message, 'error');
+                showAlert('Base64 编码失败: ' + error.message, 'error');
                 return;
             }
 
@@ -6561,7 +6561,7 @@ return readExcelFromUrl();`
                 } else {
                     errorMessage = error.message;
                 }
-                showAlert('❌ 请求失败: ' + errorMessage, 'error');
+                showAlert('请求失败: ' + errorMessage, 'error');
                 displayWrappedResult({
                     success: false,
                     error: error.message,
@@ -6603,10 +6603,10 @@ return readExcelFromUrl();`
             }
 
             if (successFlag) {
-                showAlert('✅ 代码执行成功！', 'success');
+                showAlert('代码执行成功！', 'success');
             } else {
                 const errMsg = result?.error?.message || result?.message || result?.error || '未知错误';
-                showAlert('❌ 代码执行失败: ' + errMsg, 'error');
+                showAlert('代码执行失败: ' + errMsg, 'error');
             }
             syncResultPanelHeight();
         }
@@ -6642,10 +6642,10 @@ return readExcelFromUrl();`
             }
 
             if (successFlag) {
-                showAlert('✅ 代码执行成功！', 'success');
+                showAlert('代码执行成功！', 'success');
             } else {
                 const errMsg = result?.error?.message || result?.message || result?.error || '未知错误';
-                showAlert('❌ 代码执行失败: ' + errMsg, 'error');
+                showAlert('代码执行失败: ' + errMsg, 'error');
             }
             syncResultPanelHeight();
         }
@@ -6812,7 +6812,7 @@ return readExcelFromUrl();`
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 navigator.clipboard.writeText(content)
                     .then(() => {
-                        showAlertInArea('inputAlertBox', '✅ Body 内容已复制到剪贴板', 'success');
+                        showAlertInArea('inputAlertBox', 'Body 内容已复制到剪贴板', 'success');
                     })
                     .catch(err => {
                         // 降级方案
@@ -6835,9 +6835,9 @@ return readExcelFromUrl();`
 
             try {
                 document.execCommand('copy');
-                showAlertInArea(alertBoxId, '✅ ' + itemName + '已复制到剪贴板！', 'success');
+                showAlertInArea(alertBoxId, itemName + '已复制到剪贴板！', 'success');
             } catch (err) {
-                showAlertInArea(alertBoxId, '❌ 复制失败，请手动复制', 'error');
+                showAlertInArea(alertBoxId, '复制失败，请手动复制', 'error');
             }
 
             document.body.removeChild(textArea);
@@ -6864,12 +6864,12 @@ return readExcelFromUrl();`
             if (executionType === 'mock') {
                 // 模拟脚本执行：使用编辑器代码 + 脚本格式的 input（query/header/body）
                 if (!jsCode) {
-                    showAlert('❌ 模拟脚本执行需要编辑器中的代码', 'error');
+                    showAlert('模拟脚本执行需要编辑器中的代码', 'error');
                     return;
                 }
                 const accessToken = document.getElementById('accessToken').value.trim();
                 if (!accessToken) {
-                    showAlert('❌ 请输入 Access Token', 'error');
+                    showAlert('请输入 Access Token', 'error');
                     return;
                 }
 
@@ -6881,7 +6881,7 @@ return readExcelFromUrl();`
                     const bodyContent = scriptModeBodyEditor ? scriptModeBodyEditor.getValue() : '{}';
                     body = bodyContent ? JSON.parse(bodyContent) : {};
                 } catch (error) {
-                    showAlert('❌ Body 参数不是有效的 JSON 格式: ' + error.message, 'error');
+                    showAlert('Body 参数不是有效的 JSON 格式: ' + error.message, 'error');
                     return;
                 }
 
@@ -6903,7 +6903,7 @@ return readExcelFromUrl();`
                     }
                     base64Code = btoa(binary);
                 } catch (error) {
-                    showAlert('❌ Base64 编码失败: ' + error.message, 'error');
+                    showAlert('Base64 编码失败: ' + error.message, 'error');
                     return;
                 }
                 prepareExecutionUI();
@@ -6939,7 +6939,7 @@ return readExcelFromUrl();`
                         showAlert('⚠️ 代码执行已取消', 'warning');
                         return;
                     }
-                    showAlert('❌ 请求失败: ' + error.message, 'error');
+                    showAlert('请求失败: ' + error.message, 'error');
                     displayRawResult({
                         success: false,
                         error: { message: error.message },
@@ -6950,7 +6950,7 @@ return readExcelFromUrl();`
                 // 真实脚本执行
                 const scriptId = document.getElementById('scriptModeScriptId')?.value.trim();
                 if (!scriptId) {
-                    showAlert('❌ 请输入脚本ID', 'error');
+                    showAlert('请输入脚本ID', 'error');
                     return;
                 }
                 const method = (document.getElementById('scriptModeMethod')?.value || 'POST').toUpperCase();
@@ -6962,7 +6962,7 @@ return readExcelFromUrl();`
                         const bodyContent = scriptModeBodyEditor.getValue();
                         body = bodyContent ? JSON.parse(bodyContent) : {};
                     } catch (error) {
-                        showAlert('❌ Body 参数不是有效的 JSON 格式: ' + error.message, 'error');
+                        showAlert('Body 参数不是有效的 JSON 格式: ' + error.message, 'error');
                         return;
                     }
                 }
@@ -6986,7 +6986,7 @@ return readExcelFromUrl();`
                         showAlert('⚠️ 代码执行已取消', 'warning');
                         return;
                     }
-                    showAlert('❌ 请求失败: ' + error.message, 'error');
+                    showAlert('请求失败: ' + error.message, 'error');
                     displayRawResult({
                         success: false,
                         error: { message: error.message },
@@ -7030,8 +7030,8 @@ return readExcelFromUrl();`
                     <div id="base64InputError"
                         style="display:none;color:#dc3545;font-size:13px;margin-top:8px;font-weight:500"></div>
                 </div>
-                <div class="button-group"> <button class="btn btn-secondary" onclick="closeBase64InputModal()"> ❌ 取消
-                    </button> <button class="btn btn-success" onclick="confirmBase64Decode()"> ✅ 确认解码 </button> </div>
+                <div class="button-group"> <button class="btn btn-secondary" onclick="closeBase64InputModal()">取消
+                    </button> <button class="btn btn-success" onclick="confirmBase64Decode()">确认解码</button> </div>
                 <div style="text-align:center;margin-top:12px;color:#999;font-size:12px"> 💡 快捷键：<kbd
                         style="padding:2px 5px;background:#f5f5f5;border:1px solid #ddd;border-radius:3px;font-size:11px">Ctrl+Enter</kbd>
                     或 <kbd

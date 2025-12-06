@@ -420,7 +420,7 @@
         clearTimeout(this.messageTimer);
         this.messageTimer = null;
       }
-      const prefix = type === 'success' ? '✅ ' : type === 'info' ? 'ℹ️ ' : '❌ ';
+      const prefix = type === 'success' ? '成功：' : type === 'info' ? '提示：' : '错误：';
       this.messageBox.textContent = `${prefix}${message}`;
       this.messageBox.className = `script-manager-message ${type}`;
       this.messageBox.style.display = 'block';
@@ -459,7 +459,7 @@
       }
       const variant = type === 'success' ? 'success' : type === 'info' ? 'info' : '';
       this.descriptionAlert.className = variant ? `dialog-alert ${variant}` : 'dialog-alert';
-      const prefix = variant === 'success' ? '✅ ' : variant === 'info' ? 'ℹ️ ' : '❌ ';
+      const prefix = variant === 'success' ? '成功：' : variant === 'info' ? '提示：' : '错误：';
       this.descriptionAlert.textContent = `${prefix}${message}`;
       this.descriptionAlert.style.display = 'block';
       this.scrollToDescriptionAlert();
