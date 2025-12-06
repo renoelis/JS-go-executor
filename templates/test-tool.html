@@ -649,6 +649,88 @@
             min-height: 0
         }
 
+        .floating-alert-container {
+            position: fixed;
+            left: 20px;
+            bottom: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 2000;
+            max-width: 380px
+        }
+
+        .floating-alert {
+            box-shadow: 0 8px 24px rgba(0, 0, 0, .15);
+            border: 1px solid #d0d7e2;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            line-height: 1.5
+        }
+
+        .floating-alert.show {
+            display: flex
+        }
+
+        .floating-alert {
+            position: relative;
+            padding-right: 36px;
+            font-family: inherit
+        }
+
+        .floating-alert .floating-close {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            border: none;
+            background: transparent;
+            color: inherit;
+            cursor: pointer;
+            font-size: 14px;
+            line-height: 1;
+            padding: 4px;
+            border-radius: 4px;
+            transition: background .2s ease, color .2s ease
+        }
+
+        .floating-alert .floating-close:hover {
+            background: rgba(0, 0, 0, .05)
+        }
+
+        .result-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap
+        }
+
+        .result-header .result-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 600
+        }
+
+        .result-header .copy-result-btn {
+            margin-left: auto
+        }
+
+        .alert.result-status {
+            margin: 0;
+            padding: 10px 12px;
+            border-radius: 6px;
+            line-height: 1.4;
+            display: none
+        }
+
+        .alert.result-status.show {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px
+        }
+
         .result-box {
             background: #fff;
             color: #333;
@@ -751,6 +833,16 @@
             background: #fff3cd;
             color: #856404;
             border: 1px solid #ffeaa7
+        }
+
+        .floating-alert {
+            font-size: 14px;
+            font-family: inherit
+        }
+
+        .floating-alert.show {
+            display: flex !important;
+            align-items: center
         }
 
         .toast-container {
@@ -2762,13 +2854,13 @@ return {
 };</textarea>
                     </div>
                 </div>
-                    <div class="section execution-result-section">
-                    <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
-                        <div> <span class="icon">📊</span> 执行结果 </div> <button id="copyResultBtn"
-                            class="copy-result-btn" onclick="copyExecutionResult()" style="display:none" title="复制执行结果">
-                            📋 复制 </button>
+                <div class="section execution-result-section">
+                    <div class="section-title result-header">
+                        <div class="result-title"><span class="icon">📊</span> 执行结果</div>
+                        <div id="alertBox" class="alert result-status"></div>
+                        <button id="copyResultBtn" class="copy-result-btn" onclick="copyExecutionResult()" style="display:none"
+                            title="复制执行结果">📋 复制</button>
                     </div>
-                    <div id="alertBox" class="alert"></div>
                     <div class="loading" id="loadingBox">
                         <div class="spinner"></div>
                         <div>正在执行代码...</div>
@@ -2793,6 +2885,7 @@ return {
                 </div>
             </div>
         </div>
+        <div id="floatingAlertContainer" class="floating-alert-container" aria-live="polite"></div>
         <script src="/flow/assets/script-manager/script-manager-api.js"></script>
         <script src="/flow/assets/script-manager/script-manager-ui.js"></script>
         <script src="/flow/assets/script-manager/script-manager.js"></script>
@@ -3895,24 +3988,66 @@ return readExcelFromUrl();`
         }
 
         // ==================== UI 辅助函数 ====================
+        function pushFloatingAlert(message, type) {
+            let container = document.getElementById('floatingAlertContainer');
+            if (!container) {
+                container = document.createElement('div');
+                container.id = 'floatingAlertContainer';
+                container.className = 'floating-alert-container';
+                document.body.appendChild(container);
+            }
+
+            const alertEl = document.createElement('div');
+            alertEl.className = `floating-alert alert alert-${type} show`;
+            alertEl.setAttribute('role', 'status');
+
+            const textEl = document.createElement('span');
+            textEl.textContent = message;
+
+            const closeBtn = document.createElement('button');
+            closeBtn.className = 'floating-close';
+            closeBtn.type = 'button';
+            closeBtn.setAttribute('aria-label', '关闭提示');
+            closeBtn.textContent = '×';
+
+            alertEl.appendChild(textEl);
+            alertEl.appendChild(closeBtn);
+            container.appendChild(alertEl);
+
+            const removeAlert = () => {
+                alertEl.classList.remove('show');
+                setTimeout(() => {
+                    if (alertEl.parentNode === container) {
+                        container.removeChild(alertEl);
+                    }
+                }, 200);
+            };
+
+            const timer = setTimeout(removeAlert, 3000);
+
+            closeBtn.addEventListener('click', () => {
+                clearTimeout(timer);
+                removeAlert();
+            });
+        }
+
         function showAlert(message, type) {
             const alertBox = document.getElementById('alertBox');
-            alertBox.className = `alert alert-${type} show`;
-            alertBox.textContent = message;
-
-            setTimeout(() => {
-                alertBox.classList.remove('show');
-            }, 5000);
+            if (alertBox) {
+                alertBox.className = 'alert result-status';
+                alertBox.textContent = '';
+            }
+            pushFloatingAlert(message, type);
         }
 
         function showAlertInArea(alertBoxId, message, type) {
             const alertBox = document.getElementById(alertBoxId);
-            alertBox.className = `alert alert-${type} show`;
-            alertBox.textContent = message;
-
-            setTimeout(() => {
-                alertBox.classList.remove('show');
-            }, 5000);
+            if (alertBox) {
+                const baseClass = alertBoxId === 'alertBox' ? 'alert result-status' : 'alert';
+                alertBox.className = baseClass;
+                alertBox.textContent = '';
+            }
+            pushFloatingAlert(message, type);
         }
 
         function showToast(message, type = 'info') {
