@@ -914,39 +914,6 @@
             color: #1976d2
         }
 
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 8px;
-            margin-top: 8px
-        }
-
-        .stat-card {
-            background: #fff;
-            padding: 8px 10px;
-            border-radius: 8px;
-            border: 1px solid #e9ecef;
-            text-align: center;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            gap: 4px;
-            min-height: 72px
-        }
-
-        .stat-value {
-            font-size: 18px;
-            font-weight: 700;
-            color: #1976d2;
-            margin-bottom: 0
-        }
-
-        .stat-label {
-            font-size: 10px;
-            color: #6c757d;
-            text-transform: uppercase
-        }
-
         .loading {
             display: none;
             text-align: center;
@@ -2783,8 +2750,8 @@
                             <div class="form-group" style="flex:0 0 100px">
                                 <label class="form-label">请求方法</label>
                                 <select id="scriptModeMethod" class="form-input" onchange="updateScriptModeBodyVisibility()">
-                                    <option value="POST" selected>POST</option>
-                                    <option value="GET">GET</option>
+                                    <option value="GET" selected>GET</option>
+                                    <option value="POST">POST</option>
                                 </select>
                             </div>
                             <div class="form-group" style="flex:1">
@@ -2869,22 +2836,6 @@ return {
                         <div>正在执行代码...</div>
                     </div>
                     <div id="resultBox" class="result-box" style="display:none"></div>
-                    <div id="statsBox" style="display:none">
-                        <div class="stats-grid">
-                            <div class="stat-card">
-                                <div class="stat-value" id="statExecutionTime">-</div>
-                                <div class="stat-label">执行时间 (ms)</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-value" id="statStatus">-</div>
-                                <div class="stat-label">状态</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-value" id="statRequestId">-</div>
-                                <div class="stat-label">Request ID</div>
-                            </div>
-                        </div>
-                    </div>
                 </div>
             </div>
         </div>
@@ -3276,7 +3227,6 @@ return {
             showLoading(true);
             hideAlert();
             document.getElementById('resultBox').style.display = 'none';
-            document.getElementById('statsBox').style.display = 'none';
             document.getElementById('copyResultBtn').style.display = 'none';
 
             // 修改按钮为取消状态
@@ -3364,7 +3314,6 @@ return {
 
         function displayResult(result, isSuccess) {
             const resultBox = document.getElementById('resultBox');
-            const statsBox = document.getElementById('statsBox');
             const copyBtn = document.getElementById('copyResultBtn');
 
             resultBox.style.display = 'block';
@@ -3378,18 +3327,6 @@ return {
             // 使用 Postman 风格的 JSON 语法高亮
             const jsonString = JSON.stringify(result, null, 2);
             resultBox.innerHTML = syntaxHighlight(jsonString);
-
-            // 显示统计信息
-            if (result.executionTime !== undefined) {
-                statsBox.style.display = 'block';
-                document.getElementById('statExecutionTime').textContent = result.executionTime || '-';
-                document.getElementById('statStatus').innerHTML = result.success ?
-                    '<span class="badge badge-success">成功</span>' :
-                    '<span class="badge badge-error">失败</span>';
-                document.getElementById('statRequestId').textContent = result.request_id ?
-                    result.request_id.substring(0, 8) + '...' :
-                    '-';
-            }
 
             // 显示提示信息
             if (result.success) {
@@ -4055,32 +3992,8 @@ return readExcelFromUrl();`
         }
 
         function showToast(message, type = 'info') {
-            let container = document.getElementById('globalToastContainer');
-            if (!container) {
-                container = document.createElement('div');
-                container.id = 'globalToastContainer';
-                container.className = 'toast-container';
-                document.body.appendChild(container);
-            }
-            const toast = document.createElement('div');
-            toast.className = `toast toast-${type}`;
-            toast.textContent = message;
-            container.appendChild(toast);
-            requestAnimationFrame(() => {
-                toast.classList.add('show');
-            });
-            const hide = () => {
-                toast.classList.remove('show');
-                setTimeout(() => {
-                    if (toast.parentNode === container) {
-                        container.removeChild(toast);
-                    }
-                    if (container.childElementCount === 0 && container.parentNode) {
-                        container.parentNode.removeChild(container);
-                    }
-                }, 250);
-            };
-            setTimeout(hide, 4200);
+            const normalizedType = ['success', 'error', 'warning'].includes(type) ? type : 'success';
+            pushFloatingAlert(message, normalizedType);
         }
 
         function hideAlert() {
@@ -6489,7 +6402,6 @@ return readExcelFromUrl();`
             showLoading(true);
             hideAlert();
             document.getElementById('resultBox').style.display = 'none';
-            document.getElementById('statsBox').style.display = 'none';
             document.getElementById('copyResultBtn').style.display = 'none';
             if (runBtn) {
                 runBtn.className = 'btn-run executing';
@@ -6581,7 +6493,6 @@ return readExcelFromUrl();`
 
         function displayRawResult(result, isSuccess) {
             const resultBox = document.getElementById('resultBox');
-            const statsBox = document.getElementById('statsBox');
             const copyBtn = document.getElementById('copyResultBtn');
             const successFlag = (isSuccess === undefined || isSuccess === null) ? (result?.success !== undefined ? result.success : true) : isSuccess;
 
@@ -6591,20 +6502,6 @@ return readExcelFromUrl();`
 
             const jsonString = JSON.stringify(result, null, 2);
             resultBox.innerHTML = syntaxHighlight(jsonString);
-
-            const timing = result?.timing || {};
-            if (timing.executionTime !== undefined || timing.totalTime !== undefined) {
-                statsBox.style.display = 'block';
-                document.getElementById('statExecutionTime').textContent = timing.executionTime || timing.totalTime || '-';
-                document.getElementById('statStatus').innerHTML = successFlag ?
-                    '<span class=\"badge badge-success\">成功</span>' :
-                    '<span class=\"badge badge-error\">失败</span>';
-                document.getElementById('statRequestId').textContent = result.request_id ?
-                    result.request_id.substring(0, 8) + '...' :
-                    '-';
-            } else {
-                statsBox.style.display = 'none';
-            }
 
             if (successFlag) {
                 showAlert('代码执行成功！', 'success');
@@ -6618,7 +6515,6 @@ return readExcelFromUrl();`
         // 兼容旧函数
         function displayResult(result, isSuccess) {
             const resultBox = document.getElementById('resultBox');
-            const statsBox = document.getElementById('statsBox');
             const copyBtn = document.getElementById('copyResultBtn');
             const successFlag = (isSuccess === undefined || isSuccess === null) ? (result?.success !== undefined ? result.success : true) : isSuccess;
 
@@ -6630,20 +6526,6 @@ return readExcelFromUrl();`
 
             const jsonString = JSON.stringify(result, null, 2);
             resultBox.innerHTML = syntaxHighlight(jsonString);
-
-            const timing = result?.timing || {};
-            if (timing.executionTime !== undefined || timing.totalTime !== undefined) {
-                statsBox.style.display = 'block';
-                document.getElementById('statExecutionTime').textContent = timing.executionTime || timing.totalTime || '-';
-                document.getElementById('statStatus').innerHTML = successFlag ?
-                    '<span class=\"badge badge-success\">成功</span>' :
-                    '<span class=\"badge badge-error\">失败</span>';
-                document.getElementById('statRequestId').textContent = result.request_id ?
-                    result.request_id.substring(0, 8) + '...' :
-                    '-';
-            } else {
-                statsBox.style.display = 'none';
-            }
 
             if (successFlag) {
                 showAlert('代码执行成功！', 'success');
@@ -6718,7 +6600,7 @@ return readExcelFromUrl();`
             if (executionType === 'mock') {
                 bodyCard.style.display = 'block';
             } else {
-                const method = methodSelect ? methodSelect.value.toUpperCase() : 'POST';
+                const method = methodSelect ? methodSelect.value.toUpperCase() : 'GET';
                 bodyCard.style.display = (method === 'GET') ? 'none' : 'block';
             }
         }
@@ -6789,7 +6671,7 @@ return readExcelFromUrl();`
             if (scriptIdInput) scriptIdInput.value = '';
             // 重置请求方法
             const methodSelect = document.getElementById('scriptModeMethod');
-            if (methodSelect) methodSelect.value = 'POST';
+            if (methodSelect) methodSelect.value = 'GET';
             // 清空 Query 和 Header 列表
             const queryList = document.getElementById('scriptModeQueryList');
             if (queryList) queryList.innerHTML = '';
@@ -6802,6 +6684,7 @@ return readExcelFromUrl();`
             const bodyTextarea = document.getElementById('scriptModeBodyData');
             if (bodyTextarea) bodyTextarea.value = '{}';
             showAlertInArea('inputAlertBox', '脚本模式配置已清空', 'success');
+            updateScriptModeBodyVisibility();
         }
 
         function openFullscreenScriptBodyEditor() {
@@ -6957,7 +6840,7 @@ return readExcelFromUrl();`
                     showAlert('请输入脚本ID', 'error');
                     return;
                 }
-                const method = (document.getElementById('scriptModeMethod')?.value || 'POST').toUpperCase();
+                const method = (document.getElementById('scriptModeMethod')?.value || 'GET').toUpperCase();
                 const query = getScriptModeKVList('query');
                 const header = getScriptModeKVList('header');
                 let body = {};
@@ -7016,6 +6899,7 @@ return readExcelFromUrl();`
 
         window.addEventListener('DOMContentLoaded', () => {
             initScriptManagerBridge();
+            updateScriptModeBodyVisibility();
             syncResultPanelHeight();
         });
         window.addEventListener('resize', syncResultPanelHeight);
