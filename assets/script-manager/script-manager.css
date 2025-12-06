@@ -657,7 +657,8 @@
   border-left: 1px solid #e5e6eb;
   box-shadow: -5px 0 15px rgba(0, 0, 0, 0.1);
   padding: 16px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   animation: slideIn 0.3s ease;
   display: flex;
   flex-direction: column;
@@ -743,8 +744,13 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
   padding-bottom: 4px;
+  background: #fff;
   border-bottom: 1px solid #f0f0f0;
+  box-shadow: 0 8px 14px -12px rgba(0, 0, 0, 0.2);
 }
 
 .version-panel-title {
@@ -759,19 +765,21 @@
 }
 
 .version-panel-body {
-  display: grid;
-  grid-template-rows: minmax(140px, 32vh) minmax(360px, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 12px;
   overflow: hidden;
   flex: 1;
   min-height: 0;
+  height: 100%;
 }
 
 .version-list {
   overflow-y: auto;
   padding-right: 4px;
-  height: 100%;
-  min-height: 0;
+  min-height: 140px;
+  max-height: 32vh;
+  flex: 0 0 auto;
 }
 
 .version-preview {
@@ -783,8 +791,8 @@
   flex-direction: column;
   gap: 8px;
   overflow: hidden;
-  flex: 1;
-  min-height: 360px;
+  flex: 1 1 360px;
+  min-height: 0;
 }
 
 .version-preview-meta {

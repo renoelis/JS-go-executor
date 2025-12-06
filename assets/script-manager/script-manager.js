@@ -211,9 +211,9 @@
               version: defaultVersion.version,
               code: codeRaw,
               updated_at: defaultVersion.updated_at || defaultVersion.created_at || '',
-            });
+            }, { scrollIntoView: false });
           } else {
-            this.viewVersionCode(scriptId, defaultVersion.version, { silent: true });
+            this.viewVersionCode(scriptId, defaultVersion.version, { silent: true, scrollIntoView: false });
           }
         } else {
           this.ui?.showVersionPreview(null);
@@ -239,6 +239,7 @@
     }
 
     async viewVersionCode(scriptId, version, options = {}) {
+      const { silent = false, scrollIntoView = true, scrollVersionItem = true } = options;
       const res = await this.api.getScript(scriptId, version);
       if (res && res.success) {
         const payload = res.data || {};
@@ -251,13 +252,13 @@
             version: target.version,
             code,
             updated_at: target.updated_at || target.created_at || '',
-          });
-          if (!options.silent) {
+          }, { scrollIntoView, scrollVersionItem });
+          if (!silent) {
             this.ui?.showMessage(`已载入 v${version} 代码`, 'info');
           }
         }
       } else {
-        if (!options.silent) {
+        if (!silent) {
           this.ui?.showMessage(res?.message || res?.error?.message || '查看版本失败', 'error');
         }
       }

@@ -337,13 +337,17 @@
     toggleVersionPanel(show) {
       if (!this.versionPanel) return;
       this.versionPanel.style.display = show ? 'block' : 'none';
+      if (show) {
+        this.versionPanel.scrollTop = 0;
+      }
       if (!show) {
         this.showVersionPreview(null);
       }
     }
 
-    showVersionPreview(payload) {
+    showVersionPreview(payload, options = {}) {
       if (!this.versionPreviewMeta || !this.versionPreviewCode) return;
+      const { scrollIntoView = true, scrollVersionItem = true } = options;
       if (!payload || !payload.code) {
         this.versionPreviewMeta.textContent = '选择左侧版本查看代码';
         if (this.versionPreviewAce) {
@@ -367,20 +371,37 @@
       }
       this.currentPreviewVersion = payload.version;
       this.highlightVersion(payload.version);
-      if (this.versionPreviewMeta?.scrollIntoView) {
+      if (scrollVersionItem) {
+        this.scrollVersionItemIntoView(payload.version);
+      }
+      if (scrollIntoView && this.versionPreviewMeta?.scrollIntoView) {
         setTimeout(() => this.versionPreviewMeta.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
       }
     }
 
     highlightVersion(version) {
       if (!this.versionList) return;
+      const targetVersion = Number(version);
+      const hasValidTarget = Number.isFinite(targetVersion);
       this.versionList.querySelectorAll('.version-item').forEach((item) => {
-        if (parseInt(item.dataset.version, 10) === version) {
-          item.classList.add('active');
-        } else {
-          item.classList.remove('active');
-        }
+        const itemVersion = parseInt(item.dataset.version, 10);
+        const isActive = Number.isFinite(itemVersion) && hasValidTarget && itemVersion === targetVersion;
+        item.classList.toggle('active', isActive);
       });
+    }
+
+    scrollVersionItemIntoView(version) {
+      if (!this.versionList || !Number.isFinite(Number(version))) return;
+      const target = this.versionList.querySelector(`.version-item[data-version="${Number(version)}"]`);
+      if (!target) return;
+      const container = this.versionList;
+      const containerRect = container.getBoundingClientRect();
+      const itemRect = target.getBoundingClientRect();
+      const fullyVisible = itemRect.top >= containerRect.top && itemRect.bottom <= containerRect.bottom;
+      if (fullyVisible) return;
+      const targetTop = target.offsetTop - (container.clientHeight / 2) + (target.clientHeight / 2);
+      const safeTop = Math.max(targetTop, 0);
+      container.scrollTo({ top: safeTop, behavior: 'smooth' });
     }
 
     setLoading(isLoading) {
