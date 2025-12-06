@@ -364,13 +364,14 @@
             align-items: center;
             justify-content: center;
             gap: 4px;
-            padding: 6px 10px;
+            padding: 6px 12px;
             background: var(--bg-white);
             border: 1px solid var(--border-medium);
             border-radius: 6px;
             cursor: pointer;
-            font-size: 12px;
-            color: var(--text-secondary);
+            font-size: 13px;
+            font-family: inherit;
+            color: #555;
             transition: all 0.15s ease;
             white-space: nowrap;
         }
@@ -546,7 +547,7 @@
             color: #555;
             border-radius: 6px;
             font-size: 13px;
-            font-weight: 500;
+            font-family: inherit;
             cursor: pointer;
             transition: all .2s ease;
             box-shadow: none;
@@ -1216,7 +1217,7 @@
             border-radius: 8px;
             min-height: 500px;
             height: 500px;
-            font-size: 15px
+            font-size: 14px
         }
 
         #codeEditorContainer:focus-within {
@@ -1246,7 +1247,7 @@
 
         .ace_editor {
             font-family: Monaco, Menlo, 'Ubuntu Mono', Consolas, source-code-pro, monospace;
-            font-size: 15px !important
+            font-size: 14px
         }
 
         .fullscreen-ace-editor {
@@ -4941,7 +4942,7 @@ return readExcelFromUrl();`
             mainEditor.session.setMode('ace/mode/javascript');
             mainEditor.setValue(startCode, -1); // -1 表示光标移到开始
             mainEditor.setOptions({
-                fontSize: '15px',
+                fontSize: '14px',
                 showPrintMargin: false,
                 tabSize: 2,
                 useSoftTabs: true,
