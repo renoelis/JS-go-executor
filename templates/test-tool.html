@@ -1228,8 +1228,8 @@
             margin-top: 10px;
             border: 1px solid #ddd;
             border-radius: 8px;
-            min-height: 250px;
-            height: 250px;
+            min-height: 100px;
+            height: auto;
             font-size: 14px
         }
 
@@ -1323,8 +1323,8 @@
             }
 
             #inputEditorContainer {
-                min-height: 200px;
-                height: 200px;
+                min-height: 90px;
+                height: auto;
                 font-size: 13px
             }
 
@@ -1485,8 +1485,8 @@
             }
 
             #inputEditorContainer {
-                min-height: 180px;
-                height: 180px;
+                min-height: 80px;
+                height: auto;
                 font-size: 12px
             }
 
@@ -2591,8 +2591,7 @@
                                     <button class="ghost-btn" onclick="openFullscreenInputEditor()" title="全屏编辑">⛶ 全屏</button>
                                 </div>
                             </div>
-                            <div id="inputEditorContainer"
-                                style="min-height:250px;height:250px;border:1px solid #ddd;border-radius:8px"></div>
+                            <div id="inputEditorContainer"></div>
                             <textarea id="inputData" style="display:none">{
   "name": "张三",
   "age": 25,
@@ -5009,8 +5008,11 @@ return readExcelFromUrl();`
                 wrap: true,
                 useWorker: true, // 启用 worker，实时语法检查
                 highlightActiveLine: true, // 🔍 高亮当前行
-                highlightSelectedWord: true // 🔍 高亮选中的单词
+                highlightSelectedWord: true, // 🔍 高亮选中的单词
+                minLines: 6,
+                maxLines: 20
             });
+            inputEditor.resize(true);
 
             // 🔍 启用括号匹配高亮
             inputEditor.setHighlightGutterLine(true);
