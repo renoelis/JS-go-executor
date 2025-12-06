@@ -2169,6 +2169,8 @@
         .script-mode-header {
             display: flex;
             justify-content: flex-end;
+            align-items: center;
+            gap: 8px;
             margin-bottom: 12px;
         }
 
@@ -2603,7 +2605,10 @@
                     <div id="script-mode-content" class="input-tab-content">
                         <!-- 脚本管理入口 -->
                         <div class="script-mode-header">
-                            <button class="code-tool-btn btn-manage" onclick="openScriptManager()" title="管理已保存的脚本">
+                            <button class="code-tool-btn btn-clear" onclick="clearScriptModeInput()" title="清空脚本配置">
+                                🗑️ 清空
+                            </button>
+                            <button class="code-tool-btn btn-manage" onclick="openScriptManager()" title="脚本上传/更新">
                                 📚 脚本管理
                             </button>
                         </div>
@@ -2662,8 +2667,6 @@
                             </div>
                             <div id="scriptModeBodyEditorContainer" style="min-height:150px;height:150px;border-top:1px solid #e9ecef;"></div>
                             <textarea id="scriptModeBodyData" style="display:none">{}</textarea>
-                        </div>
-                        <div class="button-group" style="margin-top:12px"> <button class="btn btn-secondary btn-clear-danger" onclick="clearScriptModeInput()"> 🗑️ 清空脚本配置 </button>
                         </div>
                     </div>
                 </div>
