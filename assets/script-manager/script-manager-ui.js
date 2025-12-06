@@ -78,12 +78,12 @@
           if (val === 'custom') {
             this.toggleCustomPageSize(true);
           } else {
-            this.manager.updatePageSize(parseInt(val, 10));
-            this.toggleCustomPageSize(false);
             const customInput = document.getElementById('customPageSizeInput');
+            this.lastCustomPageSize = null;
             if (customInput) customInput.value = '';
             if (this.customPageSizeValue) this.customPageSizeValue.style.display = 'none';
-            this.lastCustomPageSize = null;
+            this.manager.updatePageSize(parseInt(val, 10));
+            this.toggleCustomPageSize(false);
           }
         });
       }
