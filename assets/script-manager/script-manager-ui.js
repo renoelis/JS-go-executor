@@ -5,6 +5,12 @@
       this.modal = document.getElementById('scriptManagerModal');
       this.listBody = document.getElementById('scriptListBody');
       this.pageInfo = document.querySelector('#scriptManagerModal .page-info');
+      this.pageSummary = document.querySelector('#scriptManagerModal .page-summary');
+      this.pageCurrent = document.querySelector('#scriptManagerModal .current-page');
+      this.pageTotal = document.querySelector('#scriptManagerModal .total-pages');
+      this.pageTotalCount = document.querySelector('#scriptManagerModal .total-count');
+      this.pageRemaining = document.querySelector('#scriptManagerModal .remaining-count');
+      this.pageMaxAllowed = document.querySelector('#scriptManagerModal .max-allowed');
       this.prevBtn = document.querySelector('#scriptManagerModal .btn-prev');
       this.nextBtn = document.querySelector('#scriptManagerModal .btn-next');
       this.searchInput = document.querySelector('#scriptManagerModal .search-input');
@@ -253,13 +259,27 @@
         this.listBody.appendChild(tr);
       });
 
-      if (this.pageInfo) {
-        const current = pagination.current_page || 1;
-        const totalPages = pagination.total_pages || 1;
-        const totalCount = pagination.total || 0;
-        const maxAllowed = pagination.max_allowed ?? '-';
-        const remaining = pagination.remaining ?? '-';
+      const current = Number(pagination.current_page) || 1;
+      const totalPages = Number(pagination.total_pages) || 1;
+      const totalCount = Number.isFinite(Number(pagination.total)) ? Number(pagination.total) : scripts.length || 0;
+      const maxAllowed = pagination.max_allowed ?? '-';
+      const remaining = pagination.remaining ?? '-';
+
+      if (this.pageCurrent) this.pageCurrent.textContent = current;
+      if (this.pageTotal) this.pageTotal.textContent = totalPages;
+      if (this.pageTotalCount) this.pageTotalCount.textContent = totalCount;
+      if (this.pageRemaining) this.pageRemaining.textContent = remaining;
+      if (this.pageMaxAllowed) this.pageMaxAllowed.textContent = maxAllowed;
+
+      if (!this.pageSummary && this.pageInfo) {
         this.pageInfo.textContent = `第 ${current}/${totalPages} 页 · 共 ${totalCount} 条 · 可再创建 ${remaining} / ${maxAllowed}`;
+      }
+
+      if (this.prevBtn) {
+        this.prevBtn.disabled = current <= 1;
+      }
+      if (this.nextBtn) {
+        this.nextBtn.disabled = current >= totalPages;
       }
     }
 

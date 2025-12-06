@@ -4706,9 +4706,18 @@ return readExcelFromUrl();`
                     </table>
                 </div>
                 <div class="pagination-container">
-                    <button class="btn-prev">上一页</button>
-                    <span class="page-info">第 1/1 页</span>
-                    <button class="btn-next">下一页</button>
+                    <div class="page-info">
+                        <div class="page-counter">
+                            <span class="counter-label">第</span>
+                            <span class="counter-chip"><span class="current-page">1</span>/<span class="total-pages">1</span></span>
+                            <span class="counter-label">页</span>
+                        </div>
+                        <div class="page-summary">共 <span class="total-count">0</span> 条 · 可再创建 <span class="remaining-count">-</span> / <span class="max-allowed">-</span></div>
+                    </div>
+                    <div class="pagination-actions">
+                        <button class="pager-btn ghost btn-prev" type="button"><span class="arrow">&larr;</span>上一页</button>
+                        <button class="pager-btn ghost btn-next" type="button">下一页<span class="arrow">&rarr;</span></button>
+                    </div>
                 </div>
                 <div id="versionPanel" class="version-panel" style="display:none;">
                     <div class="version-panel-head">
