@@ -38,6 +38,7 @@
             --success: #4caf50;
             --warning: #ff9800;
             --error: #e53935;
+            --editor-font-size: 14px;
         }
 
         * {
@@ -190,7 +191,7 @@
         .code-editor {
             min-height: 300px;
             font-family: 'Courier New', monospace;
-            font-size: 13px
+            font-size: var(--editor-font-size)
         }
 
         .button-group {
@@ -625,7 +626,7 @@
             border-radius: 8px;
             border: 1px solid #e9ecef;
             font-family: Monaco, Menlo, Consolas, 'Courier New', monospace;
-            font-size: 13px;
+            font-size: var(--editor-font-size);
             line-height: 1.8;
             min-height: 320px;
             height: auto;
@@ -1217,7 +1218,7 @@
             border-radius: 8px;
             min-height: 500px;
             height: 500px;
-            font-size: 14px
+            font-size: var(--editor-font-size)
         }
 
         #codeEditorContainer:focus-within {
@@ -1231,7 +1232,7 @@
             border-radius: 8px;
             min-height: 100px;
             height: auto;
-            font-size: 14px
+            font-size: var(--editor-font-size)
         }
 
         #inputEditorContainer:focus-within {
@@ -1247,7 +1248,7 @@
 
         .ace_editor {
             font-family: Monaco, Menlo, 'Ubuntu Mono', Consolas, source-code-pro, monospace;
-            font-size: 14px
+            font-size: var(--editor-font-size)
         }
 
         .fullscreen-ace-editor {
@@ -1255,6 +1256,9 @@
         }
 
         @media screen and (max-width:768px) {
+            :root {
+                --editor-font-size: 13px;
+            }
             body {
                 padding: 10px
             }
@@ -1320,13 +1324,13 @@
             #codeEditorContainer {
                 min-height: 300px;
                 height: 300px;
-                font-size: 13px
+                font-size: var(--editor-font-size)
             }
 
             #inputEditorContainer {
                 min-height: 90px;
                 height: auto;
-                font-size: 13px
+                font-size: var(--editor-font-size)
             }
 
             .execution-result-section {
@@ -1338,7 +1342,7 @@
                 min-height: 260px;
                 height: auto;
                 max-height: none;
-                font-size: 12px
+                font-size: var(--editor-font-size)
             }
 
             .stats-box {
@@ -4933,6 +4937,9 @@ return readExcelFromUrl();`
             ace.config.setModuleUrl('ace/mode/javascript_worker', '/flow/assets/worker-javascript.js');
             ace.config.setModuleUrl('ace/mode/json_worker', '/flow/assets/worker-json.js');
 
+            // 统一编辑器字号，保持与 Input 参数一致
+            const editorFontSize = (getComputedStyle(document.documentElement).getPropertyValue('--editor-font-size') || '14px').trim() || '14px';
+
             // 初始化代码编辑器
             mainEditor = ace.edit('codeEditorContainer');
             const startCode = document.getElementById('jsCode').value;
@@ -4942,7 +4949,7 @@ return readExcelFromUrl();`
             mainEditor.session.setMode('ace/mode/javascript');
             mainEditor.setValue(startCode, -1); // -1 表示光标移到开始
             mainEditor.setOptions({
-                fontSize: '14px',
+                fontSize: editorFontSize,
                 showPrintMargin: false,
                 tabSize: 2,
                 useSoftTabs: true,
@@ -5005,7 +5012,7 @@ return readExcelFromUrl();`
             inputEditor.session.setMode('ace/mode/json'); // JSON 模式
             inputEditor.setValue(startInput, -1);
             inputEditor.setOptions({
-                fontSize: '14px',
+                fontSize: editorFontSize,
                 showPrintMargin: false,
                 tabSize: 2,
                 useSoftTabs: true,
