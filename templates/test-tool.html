@@ -2297,8 +2297,8 @@
 
         .script-mode-card-title-compact {
             font-weight: 600;
-            font-size: 12px;
-            color: #555;
+            font-size: 14px;
+            color: #495057;
             display: flex;
             align-items: center;
             gap: 6px;
@@ -2307,21 +2307,22 @@
         .script-mode-card-title-compact::before {
             content: '';
             width: 3px;
-            height: 12px;
+            height: 14px;
             background: #1976d2;
             border-radius: 2px;
         }
 
         .script-mode-add-kv-btn-compact {
-            padding: 4px 10px;
+            padding: 6px 12px;
             background: #1976d2;
             color: #fff;
             border: none;
-            border-radius: 4px;
+            border-radius: 6px;
             cursor: pointer;
-            font-size: 11px;
-            font-weight: 500;
+            font-size: 13px;
+            font-weight: 600;
             transition: all 0.2s ease;
+            line-height: 1.2;
         }
 
         .script-mode-add-kv-btn-compact:hover {
@@ -2334,14 +2335,18 @@
         }
 
         .ghost-btn-compact {
-            padding: 4px 8px;
+            padding: 6px 12px;
             background: #fff;
             border: 1px solid #e0e0e0;
-            border-radius: 4px;
+            border-radius: 6px;
             cursor: pointer;
-            font-size: 11px;
-            color: #666;
+            font-size: 13px;
+            color: #555;
             transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            white-space: nowrap;
         }
 
         .ghost-btn-compact:hover {
@@ -2666,8 +2671,8 @@
                             <div class="script-mode-config-card-header-compact">
                                 <span class="script-mode-card-title-compact">Body 参数（JSON 格式）</span>
                                 <div class="script-mode-card-actions-compact">
-                                    <button class="ghost-btn-compact" onclick="openFullscreenScriptBodyEditor()" title="全屏编辑">⛶ 全屏</button>
                                     <button class="ghost-btn-compact" onclick="copyScriptModeBody()" title="复制内容">📋 复制</button>
+                                    <button class="ghost-btn-compact" onclick="openFullscreenScriptBodyEditor()" title="全屏编辑">⛶ 全屏</button>
                                 </div>
                             </div>
                             <div id="scriptModeBodyEditorContainer" style="min-height:150px;height:150px;border-top:1px solid #e9ecef;"></div>
@@ -4920,6 +4925,12 @@ return readExcelFromUrl();`
         let dialogCustomCodeEditor = null;
         let modalAlertTimer = null;
 
+        // 统一获取当前编辑器字号，保证脚本模式与非脚本模式一致
+        function getEditorFontSize() {
+            const size = getComputedStyle(document.documentElement).getPropertyValue('--editor-font-size');
+            return (size && size.trim()) || '14px';
+        }
+
         // 初始化 Ace Editor
         function initAceEditor() {
             if (typeof ace === 'undefined') {
@@ -4938,7 +4949,7 @@ return readExcelFromUrl();`
             ace.config.setModuleUrl('ace/mode/json_worker', '/flow/assets/worker-json.js');
 
             // 统一编辑器字号，保持与 Input 参数一致
-            const editorFontSize = (getComputedStyle(document.documentElement).getPropertyValue('--editor-font-size') || '14px').trim() || '14px';
+            const editorFontSize = getEditorFontSize();
 
             // 初始化代码编辑器
             mainEditor = ace.edit('codeEditorContainer');
@@ -6527,11 +6538,12 @@ return readExcelFromUrl();`
             if (scriptModeBodyEditor || typeof ace === 'undefined') return;
             const container = document.getElementById('scriptModeBodyEditorContainer');
             if (!container) return;
+            const editorFontSize = getEditorFontSize();
             scriptModeBodyEditor = ace.edit(container);
             scriptModeBodyEditor.setTheme('ace/theme/textmate');
             scriptModeBodyEditor.session.setMode('ace/mode/json');
             scriptModeBodyEditor.setOptions({
-                fontSize: '14px',
+                fontSize: editorFontSize,
                 showPrintMargin: false,
                 wrap: true,
                 tabSize: 2,
