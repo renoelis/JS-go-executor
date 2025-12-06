@@ -664,26 +664,27 @@
             box-shadow: 0 8px 24px rgba(0, 0, 0, .15);
             border: 1px solid #d0d7e2;
             display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 13px;
-            line-height: 1.5
+            align-items: flex-start;
+            gap: 10px;
+            font-size: 14px;
+            line-height: 1.5;
+            font-family: inherit;
+            padding: 12px 14px
         }
 
         .floating-alert.show {
             display: flex
         }
 
-        .floating-alert {
-            position: relative;
-            padding-right: 36px;
-            font-family: inherit
+        .floating-alert .floating-text {
+            flex: 1;
+            min-width: 0;
+            word-break: break-word
         }
 
         .floating-alert .floating-close {
-            position: absolute;
-            top: 8px;
-            right: 8px;
+            position: static;
+            margin-left: 4px;
             border: none;
             background: transparent;
             color: inherit;
@@ -692,6 +693,7 @@
             line-height: 1;
             padding: 4px;
             border-radius: 4px;
+            flex-shrink: 0;
             transition: background .2s ease, color .2s ease
         }
 
@@ -837,12 +839,13 @@
 
         .floating-alert {
             font-size: 14px;
-            font-family: inherit
+            font-family: inherit;
+            align-items: flex-start
         }
 
         .floating-alert.show {
             display: flex !important;
-            align-items: center
+            align-items: flex-start
         }
 
         .toast-container {
@@ -4002,6 +4005,7 @@ return readExcelFromUrl();`
             alertEl.setAttribute('role', 'status');
 
             const textEl = document.createElement('span');
+            textEl.className = 'floating-text';
             textEl.textContent = message;
 
             const closeBtn = document.createElement('button');
