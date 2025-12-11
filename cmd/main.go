@@ -185,7 +185,17 @@ func main() {
 	executorController := controller.NewExecutorController(executor, cfg, tokenService, statsService, quotaService, sessionService)
 	tokenController := controller.NewTokenController(tokenService, rateLimiterService, cacheWritePool, adminToken, quotaService, quotaCleanupService, sessionService, verifyService)
 	statsController := controller.NewStatsController(statsService)
-	scriptController := controller.NewScriptController(scriptService, tokenService, rateLimiterService, quotaService, scriptStatsService, executor, cfg, scriptMaintenanceService)
+	scriptController := controller.NewScriptController(
+		scriptService,
+		tokenService,
+		rateLimiterService,
+		quotaService,
+		scriptStatsService,
+		statsService,
+		executor,
+		cfg,
+		scriptMaintenanceService,
+	)
 
 	// ==================== 设置路由 ====================
 	ginRouter, routerResources := router.SetupRouter(

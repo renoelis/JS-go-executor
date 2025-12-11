@@ -29,6 +29,7 @@ type ScriptController struct {
 	rateLimiterService *service.RateLimiterService
 	quotaService       *service.QuotaService
 	statsService       *service.ScriptStatsService
+	userStatsService   *service.StatsService
 	maintenanceService *service.ScriptMaintenanceService
 	executor           *service.JSExecutor
 	cfg                *config.Config
@@ -41,6 +42,7 @@ func NewScriptController(
 	rateLimiterService *service.RateLimiterService,
 	quotaService *service.QuotaService,
 	statsService *service.ScriptStatsService,
+	userStatsService *service.StatsService,
 	executor *service.JSExecutor,
 	cfg *config.Config,
 	maintenanceService *service.ScriptMaintenanceService,
@@ -51,6 +53,7 @@ func NewScriptController(
 		rateLimiterService: rateLimiterService,
 		quotaService:       quotaService,
 		statsService:       statsService,
+		userStatsService:   userStatsService,
 		maintenanceService: maintenanceService,
 		executor:           executor,
 		cfg:                cfg,
@@ -697,6 +700,7 @@ func (c *ScriptController) ExecuteScript(ctx *gin.Context) {
 		return
 	}
 	code := string(codeBytes)
+	moduleInfo := utils.ParseModuleUsage(code)
 
 	// 配额消耗（执行即扣）
 	if tokenInfo.NeedsQuotaCheck() && c.quotaService != nil {
@@ -738,6 +742,7 @@ func (c *ScriptController) ExecuteScript(ctx *gin.Context) {
 		if c.statsService != nil {
 			c.statsService.RecordExecution(ctx.Request.Context(), scriptID, tokenInfo.AccessToken, "failed", int(totalTime))
 		}
+		c.recordUserStats(ctx, tokenInfo, moduleInfo, code, totalTime, "failed")
 		return
 	}
 
@@ -752,10 +757,37 @@ func (c *ScriptController) ExecuteScript(ctx *gin.Context) {
 	if c.statsService != nil {
 		c.statsService.RecordExecution(ctx.Request.Context(), scriptID, tokenInfo.AccessToken, "success", int(totalTime))
 	}
+	c.recordUserStats(ctx, tokenInfo, moduleInfo, code, totalTime, "success")
 	utils.Info("脚本执行成功",
 		zap.String("request_id", requestID),
 		zap.String("script_id", scriptID),
 		zap.Int64("execution_time_ms", totalTime),
 		zap.String("ws_id", tokenInfo.WsID),
 		zap.String("email", tokenInfo.Email))
+}
+
+// recordUserStats 将脚本执行写入通用执行统计（用户活跃/模块使用）
+func (c *ScriptController) recordUserStats(ctx *gin.Context, tokenInfo *model.TokenInfo, moduleInfo *utils.ModuleUsageInfo, code string, totalTime int64, status string) {
+	if c.userStatsService == nil || tokenInfo == nil || moduleInfo == nil {
+		return
+	}
+
+	now := time.Now()
+	record := &model.ExecutionStatsRecord{
+		ExecutionID:     ctx.GetString("request_id"),
+		Token:           tokenInfo.AccessToken,
+		WsID:            tokenInfo.WsID,
+		Email:           tokenInfo.Email,
+		HasRequire:      moduleInfo.HasRequire,
+		ModulesUsed:     moduleInfo.GetModuleList(),
+		ModuleCount:     moduleInfo.ModuleCount,
+		ExecutionStatus: status,
+		ExecutionTimeMs: totalTime,
+		CodeLength:      len(code),
+		IsAsync:         c.executor.GetAnalyzer().IsLikelyAsync(code),
+		ExecutionDate:   now.Format("2006-01-02"),
+		ExecutionTime:   now,
+	}
+
+	c.userStatsService.RecordExecutionStats(record)
 }
